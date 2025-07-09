@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/amafjarkasi-electron-mcp-server-badge.png)](https://mseep.ai/app/amafjarkasi-electron-mcp-server)
+
 # 🚀 Electron Debug MCP Server
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
