@@ -1,684 +1,575 @@
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+#!/usr/bin/env node
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import { log } from "./log.js";
 import {
-  ListResourcesRequestSchema,
-  ReadResourceRequestSchema
-} from "@modelcontextprotocol/sdk/types.js";
-import { spawn, ChildProcess } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-// @ts-ignore
-import CDP from 'chrome-remote-interface';
-import * as http from 'http';
-import * as net from 'net';
+  connectToCDPTarget,
+  executeCDPCommand,
+  getAllProcesses,
+  getElectronDebugInfo,
+  getProcess,
+  listProcesses,
+  pickPageTarget,
+  startElectronApp,
+  stopElectronApp,
+  updateCDPTargets,
+} from "./process-manager.js";
 
-// Define custom resource URIs for Electron debugging
-const ELECTRON_RESOURCES = {
-  INFO: "electron://info",
-  PROCESS: "electron://process/",
-  LOGS: "electron://logs/",
-  OPERATION: "electron://operation/",
-  CDP: "electron://cdp/",
-  TARGETS: "electron://targets"
-};
-
-// Define operation types for Electron debugging
-const ELECTRON_OPERATIONS = {
-  START: "start",
-  STOP: "stop",
-  LIST: "list",
-  RELOAD: "reload",
-  PAUSE: "pause",
-  RESUME: "resume",
-  EVALUATE: "evaluate"
-};
-
-// Type definitions for Electron processes and debugging info
-interface ElectronProcess {
-  id: string;
-  process: ChildProcess;
-  name: string;
-  status: 'running' | 'stopped' | 'crashed';
-  pid?: number;
-  debugPort?: number;
-  startTime: Date;
-  logs: string[];
-  appPath: string;
-  cdpClient?: any; // Chrome DevTools Protocol client
-  targets?: CDPTarget[]; // Available debugging targets
-  lastTargetUpdate?: Date; // When targets were last updated
-}
-
-interface ElectronDebugInfo {
-  webContents: ElectronWebContentsInfo[];
-  processes: {
-    main: ProcessInfo;
-    renderers: ProcessInfo[];
-  };
-}
-
-interface ElectronWebContentsInfo {
-  id: number;
-  url: string;
-  title: string;
-  debuggable: boolean;
-  debugPort?: number;
-  targetId?: string; // CDP target ID
-}
-
-interface CDPTarget {
-  id: string;
-  type: string;
-  title: string;
-  url: string;
-  webSocketDebuggerUrl?: string;
-  devtoolsFrontendUrl?: string;
-}
-
-interface ProcessInfo {
-  pid: number;
-  cpuUsage: number;
-  memoryUsage: number;
-  status: string;
-}
-
-// Store active Electron processes
-const electronProcesses: Map<string, ElectronProcess> = new Map();
-
-// Helper functions for Electron debugging
-function getElectronExecutablePath(): string {
-  // Try to find electron in common locations
-  const possiblePaths = [
-    // Check if electron is installed globally
-    path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'electron.cmd'),
-    // Check in node_modules of the current project
-    path.resolve(process.cwd(), 'node_modules', '.bin', 'electron.cmd')
-  ];
-
-  for (const electronPath of possiblePaths) {
-    if (fs.existsSync(electronPath)) {
-      return electronPath;
-    }
-  }
-
-  // Default to expecting electron to be in PATH
-  return 'electron';
-}
-
-async function startElectronApp(appPath: string, debugPort?: number): Promise<ElectronProcess> {
-  const id = `electron-${Date.now()}`;
-  const args = [appPath];
-  
-  // If no debug port specified, choose a random one between 9222 and 9999
-  if (!debugPort) {
-    debugPort = Math.floor(Math.random() * (9999 - 9222 + 1)) + 9222;
-  }
-  
-  // Add debugging flags
-  args.unshift(`--remote-debugging-port=${debugPort}`);
-  args.unshift('--enable-logging');
-  
-  const electronPath = getElectronExecutablePath();
-  const electronProc = spawn(electronPath, args, {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, ELECTRON_ENABLE_LOGGING: '1' }
-  });
-  
-  const electronProcess: ElectronProcess = {
-    id,
-    process: electronProc,
-    name: path.basename(appPath),
-    status: 'running',
-    pid: electronProc.pid,
-    debugPort,
-    startTime: new Date(),
-    logs: [],
-    appPath
-  };
-  
-  // Capture stdout and stderr
-  electronProc.stdout.on('data', (data: Buffer) => {
-    const log = data.toString();
-    electronProcess.logs.push(log);
-    // Log to console instead of sending notifications
-    console.log(`[Electron ${id}] ${log}`);
-  });
-  
-  electronProc.stderr.on('data', (data: Buffer) => {
-    const log = data.toString();
-    electronProcess.logs.push(log);
-    // Log to console instead of sending notifications
-    console.error(`[Electron ${id}] ${log}`);
-  });
-  
-  // Handle process exit
-  electronProc.on('exit', (code: number | null) => {
-    electronProcess.status = code === 0 ? 'stopped' : 'crashed';
-    console.info(`[Electron ${id}] Process exited with code ${code}`);
-    
-    // Clean up CDP client if it exists
-    if (electronProcess.cdpClient) {
-      try {
-        electronProcess.cdpClient.close();
-      } catch (err) {
-        console.error(`[Electron ${id}] Error closing CDP client:`, err);
-      }
-      electronProcess.cdpClient = undefined;
-    }
-  });
-  
-  electronProcesses.set(id, electronProcess);
-  
-  // Wait a moment for the app to start and initialize the debugging port
-  await new Promise(resolve => setTimeout(resolve, 1000));
-  
-  // Try to connect to CDP and get available targets
-  try {
-    await updateCDPTargets(electronProcess);
-  } catch (err) {
-    console.warn(`[Electron ${id}] Could not connect to CDP initially:`, err);
-  }
-  
-  return electronProcess;
-}
-
-function stopElectronApp(id: string): boolean {
-  const electronProcess = electronProcesses.get(id);
-  if (!electronProcess) {
-    return false;
-  }
-  
-  // Close CDP client if it exists
-  if (electronProcess.cdpClient) {
-    try {
-      electronProcess.cdpClient.close();
-    } catch (err) {
-      console.error(`[Electron ${id}] Error closing CDP client:`, err);
-    }
-    electronProcess.cdpClient = undefined;
-  }
-  
-  electronProcess.process.kill();
-  electronProcess.status = 'stopped';
-  return true;
-}
-
-async function getElectronDebugInfo(id: string): Promise<ElectronDebugInfo | null> {
-  const electronProcess = electronProcesses.get(id);
-  if (!electronProcess || electronProcess.status !== 'running') {
-    return null;
-  }
-  
-  // Update CDP targets to get the latest information
-  try {
-    await updateCDPTargets(electronProcess);
-  } catch (err) {
-    console.warn(`[Electron ${id}] Could not update CDP targets:`, err);
-  }
-  
-  // Convert CDP targets to WebContents info
-  const webContents: ElectronWebContentsInfo[] = electronProcess.targets?.map((target, index) => ({
-    id: index + 1,
-    url: target.url,
-    title: target.title,
-    debuggable: !!target.webSocketDebuggerUrl,
-    debugPort: electronProcess.debugPort,
-    targetId: target.id
-  })) || [
-    {
-      id: 1,
-      url: 'file://' + electronProcess.appPath,
-      title: electronProcess.name,
-      debuggable: true,
-      debugPort: electronProcess.debugPort
-    }
-  ];
-  
+function textResult(data: unknown, isError = false) {
   return {
-    webContents,
-    processes: {
-      main: {
-        pid: electronProcess.pid || 0,
-        cpuUsage: Math.random() * 10, // We could get real data with CDP
-        memoryUsage: Math.random() * 100 * 1024 * 1024,
-        status: 'running'
+    content: [
+      {
+        type: "text" as const,
+        text:
+          typeof data === "string" ? data : JSON.stringify(data, null, 2),
       },
-      renderers: [
-        {
-          pid: (electronProcess.pid || 0) + 1,
-          cpuUsage: Math.random() * 5,
-          memoryUsage: Math.random() * 50 * 1024 * 1024,
-          status: 'running'
-        }
-      ]
-    }
+    ],
+    isError,
   };
 }
 
-// Add CDP-related functions
-
-/**
- * Updates the CDP targets for an Electron process
- */
-async function updateCDPTargets(electronProcess: ElectronProcess): Promise<CDPTarget[]> {
-  if (!electronProcess.debugPort) {
-    throw new Error('No debug port available for this Electron process');
+function requireRunningProcess(processId: string) {
+  const proc = getProcess(processId);
+  if (!proc) {
+    throw new Error(`Process not found: ${processId}`);
   }
-  
-  try {
-    // Get the list of available targets from the Chrome DevTools Protocol
-    const response = await fetch(`http://localhost:${electronProcess.debugPort}/json/list`);
-    if (!response.ok) {
-      throw new Error(`Failed to get targets: ${response.statusText}`);
-    }
-    
-    const targets = await response.json() as CDPTarget[];
-    electronProcess.targets = targets;
-    electronProcess.lastTargetUpdate = new Date();
-    return targets;
-  } catch (error) {
-    console.error(`Error getting CDP targets for process ${electronProcess.id}:`, error);
-    throw error;
+  if (proc.status !== "running") {
+    throw new Error(`Process ${processId} is ${proc.status}`);
   }
+  return proc;
 }
 
-/**
- * Connects to a specific CDP target
- */
-async function connectToCDPTarget(electronProcess: ElectronProcess, targetId: string): Promise<any> {
-  if (!electronProcess.debugPort) {
-    throw new Error('No debug port available for this Electron process');
-  }
-  
-  try {
-    // Make sure we have the latest targets
-    if (!electronProcess.targets || !electronProcess.lastTargetUpdate || 
-        (new Date().getTime() - electronProcess.lastTargetUpdate.getTime() > 5000)) {
-      await updateCDPTargets(electronProcess);
-    }
-    
-    // Find the target
-    const target = electronProcess.targets?.find(t => t.id === targetId);
-    if (!target) {
-      throw new Error(`Target ${targetId} not found`);
-    }
-    
-    // Connect to the target using CDP
-    const client = await CDP({
-      target: targetId,
-      port: electronProcess.debugPort
-    } as any);
-    
-    // Store the client for later use
-    electronProcess.cdpClient = client;
-    return client;
-  } catch (error) {
-    console.error(`Error connecting to CDP target ${targetId}:`, error);
-    throw error;
-  }
-}
+const server = new McpServer({
+  name: "electron-debug-mcp",
+  version: "1.0.0",
+});
 
-/**
- * Executes a CDP command on a target
- */
-async function executeCDPCommand(electronProcess: ElectronProcess, targetId: string, domain: string, command: string, params: any = {}): Promise<any> {
-  let client;
-  
-  try {
-    // Get or create a CDP client
-    if (electronProcess.cdpClient) {
-      client = electronProcess.cdpClient;
-    } else {
-      client = await connectToCDPTarget(electronProcess, targetId);
-    }
-    
-    // Execute the command
-    return await client.send(`${domain}.${command}`, params);
-  } catch (error) {
-    console.error(`Error executing CDP command ${domain}.${command}:`, error);
-    throw error;
-  }
-}
+// --- Tools (mutations / actions) ---
 
-// Initialize server with resource capabilities
-const server = new Server(
+server.tool(
+  "start_app",
+  "Start an Electron application with remote debugging enabled",
   {
-    name: "electron-debug-mcp",
-    version: "1.0.0",
+    appPath: z
+      .string()
+      .describe("Path to the Electron app (directory or main script)"),
+    debugPort: z
+      .number()
+      .int()
+      .min(1024)
+      .max(65535)
+      .optional()
+      .describe("Optional Chrome DevTools debugging port (default: random 9222-9999)"),
+    extraArgs: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Optional extra Electron CLI args (e.g. ["--no-sandbox"] for CI/containers)'
+      ),
   },
-  {
-    capabilities: {
-      resources: {}, // Enable resources
-    },
+  async ({ appPath, debugPort, extraArgs }) => {
+    try {
+      const proc = await startElectronApp(appPath, debugPort, extraArgs ?? []);
+      return textResult({
+        id: proc.id,
+        name: proc.name,
+        status: proc.status,
+        pid: proc.pid,
+        debugPort: proc.debugPort,
+        appPath: proc.appPath,
+        targets: proc.targets ?? [],
+      });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
   }
 );
 
-// List available resources when clients request them
-server.setRequestHandler(ListResourcesRequestSchema, async () => {
-  // Create a list of resources including all active Electron processes and operations
-  const resources = [
-    {
-      uri: ELECTRON_RESOURCES.INFO,
-      name: "Electron Debugging Info",
-      description: "Information about the Electron debugging capabilities",
-      mimeType: "application/json",
-    },
-    {
-      uri: `${ELECTRON_RESOURCES.OPERATION}${ELECTRON_OPERATIONS.START}`,
-      name: "Start Electron App",
-      description: "Start an Electron application for debugging",
-      mimeType: "application/json",
-    },
-    {
-      uri: `${ELECTRON_RESOURCES.OPERATION}${ELECTRON_OPERATIONS.STOP}`,
-      name: "Stop Electron App",
-      description: "Stop a running Electron application",
-      mimeType: "application/json",
-    },
-    {
-      uri: `${ELECTRON_RESOURCES.OPERATION}${ELECTRON_OPERATIONS.LIST}`,
-      name: "List Electron Apps",
-      description: "List all running Electron applications",
-      mimeType: "application/json",
-    },
-    {
-      uri: `${ELECTRON_RESOURCES.OPERATION}${ELECTRON_OPERATIONS.RELOAD}`,
-      name: "Reload Electron App",
-      description: "Reload a running Electron application",
-      mimeType: "application/json",
-    },
-    {
-      uri: `${ELECTRON_RESOURCES.OPERATION}${ELECTRON_OPERATIONS.EVALUATE}`,
-      name: "Evaluate JavaScript",
-      description: "Evaluate JavaScript in a running Electron application",
-      mimeType: "application/json",
-    },
-    {
-      uri: ELECTRON_RESOURCES.TARGETS,
-      name: "Electron Debug Targets",
-      description: "List all available debug targets across Electron processes",
-      mimeType: "application/json",
-    }
-  ];
-  
-  // Add resources for each active Electron process
-  for (const [id, process] of electronProcesses.entries()) {
-    resources.push({
-      uri: `${ELECTRON_RESOURCES.PROCESS}${id}`,
-      name: `Electron Process: ${process.name}`,
-      description: `Debug information for Electron process ${process.name}`,
-      mimeType: "application/json",
-    });
-    
-    resources.push({
-      uri: `${ELECTRON_RESOURCES.LOGS}${id}`,
-      name: `Electron Logs: ${process.name}`,
-      description: `Logs for Electron process ${process.name}`,
-      mimeType: "text/plain",
-    });
-    
-    // Add CDP resources for each target in the process
-    if (process.targets && process.targets.length > 0) {
-      for (const target of process.targets) {
-        resources.push({
-          uri: `${ELECTRON_RESOURCES.CDP}${id}/${target.id}`,
-          name: `CDP: ${target.title || target.url}`,
-          description: `Chrome DevTools Protocol access for target ${target.id}`,
-          mimeType: "application/json",
-        });
+server.tool(
+  "stop_app",
+  "Stop a running Electron application started by this server",
+  {
+    processId: z.string().describe("Process id returned by start_app"),
+  },
+  async ({ processId }) => {
+    try {
+      const stopped = await stopElectronApp(processId);
+      if (!stopped) {
+        return textResult(`Process not found: ${processId}`, true);
       }
+      return textResult({ processId, status: "stopped" });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
     }
   }
-  
-  return { resources };
-});
+);
 
-// Handle resource read requests
-server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-  const { uri } = request.params;
-  
-  // Handle targets listing resource
-  if (uri === ELECTRON_RESOURCES.TARGETS) {
-    // Collect all targets from all processes
-    const allTargets: Array<{processId: string, target: CDPTarget}> = [];
-    
-    for (const [id, process] of electronProcesses.entries()) {
-      // Update targets if needed
-      if (process.status === 'running' && process.debugPort) {
+server.tool(
+  "list_apps",
+  "List Electron applications managed by this server",
+  async () => textResult({ processes: listProcesses() })
+);
+
+server.tool(
+  "get_logs",
+  "Get captured stdout/stderr logs for a managed Electron process",
+  {
+    processId: z.string().describe("Process id returned by start_app"),
+    tail: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Optional number of trailing log chunks to return"),
+  },
+  async ({ processId, tail }) => {
+    const proc = getProcess(processId);
+    if (!proc) {
+      return textResult(`Process not found: ${processId}`, true);
+    }
+    const logs = tail ? proc.logs.slice(-tail) : proc.logs;
+    return textResult({
+      processId,
+      status: proc.status,
+      logs: logs.join(""),
+    });
+  }
+);
+
+server.tool(
+  "list_targets",
+  "List Chrome DevTools Protocol targets for a process (or all processes)",
+  {
+    processId: z
+      .string()
+      .optional()
+      .describe("Optional process id; omit to list targets for all running apps"),
+  },
+  async ({ processId }) => {
+    try {
+      const allTargets: Array<{
+        processId: string;
+        target: unknown;
+      }> = [];
+
+      const entries = processId
+        ? ([[processId, requireRunningProcess(processId)]] as const)
+        : Array.from(getAllProcesses().entries());
+
+      for (const [id, proc] of entries) {
+        if (proc.status !== "running" || !proc.debugPort) {
+          continue;
+        }
         try {
-          await updateCDPTargets(process);
-          if (process.targets) {
-            for (const target of process.targets) {
-              allTargets.push({
-                processId: id,
-                target
-              });
-            }
+          await updateCDPTargets(proc);
+          for (const target of proc.targets ?? []) {
+            allTargets.push({ processId: id, target });
           }
         } catch (err) {
-          console.warn(`Could not update targets for process ${id}:`, err);
+          log.warn(`Could not update targets for ${id}:`, err);
         }
       }
+
+      return textResult({ targets: allTargets });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
     }
-    
+  }
+);
+
+server.tool(
+  "evaluate",
+  "Evaluate JavaScript in an Electron page/renderer via CDP Runtime.evaluate",
+  {
+    processId: z.string().describe("Process id returned by start_app"),
+    expression: z.string().describe("JavaScript expression to evaluate"),
+    targetId: z
+      .string()
+      .optional()
+      .describe("Optional CDP target id; defaults to the first page target"),
+    returnByValue: z
+      .boolean()
+      .optional()
+      .describe("Whether to return the result by value (default true)"),
+  },
+  async ({ processId, expression, targetId, returnByValue }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      await updateCDPTargets(proc);
+      const target = pickPageTarget(proc, targetId);
+      const result = await executeCDPCommand(
+        proc,
+        target.id,
+        "Runtime.evaluate",
+        {
+          expression,
+          returnByValue: returnByValue ?? true,
+          awaitPromise: true,
+        }
+      );
+      return textResult({ processId, targetId: target.id, result });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "reload",
+  "Reload a page target (or all page targets) in an Electron app",
+  {
+    processId: z.string().describe("Process id returned by start_app"),
+    targetId: z
+      .string()
+      .optional()
+      .describe("Optional CDP target id; omit to reload all page targets"),
+    ignoreCache: z
+      .boolean()
+      .optional()
+      .describe("If true, reload ignoring cache"),
+  },
+  async ({ processId, targetId, ignoreCache }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      await updateCDPTargets(proc);
+
+      const targets = targetId
+        ? [pickPageTarget(proc, targetId)]
+        : (proc.targets ?? []).filter(
+            (t) => t.type === "page" || Boolean(t.webSocketDebuggerUrl)
+          );
+
+      if (!targets.length) {
+        return textResult("No reloadable targets found", true);
+      }
+
+      const results = [];
+      for (const target of targets) {
+        const result = await executeCDPCommand(proc, target.id, "Page.reload", {
+          ignoreCache: ignoreCache ?? false,
+        });
+        results.push({ targetId: target.id, result });
+      }
+
+      return textResult({ processId, reloaded: results });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "pause",
+  "Pause JavaScript execution on a target via Debugger.pause",
+  {
+    processId: z.string().describe("Process id returned by start_app"),
+    targetId: z
+      .string()
+      .optional()
+      .describe("Optional CDP target id; defaults to the first page target"),
+  },
+  async ({ processId, targetId }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      await updateCDPTargets(proc);
+      const target = pickPageTarget(proc, targetId);
+      await connectToCDPTarget(proc, target.id);
+      await executeCDPCommand(proc, target.id, "Debugger.enable", {});
+      const result = await executeCDPCommand(
+        proc,
+        target.id,
+        "Debugger.pause",
+        {}
+      );
+      return textResult({ processId, targetId: target.id, result });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "resume",
+  "Resume JavaScript execution on a target via Debugger.resume",
+  {
+    processId: z.string().describe("Process id returned by start_app"),
+    targetId: z
+      .string()
+      .optional()
+      .describe("Optional CDP target id; defaults to the first page target"),
+  },
+  async ({ processId, targetId }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      await updateCDPTargets(proc);
+      const target = pickPageTarget(proc, targetId);
+      await executeCDPCommand(proc, target.id, "Debugger.enable", {});
+      const result = await executeCDPCommand(
+        proc,
+        target.id,
+        "Debugger.resume",
+        {}
+      );
+      return textResult({ processId, targetId: target.id, result });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "cdp_command",
+  "Execute an arbitrary Chrome DevTools Protocol method on a target",
+  {
+    processId: z.string().describe("Process id returned by start_app"),
+    method: z
+      .string()
+      .describe('CDP method name, e.g. "Page.navigate" or "Runtime.evaluate"'),
+    targetId: z
+      .string()
+      .optional()
+      .describe("Optional CDP target id; defaults to the first page target"),
+    params: z
+      .record(z.unknown())
+      .optional()
+      .describe("Optional JSON object of CDP method parameters"),
+  },
+  async ({ processId, method, targetId, params }) => {
+    try {
+      if (!method.includes(".")) {
+        return textResult(
+          'CDP method must be in "Domain.method" form',
+          true
+        );
+      }
+      const proc = requireRunningProcess(processId);
+      await updateCDPTargets(proc);
+      const target = pickPageTarget(proc, targetId);
+      const result = await executeCDPCommand(
+        proc,
+        target.id,
+        method,
+        params ?? {}
+      );
+      return textResult({
+        processId,
+        targetId: target.id,
+        method,
+        result,
+      });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+// --- Resources (read-only inspection) ---
+
+server.resource(
+  "info",
+  "electron://info",
+  {
+    description: "Overview of Electron apps managed by this server",
+    mimeType: "application/json",
+  },
+  async (uri) => ({
+    contents: [
+      {
+        uri: uri.href,
+        mimeType: "application/json",
+        text: JSON.stringify({ processes: listProcesses() }, null, 2),
+      },
+    ],
+  })
+);
+
+server.resource(
+  "targets",
+  "electron://targets",
+  {
+    description: "All CDP targets across running Electron processes",
+    mimeType: "application/json",
+  },
+  async (uri) => {
+    const allTargets: Array<{ processId: string; target: unknown }> = [];
+
+    for (const [id, proc] of getAllProcesses().entries()) {
+      if (proc.status !== "running" || !proc.debugPort) {
+        continue;
+      }
+      try {
+        await updateCDPTargets(proc);
+        for (const target of proc.targets ?? []) {
+          allTargets.push({ processId: id, target });
+        }
+      } catch (err) {
+        log.warn(`Could not update targets for ${id}:`, err);
+      }
+    }
+
     return {
       contents: [
         {
-          uri,
+          uri: uri.href,
+          mimeType: "application/json",
           text: JSON.stringify(allTargets, null, 2),
         },
       ],
     };
   }
-  
-  // Handle CDP commands
-  if (uri.startsWith(ELECTRON_RESOURCES.CDP)) {
-    const cdpMatch = uri.match(/^electron:\/\/cdp\/([^/]+)\/([^/]+)(?:\/(.*))?$/);
-    if (!cdpMatch) {
-      throw new Error(`Invalid CDP URI: ${uri}`);
-    }
-    
-    const processId = cdpMatch[1];
-    const targetId = cdpMatch[2];
-    const command = cdpMatch[3]; // Optional command path
-    
-    const process = electronProcesses.get(processId);
-    if (!process || process.status !== 'running') {
-      throw new Error(`Process ${processId} not found or not running`);
-    }
-    
-    if (!command) {
-      // Just return information about the target
-      const target = process.targets?.find(t => t.id === targetId);
-      if (!target) {
-        throw new Error(`Target ${targetId} not found in process ${processId}`);
-      }
-      
-      return {
-        contents: [
-          {
-            uri,
-            text: JSON.stringify({
-              target,
-              availableDomains: [
-                'Page', 'Runtime', 'Debugger', 'DOM', 'Network', 'Console',
-                'Memory', 'Profiler', 'Performance', 'HeapProfiler'
-              ],
-              usage: `To execute a CDP command, append /{domain}/{command} to this URI`
-            }, null, 2),
-          },
-        ],
-      };
-    }
-    
-    // Parse the command path
-    const commandParts = command.split('/');
-    if (commandParts.length !== 2) {
-      throw new Error(`Invalid CDP command format: ${command}. Expected format: {domain}/{command}`);
-    }
-    
-    const domain = commandParts[0];
-    const method = commandParts[1];
-    
-    try {
-      // Execute the CDP command
-      const result = await executeCDPCommand(process, targetId, domain, method);
-      
-      return {
-        contents: [
-          {
-            uri,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (error) {
-      throw new Error(`Error executing CDP command: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  
-  // Handle general Electron info resource
-  if (uri === ELECTRON_RESOURCES.INFO) {
-    return {
-      contents: [
-        {
-          uri,
-          text: JSON.stringify({
-            activeProcesses: Array.from(electronProcesses.entries()).map(([id, proc]) => ({
-              id,
-              name: proc.name,
-              status: proc.status,
-              pid: proc.pid,
-              startTime: proc.startTime
-            }))
-          }, null, 2),
-        },
-      ],
-    };
-  }
-  
-  // Handle process-specific resources
-  const processMatch = uri.match(/^electron:\/\/process\/(.+)$/);
-  if (processMatch) {
-    const processId = processMatch[1];
+);
+
+server.resource(
+  "process",
+  new ResourceTemplate("electron://process/{id}", {
+    list: async () => ({
+      resources: listProcesses().map((proc) => ({
+        uri: `electron://process/${proc.id}`,
+        name: `Electron Process: ${proc.name}`,
+        description: `Debug information for ${proc.name} (${proc.status})`,
+        mimeType: "application/json",
+      })),
+    }),
+  }),
+  {
+    description: "Detailed debug info for a managed Electron process",
+    mimeType: "application/json",
+  },
+  async (uri, { id }) => {
+    const processId = String(id);
     const debugInfo = await getElectronDebugInfo(processId);
-    
     if (!debugInfo) {
-      throw new Error(`Process ${processId} not found or not running`);
+      throw new Error(`Process not found: ${processId}`);
     }
-    
     return {
       contents: [
         {
-          uri,
+          uri: uri.href,
+          mimeType: "application/json",
           text: JSON.stringify(debugInfo, null, 2),
         },
       ],
     };
   }
-  
-  // Handle logs resources
-  const logsMatch = uri.match(/^electron:\/\/logs\/(.+)$/);
-  if (logsMatch) {
-    const processId = logsMatch[1];
-    const process = electronProcesses.get(processId);
-    
-    if (!process) {
-      throw new Error(`Process ${processId} not found`);
+);
+
+server.resource(
+  "logs",
+  new ResourceTemplate("electron://logs/{id}", {
+    list: async () => ({
+      resources: listProcesses().map((proc) => ({
+        uri: `electron://logs/${proc.id}`,
+        name: `Electron Logs: ${proc.name}`,
+        description: `Captured logs for ${proc.name}`,
+        mimeType: "text/plain",
+      })),
+    }),
+  }),
+  {
+    description: "Captured logs for a managed Electron process",
+    mimeType: "text/plain",
+  },
+  async (uri, { id }) => {
+    const processId = String(id);
+    const proc = getProcess(processId);
+    if (!proc) {
+      throw new Error(`Process not found: ${processId}`);
     }
-    
     return {
       contents: [
         {
-          uri,
-          text: process.logs.join('\n'),
+          uri: uri.href,
+          mimeType: "text/plain",
+          text: proc.logs.join(""),
         },
       ],
     };
   }
-  
-  // Handle operation resources
-  if (uri.startsWith(ELECTRON_RESOURCES.OPERATION)) {
-    const operationMatch = uri.match(/^electron:\/\/operation\/([^/]+)(?:\/(.*))?$/);
-    if (!operationMatch) {
-      throw new Error(`Invalid operation URI: ${uri}`);
+);
+
+server.resource(
+  "cdp-target",
+  new ResourceTemplate("electron://cdp/{processId}/{targetId}", {
+    list: async () => {
+      const resources = [];
+      for (const [processId, proc] of getAllProcesses().entries()) {
+        for (const target of proc.targets ?? []) {
+          resources.push({
+            uri: `electron://cdp/${processId}/${target.id}`,
+            name: `CDP: ${target.title || target.url || target.id}`,
+            description: `CDP target info for ${target.id}`,
+            mimeType: "application/json",
+          });
+        }
+      }
+      return { resources };
+    },
+  }),
+  {
+    description: "Read-only CDP target metadata",
+    mimeType: "application/json",
+  },
+  async (uri, { processId, targetId }) => {
+    const proc = getProcess(String(processId));
+    if (!proc) {
+      throw new Error(`Process not found: ${processId}`);
     }
-    
-    const operation = operationMatch[1];
-    let result: any;
-    
-    // Handle different operation types
-    if (operation === ELECTRON_OPERATIONS.START) {
-      // For the read request, just return instructions on how to use this resource
-      result = {
-        instructions: "To start an Electron app, send a POST request with JSON body: { \"appPath\": \"/path/to/electron/app\", \"debugPort\": 9222 }",
-        example: {
-          appPath: "C:\\path\\to\\electron\\app",
-          debugPort: 9222 // optional
-        }
-      };
-    } else if (operation === ELECTRON_OPERATIONS.STOP) {
-      // For the read request, just return instructions on how to use this resource
-      result = {
-        instructions: "To stop an Electron app, send a POST request with JSON body: { \"processId\": \"electron-12345678\" }",
-        example: {
-          processId: "electron-12345678"
-        }
-      };
-    } else if (operation === ELECTRON_OPERATIONS.RELOAD) {
-      // For the read request, just return instructions on how to use this resource
-      result = {
-        instructions: "To reload an Electron app, send a POST request with JSON body: { \"processId\": \"electron-12345678\", \"targetId\": \"page-123\" }",
-        example: {
-          processId: "electron-12345678",
-          targetId: "page-123" // Optional, if not provided will reload all targets
-        }
-      };
-    } else if (operation === ELECTRON_OPERATIONS.EVALUATE) {
-      // For the read request, just return instructions on how to use this resource
-      result = {
-        instructions: "To evaluate JavaScript in an Electron app, send a POST request with JSON body: { \"processId\": \"electron-12345678\", \"targetId\": \"page-123\", \"expression\": \"document.title\" }",
-        example: {
-          processId: "electron-12345678",
-          targetId: "page-123",
-          expression: "document.title",
-          returnByValue: true // Optional, whether to return the result by value
-        }
-      };
-    } else if (operation === ELECTRON_OPERATIONS.LIST) {
-      // For the list operation, we can return the actual list of processes
-      const processes = Array.from(electronProcesses.entries()).map(([id, proc]) => ({
-        id,
-        name: proc.name,
-        status: proc.status,
-        pid: proc.pid,
-        startTime: proc.startTime,
-        appPath: proc.appPath,
-        debugPort: proc.debugPort
-      }));
-      
-      result = {
-        processes
-      };
-    } else {
-      throw new Error(`Unknown operation: ${operation}`);
+    if (proc.status === "running" && proc.debugPort) {
+      try {
+        await updateCDPTargets(proc);
+      } catch (err) {
+        log.warn(`Could not refresh targets for ${processId}:`, err);
+      }
     }
-    
+    const target = proc.targets?.find((t) => t.id === String(targetId));
+    if (!target) {
+      throw new Error(`Target ${targetId} not found in process ${processId}`);
+    }
     return {
       contents: [
         {
-          uri,
-          text: JSON.stringify(result, null, 2)
-        }
-      ]
+          uri: uri.href,
+          mimeType: "application/json",
+          text: JSON.stringify(
+            {
+              processId,
+              target,
+              hint: "Use the evaluate, reload, pause, resume, or cdp_command tools to act on this target",
+            },
+            null,
+            2
+          ),
+        },
+      ],
     };
   }
-  
-  throw new Error(`Resource not found: ${uri}`);
-});
+);
 
-// Start server using stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.info('{"jsonrpc": "2.0", "method": "log", "params": { "message": "Electron Debug MCP Server running..." }}');
+log.info("Electron Debug MCP Server running on stdio");
