@@ -7,6 +7,7 @@
   },
   "scripts": {
     "ensure-electron": "node scripts/ensure-electron.mjs",
+    "fix-electron": "node scripts/ensure-electron.mjs",
     "postinstall": "node scripts/ensure-electron.mjs",
     "build": "tsc && node --input-type=module -e \"import fs from 'fs'; fs.chmodSync('build/index.js', 0o755)\"",
     "start": "node build/index.js",

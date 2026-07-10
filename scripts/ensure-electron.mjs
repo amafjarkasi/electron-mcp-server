@@ -9,20 +9,55 @@ import path from "path";
 import { createRequire } from "module";
 import { fileURLToPath } from "url";
 
-const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const electronDir = path.join(root, "node_modules", "electron");
 const installJs = path.join(electronDir, "install.js");
 const pathTxt = path.join(electronDir, "path.txt");
 const distDir = path.join(electronDir, "dist");
 
-function electronBinaryExists() {
+const requireFromRoot = createRequire(path.join(root, "package.json"));
+const requireFromElectron = fs.existsSync(path.join(electronDir, "package.json"))
+  ? createRequire(path.join(electronDir, "package.json"))
+  : null;
+
+function resolveElectronBinary() {
+  if (fs.existsSync(pathTxt)) {
+    const rel = fs.readFileSync(pathTxt, "utf8").trim();
+    if (rel) {
+      const candidate = path.join(distDir, rel);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  // Fallback: ask the electron package itself.
+  if (!requireFromElectron) return null;
   try {
-    // Fresh require each check — clear cache in case path.txt appeared.
-    const resolved = require.resolve("electron");
-    delete require.cache[resolved];
-    const binary = require("electron");
-    return typeof binary === "string" && fs.existsSync(binary);
+    const indexJs = path.join(electronDir, "index.js");
+    delete requireFromElectron.cache[indexJs];
+    const binary = requireFromElectron(indexJs);
+    if (typeof binary === "string" && fs.existsSync(binary)) {
+      return binary;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function hasElectronGet() {
+  try {
+    if (requireFromElectron) {
+      requireFromElectron.resolve("@electron/get");
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    requireFromRoot.resolve("@electron/get");
+    return true;
   } catch {
     return false;
   }
@@ -43,13 +78,13 @@ function rmQuiet(target) {
 
 if (!fs.existsSync(electronDir)) {
   fail(
-    "electron package is missing. Run:\nnpm install electron --foreground-scripts"
+    "electron package is missing. Run this in PowerShell:\nnpm install electron --foreground-scripts"
   );
 }
 
-if (electronBinaryExists()) {
-  const binary = require("electron");
-  console.log(`[ensure-electron] OK: ${binary}`);
+const existing = resolveElectronBinary();
+if (existing) {
+  console.log(`[ensure-electron] OK: ${existing}`);
   process.exit(0);
 }
 
@@ -59,25 +94,41 @@ if (!fs.existsSync(installJs)) {
   );
 }
 
-const getPkg = path.join(electronDir, "node_modules", "@electron", "get");
-if (!fs.existsSync(getPkg)) {
-  fail(
-    [
-      "electron dependency @electron/get is missing.",
-      "Run:",
-      "  Remove-Item -Recurse -Force node_modules\\electron",
-      "  npm install electron --foreground-scripts",
-    ].join("\n")
+if (!hasElectronGet()) {
+  console.warn(
+    "[ensure-electron] @electron/get not resolvable yet — installing electron deps..."
   );
+  const depInstall = spawnSync(
+    "npm",
+    ["install", "--foreground-scripts", "--no-save", "@electron/get", "extract-zip"],
+    {
+      cwd: root,
+      env: process.env,
+      encoding: "utf8",
+      shell: true,
+    }
+  );
+  if (depInstall.stdout?.trim()) console.log(depInstall.stdout.trimEnd());
+  if (depInstall.stderr?.trim()) console.error(depInstall.stderr.trimEnd());
+  if (depInstall.status !== 0 || !hasElectronGet()) {
+    fail(
+      [
+        "@electron/get is missing and could not be installed.",
+        "In PowerShell run:",
+        "  npm install @electron/get extract-zip --foreground-scripts",
+        "  npm install electron --foreground-scripts",
+      ].join("\n")
+    );
+  }
 }
 
 if (process.env.ELECTRON_SKIP_BINARY_DOWNLOAD) {
   console.warn(
-    "[ensure-electron] ELECTRON_SKIP_BINARY_DOWNLOAD was set — ignoring it so the binary can download."
+    "[ensure-electron] ELECTRON_SKIP_BINARY_DOWNLOAD was set — clearing it for this install."
   );
 }
 
-// Clear partial installs so electron/install.js does not think it is done.
+// Clear partial installs so electron/install.js does real work.
 rmQuiet(pathTxt);
 rmQuiet(path.join(distDir, "version"));
 
@@ -87,10 +138,9 @@ console.log(
 
 const env = {
   ...process.env,
-  ELECTRON_SKIP_BINARY_DOWNLOAD: "",
-  // force_no_cache can help recover from a corrupt cache entry
-  force_no_cache: process.env.force_no_cache || "true",
 };
+delete env.ELECTRON_SKIP_BINARY_DOWNLOAD;
+env.force_no_cache = process.env.force_no_cache || "true";
 
 const result = spawnSync(process.execPath, [installJs], {
   cwd: electronDir,
@@ -113,25 +163,19 @@ if (result.status !== 0) {
   fail(
     [
       `electron/install.js exited with code ${result.status}.`,
-      "Common fixes on Windows:",
-      "  $env:ELECTRON_SKIP_BINARY_DOWNLOAD=$null",
+      "In PowerShell run these exactly:",
+      "  Remove-Item Env:ELECTRON_SKIP_BINARY_DOWNLOAD -ErrorAction SilentlyContinue",
       "  Remove-Item -Recurse -Force node_modules\\electron -ErrorAction SilentlyContinue",
       "  npm install electron --foreground-scripts",
-      "If you are offline/firewalled, set a mirror, e.g.:",
-      "  $env:ELECTRON_MIRROR=\"https://npmmirror.com/mirrors/electron/\"",
+      "If download is blocked:",
+      "  $env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/'",
+      "  npm install electron --foreground-scripts",
     ].join("\n")
   );
 }
 
-// Clear require cache and re-check
-try {
-  const resolved = require.resolve("electron");
-  delete require.cache[resolved];
-} catch {
-  // ignore
-}
-
-if (!electronBinaryExists()) {
+const binary = resolveElectronBinary();
+if (!binary) {
   const pathContents = fs.existsSync(pathTxt)
     ? fs.readFileSync(pathTxt, "utf8").trim()
     : "(missing path.txt)";
@@ -143,11 +187,12 @@ if (!electronBinaryExists()) {
       "Electron install reported success but binary is still missing.",
       `path.txt=${pathContents}`,
       `dist=${distListing}`,
-      "Try a clean reinstall:",
+      "In PowerShell run:",
       "  Remove-Item -Recurse -Force node_modules\\electron",
       "  npm install electron --foreground-scripts",
+      "  npm run ensure-electron",
     ].join("\n")
   );
 }
 
-console.log(`[ensure-electron] Installed: ${require("electron")}`);
+console.log(`[ensure-electron] Installed: ${binary}`);
