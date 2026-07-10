@@ -150,7 +150,8 @@ export function getAllProcesses(): Map<string, ElectronProcess> {
 
 export async function startElectronApp(
   appPath: string,
-  debugPort?: number
+  debugPort?: number,
+  extraArgs: string[] = []
 ): Promise<ElectronProcess> {
   const resolvedAppPath = path.resolve(appPath);
   if (!fs.existsSync(resolvedAppPath)) {
@@ -161,9 +162,22 @@ export async function startElectronApp(
   const port =
     debugPort ?? Math.floor(Math.random() * (9999 - 9222 + 1)) + 9222;
 
+  // Containers / CI often need --no-sandbox for Electron to start.
+  const autoArgs: string[] = [];
+  if (
+    process.env.ELECTRON_MCP_NO_SANDBOX === "1" ||
+    process.env.CI === "true" ||
+    !process.env.DISPLAY
+  ) {
+    autoArgs.push("--no-sandbox");
+  }
+
   const args = [
     `--remote-debugging-port=${port}`,
     "--enable-logging",
+    "--disable-gpu",
+    ...autoArgs,
+    ...extraArgs,
     resolvedAppPath,
   ];
 

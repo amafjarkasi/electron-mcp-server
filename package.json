@@ -9,7 +9,9 @@
     "build": "tsc && node --input-type=module -e \"import fs from 'fs'; fs.chmodSync('build/index.js', 0o755)\"",
     "start": "node build/index.js",
     "dev": "tsc && node build/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node test/mcp-smoke.mjs",
+    "test:smoke": "node test/mcp-smoke.mjs"
   },
   "keywords": [
     "electron",

@@ -61,10 +61,16 @@ server.tool(
       .max(65535)
       .optional()
       .describe("Optional Chrome DevTools debugging port (default: random 9222-9999)"),
+    extraArgs: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Optional extra Electron CLI args (e.g. ["--no-sandbox"] for CI/containers)'
+      ),
   },
-  async ({ appPath, debugPort }) => {
+  async ({ appPath, debugPort, extraArgs }) => {
     try {
-      const proc = await startElectronApp(appPath, debugPort);
+      const proc = await startElectronApp(appPath, debugPort, extraArgs ?? []);
       return textResult({
         id: proc.id,
         name: proc.name,

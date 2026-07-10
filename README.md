@@ -93,7 +93,10 @@ Raw CDP:
 npm run build
 npm start
 npm run typecheck
+npm test
 ```
+
+`npm test` builds the server, then runs `test/mcp-smoke.mjs` against `fixtures/minimal-electron-app` (start → list targets → evaluate → stop).
 
 Project layout:
 
@@ -103,6 +106,10 @@ src/
   process-manager.ts    # Electron process + CDP helpers
   log.ts                # stderr-only logging
   types/                # ambient typings
+fixtures/
+  minimal-electron-app/ # Tiny Electron app used by smoke tests
+test/
+  mcp-smoke.mjs         # End-to-end MCP stdio smoke test
 ```
 
 ## Notes
