@@ -7,11 +7,18 @@
   <body>
     <h1 id="heading">Hello from fixture</h1>
     <p id="status">ready</p>
+    <div id="app-root" class="root">
+      <button id="go" type="button">Go</button>
+    </div>
     <script>
       window.__FIXTURE__ = {
         name: "minimal-electron-app",
         version: 1,
       };
+      console.log("fixture-console-ok");
+      console.warn("fixture-console-warn");
+      // Trigger a network request for smoke coverage
+      fetch("data:application/json,{\"ok\":true}").catch(() => {});
     </script>
   </body>
 </html>

@@ -1,12 +1,13 @@
 # Electron Debug MCP Server
 
-MCP server for launching and debugging Electron apps through the Chrome DevTools Protocol.
+MCP server for launching, attaching to, and debugging Electron apps through the Chrome DevTools Protocol.
 
 ## What it does
 
-- **Tools** start/stop Electron apps, evaluate JS, reload pages, pause/resume, and run arbitrary CDP methods
-- **Resources** expose read-only process info, logs, and CDP targets
-- Speaks MCP over **stdio** (safe for Cursor / Claude Desktop)
+- **Tools** to start/attach/stop apps, evaluate JS, screenshot, inspect DOM, read console/network buffers, and run arbitrary CDP methods
+- **Resources** for read-only process/log/console/target inspection
+- **Prompts** for common debug workflows (blank window, renderer exceptions)
+- Speaks MCP over **stdio** (Cursor / Claude Desktop safe — logs go to stderr)
 
 ## Setup
 
@@ -17,8 +18,6 @@ npm run build
 ```
 
 ## Cursor config
-
-Add to your MCP settings (path adjusted to your clone):
 
 ```json
 {
@@ -31,53 +30,56 @@ Add to your MCP settings (path adjusted to your clone):
 }
 ```
 
-Restart Cursor after saving.
+Optional env vars:
+
+| Env | Purpose |
+|-----|---------|
+| `ELECTRON_PATH` | Use a specific Electron binary |
+| `ELECTRON_MCP_NO_SANDBOX=1` | Auto-add `--no-sandbox` (CI/containers) |
+| `ELECTRON_MCP_ALLOWED_ROOTS` | `;` / `\|` separated allowlist for `start_app` paths |
 
 ## Tools
 
 | Tool | Purpose |
 |------|---------|
-| `start_app` | Start an Electron app with `--remote-debugging-port` |
-| `stop_app` | Stop a managed process |
-| `list_apps` | List managed processes |
-| `get_logs` | Read captured stdout/stderr |
-| `list_targets` | List CDP targets |
-| `evaluate` | `Runtime.evaluate` in a page/renderer |
-| `reload` | `Page.reload` |
-| `pause` / `resume` | `Debugger.pause` / `Debugger.resume` |
-| `cdp_command` | Run any `Domain.method` CDP call |
+| `start_app` | Start Electron with `--remote-debugging-port` |
+| `attach` | Attach to an already-running debug port |
+| `discover_apps` | Scan local ports for CDP endpoints |
+| `stop_app` | Stop owned process or detach attached session |
+| `list_apps` | List managed/attached processes |
+| `diagnose` | Port health, target roles, recent console errors |
+| `get_logs` | stdout/stderr capture |
+| `get_console_messages` | Buffered page console/exceptions |
+| `get_network_log` | Buffered Network domain events |
+| `list_targets` | CDP targets with page/worker/browser roles |
+| `evaluate` | `Runtime.evaluate` (optional role/target) |
+| `screenshot` | `Page.captureScreenshot` (image content) |
+| `get_dom` | `outerHTML` for document or selector |
+| `query_selector` | Summarize `querySelectorAll` matches |
+| `reload` / `pause` / `resume` | Page/debugger controls |
+| `cdp_command` | Any `Domain.method` CDP call |
 
 ### Examples
 
-Start an app:
+Start:
 
 ```json
-{
-  "appPath": "D:/path/to/your/electron-app",
-  "debugPort": 9222
-}
+{ "appPath": "D:/path/to/electron-app", "debugPort": 9222 }
 ```
 
-Evaluate in the first page target:
+Attach to an app you launched with `--remote-debugging-port=9222`:
 
 ```json
-{
-  "processId": "electron-1710000000000",
-  "expression": "document.title"
-}
+{ "debugPort": 9222, "name": "my-app" }
 ```
 
-Raw CDP:
+Evaluate:
 
 ```json
-{
-  "processId": "electron-1710000000000",
-  "method": "Page.navigate",
-  "params": { "url": "https://example.com" }
-}
+{ "processId": "electron-…", "expression": "document.title" }
 ```
 
-## Resources (read-only)
+## Resources
 
 | URI | Description |
 |-----|-------------|
@@ -85,39 +87,29 @@ Raw CDP:
 | `electron://targets` | All CDP targets |
 | `electron://process/{id}` | Process debug details |
 | `electron://logs/{id}` | Process logs |
+| `electron://console/{id}` | Buffered console messages |
 | `electron://cdp/{processId}/{targetId}` | Target metadata |
 
 ## Development
 
 ```bash
 npm run build
-npm start
-npm run typecheck
-npm test
+npm test          # unit + end-to-end smoke
+npm run test:unit
+npm run test:smoke
 ```
-
-`npm test` builds the server, then runs `test/mcp-smoke.mjs` against `fixtures/minimal-electron-app` (start → list targets → evaluate → stop).
-
-Project layout:
 
 ```
 src/
-  index.ts              # MCP tools + resources
-  process-manager.ts    # Electron process + CDP helpers
+  index.ts              # MCP tools, resources, prompts
+  process-manager.ts    # Electron/CDP lifecycle
+  events.ts             # Process/console event bus
   log.ts                # stderr-only logging
-  types/                # ambient typings
-fixtures/
-  minimal-electron-app/ # Tiny Electron app used by smoke tests
+fixtures/minimal-electron-app/
 test/
-  mcp-smoke.mjs         # End-to-end MCP stdio smoke test
+  unit-helpers.test.mjs
+  mcp-smoke.mjs
 ```
-
-## Notes
-
-- Logs go to **stderr** so stdio JSON-RPC on stdout stays clean
-- `start_app` waits for the debug port before returning
-- Targets default to the first `page` target when `targetId` is omitted
-- This server manages processes it starts; it does not attach to arbitrary already-running Electron apps yet
 
 ## License
 
