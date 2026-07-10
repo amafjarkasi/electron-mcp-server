@@ -6,10 +6,13 @@
     "electron-debug-mcp": "./build/index.js"
   },
   "scripts": {
+    "ensure-electron": "node scripts/ensure-electron.mjs",
+    "postinstall": "node scripts/ensure-electron.mjs",
     "build": "tsc && node --input-type=module -e \"import fs from 'fs'; fs.chmodSync('build/index.js', 0o755)\"",
     "start": "node build/index.js",
     "dev": "tsc && node build/index.js",
     "typecheck": "tsc --noEmit",
+    "pretest": "npm run ensure-electron",
     "test": "npm run build && npm run test:unit && npm run test:smoke",
     "test:unit": "node --test test/unit-helpers.test.mjs",
     "test:smoke": "node test/mcp-smoke.mjs"

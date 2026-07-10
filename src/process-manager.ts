@@ -2,8 +2,6 @@ import { spawn, ChildProcess, execFile } from "child_process";
 import { createRequire } from "module";
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
-import { fileURLToPath } from "url";
 import { promisify } from "util";
 import CDP from "chrome-remote-interface";
 import { log } from "./log.js";
@@ -136,39 +134,40 @@ function getElectronExecutablePath(): string {
     return process.env.ELECTRON_PATH;
   }
 
+  const installHint =
+    "Electron binary is not installed. From the repo root run: npm run ensure-electron   (or: npm install electron --foreground-scripts)";
+
   try {
     const fromPackage = require("electron") as string;
     if (fromPackage && fs.existsSync(fromPackage)) {
       return fromPackage;
     }
-  } catch {
-    // Fall through
-  }
-
-  const isWin = process.platform === "win32";
-  const binName = isWin ? "electron.cmd" : "electron";
-  const here = path.dirname(fileURLToPath(import.meta.url));
-
-  const candidates = [
-    path.resolve(process.cwd(), "node_modules", ".bin", binName),
-    path.resolve(here, "..", "node_modules", ".bin", binName),
-  ];
-
-  if (isWin) {
-    candidates.push(
-      path.join(os.homedir(), "AppData", "Roaming", "npm", binName)
+    throw new Error(
+      `electron package resolved to missing path: ${String(fromPackage)}. ${installHint}`
     );
-  } else {
-    candidates.push(path.join(os.homedir(), ".npm-global", "bin", binName));
-  }
-
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      return candidate;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (
+      message.includes("failed to install correctly") ||
+      message.includes("missing path") ||
+      message.includes("Cannot find module")
+    ) {
+      throw new Error(`${message}\n${installHint}`);
     }
   }
 
+  // Last resort: PATH lookup (user-provided global electron).
   return "electron";
+}
+
+function resolveElectronBinaryOrThrow(): string {
+  const electronPath = getElectronExecutablePath();
+  if (electronPath !== "electron" && !fs.existsSync(electronPath)) {
+    throw new Error(
+      `Electron executable not found at ${electronPath}. Run: npm run ensure-electron`
+    );
+  }
+  return electronPath;
 }
 
 export async function waitForDebugPort(
@@ -367,13 +366,14 @@ export async function startElectronApp(
     resolvedAppPath,
   ];
 
-  const electronPath = getElectronExecutablePath();
+  const electronPath = resolveElectronBinaryOrThrow();
   log.info(`Starting ${resolvedAppPath} via ${electronPath} on port ${port}`);
 
   const electronProc = spawn(electronPath, args, {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, ELECTRON_ENABLE_LOGGING: "1" },
-    shell: process.platform === "win32" && electronPath.endsWith(".cmd"),
+    // Spawn the real binary from electron/dist — never shell out to .cmd
+    windowsHide: true,
   });
 
   const electronProcess = createProcessRecord({
@@ -391,11 +391,38 @@ export async function startElectronApp(
   wireChildProcess(electronProcess, electronProc);
   electronProcesses.set(id, electronProcess);
 
+  // Fail fast if Electron exits before the debug port opens (common when
+  // the binary failed to download under npm allowScripts).
+  let onEarlyExit: ((code: number | null) => void) | undefined;
+  const earlyExit = new Promise<never>((_, reject) => {
+    onEarlyExit = (code: number | null) => {
+      const tail = electronProcess.logs.slice(-20).join("");
+      reject(
+        new Error(
+          `Electron exited early with code ${code} before debug port ${port} was ready.${
+            tail ? `\n--- output ---\n${tail}` : ""
+          }`
+        )
+      );
+    };
+    electronProc.once("exit", onEarlyExit);
+  });
+
   try {
-    await waitForDebugPort(port);
+    await Promise.race([waitForDebugPort(port), earlyExit]);
+    if (onEarlyExit) {
+      electronProc.off("exit", onEarlyExit);
+    }
     await updateCDPTargets(electronProcess);
     await ensureMonitoring(electronProcess);
   } catch (err) {
+    if (onEarlyExit) {
+      electronProc.off("exit", onEarlyExit);
+    }
+    if (electronProc.exitCode != null || electronProcess.status !== "running") {
+      electronProcesses.delete(id);
+      throw err;
+    }
     log.warn(`[${id}] App started but CDP is not ready yet:`, err);
   }
 

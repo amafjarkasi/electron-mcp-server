@@ -14,7 +14,16 @@ MCP server for launching, attaching to, and debugging Electron apps through the 
 ```bash
 cd D:\GH\electron-mcp-server
 npm install
+npm run ensure-electron   # downloads the Electron binary if npm blocked install scripts
 npm run build
+```
+
+If `npm install` warns about `allowScripts` / `electron` postinstall, run:
+
+```powershell
+npm run ensure-electron
+# or:
+npm install electron --foreground-scripts
 ```
 
 ## Cursor config

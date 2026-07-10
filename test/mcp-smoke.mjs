@@ -112,13 +112,22 @@ function parseToolText(result) {
 }
 
 async function launchFixture(port) {
-  const electronPath = path.join(
-    root,
-    "node_modules",
-    "electron",
-    "dist",
-    "electron"
-  );
+  const { createRequire } = await import("module");
+  const require = createRequire(import.meta.url);
+  let electronPath;
+  try {
+    electronPath = require("electron");
+  } catch (err) {
+    throw new Error(
+      `Electron binary missing for smoke fixture: ${
+        err instanceof Error ? err.message : String(err)
+      }. Run: npm run ensure-electron`
+    );
+  }
+  if (!electronPath || typeof electronPath !== "string") {
+    throw new Error("require('electron') did not return a binary path");
+  }
+
   const child = spawn(
     electronPath,
     [
@@ -130,6 +139,7 @@ async function launchFixture(port) {
     {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, ELECTRON_ENABLE_LOGGING: "1" },
+      windowsHide: true,
     }
   );
   // Wait for debug port
