@@ -2,24 +2,36 @@
   "name": "electron-debug-mcp",
   "version": "1.0.0",
   "type": "module",
+  "bin": {
+    "electron-debug-mcp": "./build/index.js"
+  },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node --input-type=module -e \"import fs from 'fs'; fs.chmodSync('build/index.js', 0o755)\"",
     "start": "node build/index.js",
     "dev": "tsc && node build/index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "typecheck": "tsc --noEmit"
   },
-  "keywords": ["electron", "debug", "mcp", "model-context-protocol"],
+  "keywords": [
+    "electron",
+    "debug",
+    "mcp",
+    "model-context-protocol",
+    "chrome-devtools-protocol"
+  ],
   "author": "",
   "license": "ISC",
-  "description": "An MCP server for Electron debugging",
+  "description": "MCP server for launching and debugging Electron apps via Chrome DevTools Protocol",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.1.0",
-    "electron": "^29.1.0",
     "chrome-remote-interface": "^0.33.0",
-    "ws": "^8.16.0"
+    "electron": "^29.1.0",
+    "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
     "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
