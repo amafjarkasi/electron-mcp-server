@@ -143,59 +143,53 @@ Electron bugs are often **invisible** to coding agents:
 <td width="50%" valign="top">
 
 ### 🔌 Lifecycle
-- ▶️ `start_app` — launch with remote debugging (+ optional `inspectMain`)  
-- 🔗 `attach` — connect to an existing debug port  
-- 🆔 `attach_by_pid` — resolve port from process argv  
-- 🧭 `find_apps` — list Electron PIDs + debug ports  
-- 🔎 `discover_apps` — scan local CDP ports  
-- ⏹️ `stop_app` — kill owned / detach attached  
-- 📋 `list_apps` — sessions, ports, buffer counts  
-- 🩺 `diagnose` — port health + recent errors  
-
+- ▶️ `start_app` — launch with remote debugging (+ optional `inspectMain`)
+- 🔗 `attach` — connect to an existing debug port
+- 🆔 `attach_by_pid` — resolve port from process argv
+- 🧭 `find_apps` — list Electron PIDs + debug ports
+- 🔎 `discover_apps` — scan local CDP ports
+- ⏹️ `stop_app` — kill owned / detach attached
+- 📋 `list_apps` — sessions, ports, buffer counts
+- 🩺 `diagnose` — port health + recent errors
 </td>
 <td width="50%" valign="top">
 
 ### 🔍 Inspection
-- 📸 `screenshot` / 💾 `save_screenshot` — full page or **selector clip**  
-- 🌳 `get_dom` / `query_selector`  
-- 🧮 `evaluate` / `evaluate_main`  
-- 🍪 `get_cookies` / `set_cookie`  
-- 🗄️ `get_storage` / `set_storage`  
-- 🧾 `get_console_messages` — log/warn/error/exceptions  
-- 🌐 `get_network_log` — request/response/fail  
-- 📜 `get_logs` — Electron stdout/stderr  
-- 🎯 `list_targets` / `page_info`  
-
+- 📸 `screenshot` / 💾 `save_screenshot` — full page or **selector clip**
+- 🌳 `get_dom` / `query_selector`
+- 🧮 `evaluate` / `evaluate_main`
+- 🍪 `get_cookies` / `set_cookie`
+- 🗄️ `get_storage` / `set_storage`
+- 🧾 `get_console_messages` — log/warn/error/exceptions
+- 🌐 `get_network_log` — request/response/fail
+- 📜 `get_logs` — Electron stdout/stderr
+- 🎯 `list_targets` / `page_info`
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 
 ### 🖱️ Interaction
-- 🧭 `navigate` + load wait  
-- ⏳ `wait_for` — selector / hidden / enabled / count / text / URL / console  
-- 🖱️ `click` left/right/middle  
-- ⌨️ `type_text` (+ clear / Enter) · `press_key` (+ modifiers)  
-- 🔄 `reload` · ⏸️ `pause` · ▶️ `resume`  
-- 🧹 `clear_buffers`  
-
+- 🧭 `navigate` + load wait
+- ⏳ `wait_for` — selector / hidden / enabled / count / text / URL / console
+- 🖱️ `click` left/right/middle
+- ⌨️ `type_text` (+ clear / Enter) · `press_key` (+ modifiers)
+- 🔄 `reload` · ⏸️ `pause` · ▶️ `resume`
+- 🧹 `clear_buffers`
 </td>
 <td width="50%" valign="top">
 
 ### 🧠 Agent UX & power
-- 📝 MCP handshake **instructions**  
-- 💬 Prompts: blank window · exceptions · UI smoke  
-- 🏷️ Target roles: page / worker / browser / main  
-- 🔔 `set_console_live` + resource list-changed  
-- 📈 `start_tracing` / `stop_tracing`  
-- 🛡️ stderr-only diagnostics (stdio-safe)  
-- 🧰 `cdp_command` for any DevTools method  
-
+- 📝 MCP handshake **instructions**
+- 💬 Prompts: blank window · exceptions · UI smoke
+- 🏷️ Target roles: page / worker / browser / main
+- 🔔 `set_console_live` + resource list-changed
+- 📈 `start_tracing` / `stop_tracing`
+- 🛡️ stderr-only diagnostics (stdio-safe)
+- 🧰 `cdp_command` for any DevTools method
 </td>
 </tr>
 </table>
-
----
 
 ## ⚡ 60-second quick start
 
