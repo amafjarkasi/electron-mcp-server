@@ -1,16 +1,27 @@
 #!/usr/bin/env node
-import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+  McpServer,
+  ResourceTemplate,
+} from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { log } from "./log.js";
+import { processEvents } from "./events.js";
 import {
+  attachToDebugPort,
+  captureScreenshot,
   connectToCDPTarget,
+  diagnoseProcess,
+  discoverDebugPorts,
+  ensureMonitoring,
   executeCDPCommand,
   getAllProcesses,
   getElectronDebugInfo,
+  getOuterHtml,
   getProcess,
   listProcesses,
   pickPageTarget,
+  pickTargetByRole,
   startElectronApp,
   stopElectronApp,
   updateCDPTargets,
@@ -21,8 +32,7 @@ function textResult(data: unknown, isError = false) {
     content: [
       {
         type: "text" as const,
-        text:
-          typeof data === "string" ? data : JSON.stringify(data, null, 2),
+        text: typeof data === "string" ? data : JSON.stringify(data, null, 2),
       },
     ],
     isError,
@@ -40,16 +50,60 @@ function requireRunningProcess(processId: string) {
   return proc;
 }
 
-const server = new McpServer({
-  name: "electron-debug-mcp",
-  version: "1.0.0",
+async function notifyResourceListChanged(): Promise<void> {
+  try {
+    await server.server.sendResourceListChanged();
+  } catch {
+    // Client may not support it yet
+  }
+}
+
+async function notifyLog(
+  level: "info" | "warning" | "error" | "debug",
+  data: string
+): Promise<void> {
+  try {
+    await server.server.sendLoggingMessage({ level, data });
+  } catch {
+    // Client may not have enabled logging
+  }
+}
+
+const server = new McpServer(
+  {
+    name: "electron-debug-mcp",
+    version: "1.1.0",
+  },
+  {
+    capabilities: {
+      logging: {},
+    },
+  }
+);
+
+processEvents.onEvent((event) => {
+  void notifyResourceListChanged();
+  if (event.type === "console" && (event.level === "error" || event.level === "assert")) {
+    void notifyLog(
+      "error",
+      `[${event.processId}/${event.targetId}] ${event.level}: ${event.text}`
+    );
+  } else if (
+    event.type === "process_started" ||
+    event.type === "process_attached" ||
+    event.type === "process_stopped" ||
+    event.type === "process_crashed" ||
+    event.type === "targets_changed"
+  ) {
+    void notifyLog("info", JSON.stringify(event));
+  }
 });
 
-// --- Tools (mutations / actions) ---
+// --- Tools ---
 
 server.tool(
   "start_app",
-  "Start an Electron application with remote debugging enabled",
+  "Start an Electron application with remote debugging enabled. Example: {\"appPath\":\"D:/apps/my-electron-app\",\"debugPort\":9222}",
   {
     appPath: z
       .string()
@@ -71,10 +125,12 @@ server.tool(
   async ({ appPath, debugPort, extraArgs }) => {
     try {
       const proc = await startElectronApp(appPath, debugPort, extraArgs ?? []);
+      await notifyResourceListChanged();
       return textResult({
         id: proc.id,
         name: proc.name,
         status: proc.status,
+        attached: proc.attached,
         pid: proc.pid,
         debugPort: proc.debugPort,
         appPath: proc.appPath,
@@ -90,10 +146,68 @@ server.tool(
 );
 
 server.tool(
-  "stop_app",
-  "Stop a running Electron application started by this server",
+  "attach",
+  "Attach to an already-running Electron/Chromium app that was started with --remote-debugging-port. Example: {\"debugPort\":9222}",
   {
-    processId: z.string().describe("Process id returned by start_app"),
+    debugPort: z
+      .number()
+      .int()
+      .min(1024)
+      .max(65535)
+      .describe("Remote debugging port the app is listening on"),
+    name: z
+      .string()
+      .optional()
+      .describe("Optional friendly name for this attached session"),
+  },
+  async ({ debugPort, name }) => {
+    try {
+      const proc = await attachToDebugPort(debugPort, name);
+      await notifyResourceListChanged();
+      return textResult({
+        id: proc.id,
+        name: proc.name,
+        status: proc.status,
+        attached: proc.attached,
+        debugPort: proc.debugPort,
+        targets: proc.targets ?? [],
+      });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "discover_apps",
+  "Scan local ports for Electron/Chromium instances exposing Chrome DevTools Protocol",
+  {
+    startPort: z.number().int().min(1).max(65535).optional(),
+    endPort: z.number().int().min(1).max(65535).optional(),
+  },
+  async ({ startPort, endPort }) => {
+    try {
+      const found = await discoverDebugPorts(startPort ?? 9222, endPort ?? 9235);
+      return textResult({ found });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "stop_app",
+  "Stop a process started by start_app, or detach bookkeeping for an attached session",
+  {
+    processId: z
+      .string()
+      .describe("Process id returned by start_app or attach"),
   },
   async ({ processId }) => {
     try {
@@ -101,6 +215,7 @@ server.tool(
       if (!stopped) {
         return textResult(`Process not found: ${processId}`, true);
       }
+      await notifyResourceListChanged();
       return textResult({ processId, status: "stopped" });
     } catch (err) {
       return textResult(
@@ -113,15 +228,36 @@ server.tool(
 
 server.tool(
   "list_apps",
-  "List Electron applications managed by this server",
+  "List Electron applications managed or attached by this server",
   async () => textResult({ processes: listProcesses() })
+);
+
+server.tool(
+  "diagnose",
+  "Summarize process health: debug port reachability, target roles (page/worker/browser), recent console errors, and discovered local debug ports",
+  {
+    processId: z
+      .string()
+      .optional()
+      .describe("Optional process id; omit to diagnose all managed processes"),
+  },
+  async ({ processId }) => {
+    try {
+      return textResult(await diagnoseProcess(processId));
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
 );
 
 server.tool(
   "get_logs",
   "Get captured stdout/stderr logs for a managed Electron process",
   {
-    processId: z.string().describe("Process id returned by start_app"),
+    processId: z.string().describe("Process id returned by start_app or attach"),
     tail: z
       .number()
       .int()
@@ -144,8 +280,76 @@ server.tool(
 );
 
 server.tool(
+  "get_console_messages",
+  "Get buffered page console/log/exception messages captured via CDP",
+  {
+    processId: z.string(),
+    tail: z.number().int().positive().optional(),
+    level: z
+      .string()
+      .optional()
+      .describe("Optional filter, e.g. error, warning, log"),
+  },
+  async ({ processId, tail, level }) => {
+    const proc = getProcess(processId);
+    if (!proc) {
+      return textResult(`Process not found: ${processId}`, true);
+    }
+    try {
+      if (proc.status === "running") {
+        await ensureMonitoring(proc);
+      }
+      let messages = proc.consoleMessages;
+      if (level) {
+        messages = messages.filter(
+          (m) => m.level.toLowerCase() === level.toLowerCase()
+        );
+      }
+      if (tail) {
+        messages = messages.slice(-tail);
+      }
+      return textResult({ processId, count: messages.length, messages });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "get_network_log",
+  "Get buffered network request/response events captured via CDP Network domain",
+  {
+    processId: z.string(),
+    tail: z.number().int().positive().optional(),
+  },
+  async ({ processId, tail }) => {
+    const proc = getProcess(processId);
+    if (!proc) {
+      return textResult(`Process not found: ${processId}`, true);
+    }
+    try {
+      if (proc.status === "running") {
+        await ensureMonitoring(proc);
+      }
+      const entries = tail
+        ? proc.networkEntries.slice(-tail)
+        : proc.networkEntries;
+      return textResult({ processId, count: entries.length, entries });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
   "list_targets",
-  "List Chrome DevTools Protocol targets for a process (or all processes)",
+  "List Chrome DevTools Protocol targets with role classification (page/worker/browser/other)",
   {
     processId: z
       .string()
@@ -156,6 +360,7 @@ server.tool(
     try {
       const allTargets: Array<{
         processId: string;
+        role: string;
         target: unknown;
       }> = [];
 
@@ -170,7 +375,18 @@ server.tool(
         try {
           await updateCDPTargets(proc);
           for (const target of proc.targets ?? []) {
-            allTargets.push({ processId: id, target });
+            allTargets.push({
+              processId: id,
+              role:
+                target.type === "page"
+                  ? "page"
+                  : target.type === "worker" || target.type === "service_worker"
+                    ? "worker"
+                    : target.type === "browser"
+                      ? "browser"
+                      : "other",
+              target,
+            });
           }
         } catch (err) {
           log.warn(`Could not update targets for ${id}:`, err);
@@ -189,24 +405,26 @@ server.tool(
 
 server.tool(
   "evaluate",
-  "Evaluate JavaScript in an Electron page/renderer via CDP Runtime.evaluate",
+  "Evaluate JavaScript in an Electron target via CDP Runtime.evaluate. Defaults to the first page/renderer target.",
   {
-    processId: z.string().describe("Process id returned by start_app"),
+    processId: z.string(),
     expression: z.string().describe("JavaScript expression to evaluate"),
-    targetId: z
-      .string()
+    targetId: z.string().optional(),
+    role: z
+      .enum(["page", "worker", "browser", "other"])
       .optional()
-      .describe("Optional CDP target id; defaults to the first page target"),
-    returnByValue: z
-      .boolean()
-      .optional()
-      .describe("Whether to return the result by value (default true)"),
+      .describe("Preferred target role when targetId is omitted (default page)"),
+    returnByValue: z.boolean().optional(),
   },
-  async ({ processId, expression, targetId, returnByValue }) => {
+  async ({ processId, expression, targetId, role, returnByValue }) => {
     try {
       const proc = requireRunningProcess(processId);
       await updateCDPTargets(proc);
-      const target = pickPageTarget(proc, targetId);
+      const target = targetId
+        ? pickPageTarget(proc, targetId, "any")
+        : role
+          ? pickTargetByRole(proc, role)
+          : pickPageTarget(proc);
       const result = await executeCDPCommand(
         proc,
         target.id,
@@ -217,7 +435,145 @@ server.tool(
           awaitPromise: true,
         }
       );
-      return textResult({ processId, targetId: target.id, result });
+      return textResult({
+        processId,
+        targetId: target.id,
+        targetType: target.type,
+        result,
+      });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "screenshot",
+  "Capture a PNG/JPEG screenshot of a page target via Page.captureScreenshot",
+  {
+    processId: z.string(),
+    targetId: z.string().optional(),
+    format: z.enum(["png", "jpeg"]).optional(),
+    quality: z.number().int().min(0).max(100).optional(),
+  },
+  async ({ processId, targetId, format, quality }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      const shot = await captureScreenshot(
+        proc,
+        targetId,
+        format ?? "png",
+        quality
+      );
+      return {
+        content: [
+          {
+            type: "image" as const,
+            data: shot.data,
+            mimeType: shot.mimeType,
+          },
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                processId,
+                targetId: shot.targetId,
+                mimeType: shot.mimeType,
+                bytesBase64: shot.data.length,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "get_dom",
+  "Read documentElement.outerHTML or a specific element's outerHTML",
+  {
+    processId: z.string(),
+    selector: z
+      .string()
+      .optional()
+      .describe("Optional CSS selector; omit for full documentElement.outerHTML"),
+    targetId: z.string().optional(),
+  },
+  async ({ processId, selector, targetId }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      const result = await getOuterHtml(proc, selector, targetId);
+      return textResult({
+        processId,
+        targetId: result.targetId,
+        selector: selector ?? null,
+        html: result.html,
+      });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "query_selector",
+  "Query DOM nodes with document.querySelectorAll and return tag/id/class/text summary",
+  {
+    processId: z.string(),
+    selector: z.string().describe("CSS selector"),
+    targetId: z.string().optional(),
+    limit: z.number().int().positive().max(100).optional(),
+  },
+  async ({ processId, selector, targetId, limit }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      await updateCDPTargets(proc);
+      const target = pickPageTarget(proc, targetId);
+      const max = limit ?? 20;
+      const result = (await executeCDPCommand(
+        proc,
+        target.id,
+        "Runtime.evaluate",
+        {
+          expression: `(() => {
+            const nodes = Array.from(document.querySelectorAll(${JSON.stringify(
+              selector
+            )}));
+            return {
+              count: nodes.length,
+              nodes: nodes.slice(0, ${max}).map((el, index) => ({
+                index,
+                tag: el.tagName.toLowerCase(),
+                id: el.id || null,
+                className: typeof el.className === 'string' ? el.className : null,
+                text: (el.innerText || '').trim().slice(0, 200),
+              })),
+            };
+          })()`,
+          returnByValue: true,
+          awaitPromise: true,
+        }
+      )) as { result?: { value?: unknown } };
+      return textResult({
+        processId,
+        targetId: target.id,
+        selector,
+        result: result.result?.value,
+      });
     } catch (err) {
       return textResult(
         err instanceof Error ? err.message : String(err),
@@ -231,15 +587,9 @@ server.tool(
   "reload",
   "Reload a page target (or all page targets) in an Electron app",
   {
-    processId: z.string().describe("Process id returned by start_app"),
-    targetId: z
-      .string()
-      .optional()
-      .describe("Optional CDP target id; omit to reload all page targets"),
-    ignoreCache: z
-      .boolean()
-      .optional()
-      .describe("If true, reload ignoring cache"),
+    processId: z.string(),
+    targetId: z.string().optional(),
+    ignoreCache: z.boolean().optional(),
   },
   async ({ processId, targetId, ignoreCache }) => {
     try {
@@ -278,11 +628,8 @@ server.tool(
   "pause",
   "Pause JavaScript execution on a target via Debugger.pause",
   {
-    processId: z.string().describe("Process id returned by start_app"),
-    targetId: z
-      .string()
-      .optional()
-      .describe("Optional CDP target id; defaults to the first page target"),
+    processId: z.string(),
+    targetId: z.string().optional(),
   },
   async ({ processId, targetId }) => {
     try {
@@ -311,11 +658,8 @@ server.tool(
   "resume",
   "Resume JavaScript execution on a target via Debugger.resume",
   {
-    processId: z.string().describe("Process id returned by start_app"),
-    targetId: z
-      .string()
-      .optional()
-      .describe("Optional CDP target id; defaults to the first page target"),
+    processId: z.string(),
+    targetId: z.string().optional(),
   },
   async ({ processId, targetId }) => {
     try {
@@ -341,28 +685,19 @@ server.tool(
 
 server.tool(
   "cdp_command",
-  "Execute an arbitrary Chrome DevTools Protocol method on a target",
+  "Execute an arbitrary Chrome DevTools Protocol method on a target (Domain.method)",
   {
-    processId: z.string().describe("Process id returned by start_app"),
+    processId: z.string(),
     method: z
       .string()
       .describe('CDP method name, e.g. "Page.navigate" or "Runtime.evaluate"'),
-    targetId: z
-      .string()
-      .optional()
-      .describe("Optional CDP target id; defaults to the first page target"),
-    params: z
-      .record(z.unknown())
-      .optional()
-      .describe("Optional JSON object of CDP method parameters"),
+    targetId: z.string().optional(),
+    params: z.record(z.unknown()).optional(),
   },
   async ({ processId, method, targetId, params }) => {
     try {
       if (!method.includes(".")) {
-        return textResult(
-          'CDP method must be in "Domain.method" form',
-          true
-        );
+        return textResult('CDP method must be in "Domain.method" form', true);
       }
       const proc = requireRunningProcess(processId);
       await updateCDPTargets(proc);
@@ -388,7 +723,57 @@ server.tool(
   }
 );
 
-// --- Resources (read-only inspection) ---
+// --- Prompts ---
+
+server.prompt(
+  "debug_blank_window",
+  "Workflow for diagnosing a blank or white Electron window",
+  {
+    processId: z.string().describe("Managed process id from start_app or attach"),
+  },
+  async ({ processId }) => ({
+    messages: [
+      {
+        role: "user",
+        content: {
+          type: "text",
+          text: `Diagnose a blank/white Electron window for process ${processId}.
+1. Call diagnose with this processId.
+2. Call list_targets and identify page targets.
+3. Call get_console_messages (level=error) and get_logs.
+4. Call screenshot to see the current UI.
+5. Call get_dom / query_selector to inspect #root/app containers.
+6. Summarize likely causes (renderer crash, failed load URL, CSP, route error) and next fixes.`,
+        },
+      },
+    ],
+  })
+);
+
+server.prompt(
+  "find_renderer_exception",
+  "Workflow for finding renderer exceptions and console errors",
+  {
+    processId: z.string(),
+  },
+  async ({ processId }) => ({
+    messages: [
+      {
+        role: "user",
+        content: {
+          type: "text",
+          text: `Find renderer exceptions for process ${processId}.
+1. ensure monitoring by calling get_console_messages.
+2. Filter errors/exceptions; if empty, evaluate a canary then reproduce the user bug.
+3. Use get_network_log for failed requests.
+4. Report stack/text, targetId, and suggested fix.`,
+        },
+      },
+    ],
+  })
+);
+
+// --- Resources ---
 
 server.resource(
   "info",
@@ -513,6 +898,39 @@ server.resource(
 );
 
 server.resource(
+  "console",
+  new ResourceTemplate("electron://console/{id}", {
+    list: async () => ({
+      resources: listProcesses().map((proc) => ({
+        uri: `electron://console/${proc.id}`,
+        name: `Console: ${proc.name}`,
+        description: `Buffered console messages for ${proc.name}`,
+        mimeType: "application/json",
+      })),
+    }),
+  }),
+  {
+    description: "Buffered console/exception messages",
+    mimeType: "application/json",
+  },
+  async (uri, { id }) => {
+    const proc = getProcess(String(id));
+    if (!proc) {
+      throw new Error(`Process not found: ${id}`);
+    }
+    return {
+      contents: [
+        {
+          uri: uri.href,
+          mimeType: "application/json",
+          text: JSON.stringify(proc.consoleMessages, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+server.resource(
   "cdp-target",
   new ResourceTemplate("electron://cdp/{processId}/{targetId}", {
     list: async () => {
@@ -559,7 +977,7 @@ server.resource(
             {
               processId,
               target,
-              hint: "Use the evaluate, reload, pause, resume, or cdp_command tools to act on this target",
+              hint: "Use evaluate, screenshot, get_dom, get_console_messages, or cdp_command tools",
             },
             null,
             2
