@@ -361,9 +361,12 @@ Launch Electron with remote debugging.
 | `format` | `png` \| `jpeg` | `png` |
 | `quality` | int `0–100` | jpeg only |
 
+#### `save_screenshot` — same params plus required `path` (writes file to disk)
+
 #### `get_dom` — `{ processId, selector?, targetId? }`  
 #### `query_selector` — `{ processId, selector, targetId?, limit?=20 }`  
 #### `evaluate` — `{ processId, expression, targetId?, role?=page, returnByValue?=true }`  
+#### `evaluate_main` — `{ processId, expression, targetId?, returnByValue?=true }` (use `inspectMain` or a node target)  
 #### `get_console_messages` — `{ processId, tail?, level? }`  
 #### `get_network_log` — `{ processId, tail? }`  
 #### `get_logs` — `{ processId, tail? }`  
@@ -377,9 +380,11 @@ Console capture includes `console.*`, CDP Log entries, and `Runtime.exceptionThr
 ### 🖱️ Interaction & control
 
 #### `navigate` — `{ processId, url, targetId?, waitUntilLoad?=true, timeoutMs?=15000 }`  
-#### `wait_for` — at least one of `selector` | `text` | `urlIncludes` | `consoleIncludes` (+ `timeoutMs?=10000`)  
+#### `wait_for` — at least one of `selector` | `hidden` | `enabled` | `countSelector`+`minCount` | `text` | `urlIncludes` | `consoleIncludes` (+ `timeoutMs?=10000`, `screenshotOnTimeout?`)  
 #### `click` — `{ processId, selector, targetId?, button?=left }`  
 #### `type_text` — `{ processId, text, selector?, clear?, pressEnter?, targetId? }`  
+#### `press_key` — `{ processId, key, selector?, modifiers?, repeat?, targetId? }`  
+#### `set_console_live` — `{ enabled }` (stream console as MCP logs; errors always notify)  
 #### `reload` — `{ processId, targetId?, ignoreCache?=false }`  
 #### `pause` / `resume` — `{ processId, targetId? }`  
 #### `clear_buffers` — `{ processId, console?=true, network?=true, logs?=false }`  
