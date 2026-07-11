@@ -1129,3 +1129,297 @@ export function pickTargetByRole(
   }
   return match;
 }
+
+export function clearProcessBuffers(
+  electronProcess: ElectronProcess,
+  what: Array<"console" | "network" | "logs"> = ["console", "network", "logs"]
+): { cleared: string[] } {
+  const cleared: string[] = [];
+  if (what.includes("console")) {
+    electronProcess.consoleMessages = [];
+    cleared.push("console");
+  }
+  if (what.includes("network")) {
+    electronProcess.networkEntries = [];
+    cleared.push("network");
+  }
+  if (what.includes("logs")) {
+    electronProcess.logs = [];
+    cleared.push("logs");
+  }
+  return { cleared };
+}
+
+async function evalValue(
+  electronProcess: ElectronProcess,
+  targetId: string,
+  expression: string
+): Promise<unknown> {
+  const result = (await executeCDPCommand(
+    electronProcess,
+    targetId,
+    "Runtime.evaluate",
+    {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+    }
+  )) as { result?: { value?: unknown; subtype?: string; description?: string } };
+  if (result.result?.subtype === "error") {
+    throw new Error(result.result.description || "evaluate error");
+  }
+  return result.result?.value;
+}
+
+export async function getPageInfo(
+  electronProcess: ElectronProcess,
+  targetId?: string
+): Promise<{
+  targetId: string;
+  url: string;
+  title: string;
+  readyState: string;
+  userAgent: string;
+}> {
+  await updateCDPTargets(electronProcess);
+  const target = pickPageTarget(electronProcess, targetId);
+  const info = (await evalValue(
+    electronProcess,
+    target.id,
+    `({
+      url: location.href,
+      title: document.title,
+      readyState: document.readyState,
+      userAgent: navigator.userAgent
+    })`
+  )) as {
+    url: string;
+    title: string;
+    readyState: string;
+    userAgent: string;
+  };
+  return { targetId: target.id, ...info };
+}
+
+export async function navigatePage(
+  electronProcess: ElectronProcess,
+  url: string,
+  targetId?: string,
+  waitUntilLoad = true,
+  timeoutMs = 15000
+): Promise<{ targetId: string; url: string; title: string }> {
+  await updateCDPTargets(electronProcess);
+  const target = pickPageTarget(electronProcess, targetId);
+  await executeCDPCommand(electronProcess, target.id, "Page.enable", {});
+  await executeCDPCommand(electronProcess, target.id, "Page.navigate", { url });
+
+  if (waitUntilLoad) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const ready = await evalValue(
+        electronProcess,
+        target.id,
+        "document.readyState"
+      );
+      if (ready === "complete" || ready === "interactive") {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  }
+
+  const info = await getPageInfo(electronProcess, target.id);
+  return { targetId: target.id, url: info.url, title: info.title };
+}
+
+async function elementCenter(
+  electronProcess: ElectronProcess,
+  targetId: string,
+  selector: string
+): Promise<{ x: number; y: number }> {
+  const box = (await evalValue(
+    electronProcess,
+    targetId,
+    `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return null;
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`
+  )) as { x: number; y: number } | null;
+
+  if (!box) {
+    throw new Error(`No visible element for selector: ${selector}`);
+  }
+  return box;
+}
+
+export async function clickSelector(
+  electronProcess: ElectronProcess,
+  selector: string,
+  targetId?: string,
+  button: "left" | "right" | "middle" = "left"
+): Promise<{ targetId: string; selector: string; x: number; y: number }> {
+  await updateCDPTargets(electronProcess);
+  const target = pickPageTarget(electronProcess, targetId);
+  const { x, y } = await elementCenter(electronProcess, target.id, selector);
+  const btn = button === "right" ? "right" : button === "middle" ? "middle" : "left";
+
+  await executeCDPCommand(electronProcess, target.id, "Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x,
+    y,
+    button: btn,
+    clickCount: 1,
+  });
+  await executeCDPCommand(electronProcess, target.id, "Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x,
+    y,
+    button: btn,
+    clickCount: 1,
+  });
+
+  return { targetId: target.id, selector, x, y };
+}
+
+export async function typeText(
+  electronProcess: ElectronProcess,
+  text: string,
+  options: {
+    selector?: string;
+    targetId?: string;
+    clear?: boolean;
+    pressEnter?: boolean;
+  } = {}
+): Promise<{ targetId: string; typed: string }> {
+  await updateCDPTargets(electronProcess);
+  const target = pickPageTarget(electronProcess, options.targetId);
+
+  if (options.selector) {
+    await clickSelector(electronProcess, options.selector, target.id);
+    if (options.clear) {
+      await evalValue(
+        electronProcess,
+        target.id,
+        `(() => {
+          const el = document.querySelector(${JSON.stringify(options.selector)});
+          if (!el) return false;
+          if ('value' in el) el.value = '';
+          el.textContent = '';
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          return true;
+        })()`
+      );
+    }
+  }
+
+  await executeCDPCommand(electronProcess, target.id, "Input.insertText", {
+    text,
+  });
+
+  if (options.pressEnter) {
+    await executeCDPCommand(electronProcess, target.id, "Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key: "Enter",
+      code: "Enter",
+      windowsVirtualKeyCode: 13,
+    });
+    await executeCDPCommand(electronProcess, target.id, "Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: "Enter",
+      code: "Enter",
+      windowsVirtualKeyCode: 13,
+    });
+  }
+
+  return { targetId: target.id, typed: text };
+}
+
+export async function waitForCondition(
+  electronProcess: ElectronProcess,
+  options: {
+    selector?: string;
+    text?: string;
+    urlIncludes?: string;
+    consoleIncludes?: string;
+    timeoutMs?: number;
+    targetId?: string;
+  }
+): Promise<{
+  targetId: string;
+  matched: string;
+  elapsedMs: number;
+}> {
+  const timeoutMs = options.timeoutMs ?? 10000;
+  await updateCDPTargets(electronProcess);
+  const target = pickPageTarget(electronProcess, options.targetId);
+  const started = Date.now();
+
+  while (Date.now() - started < timeoutMs) {
+    if (options.selector) {
+      const found = await evalValue(
+        electronProcess,
+        target.id,
+        `!!document.querySelector(${JSON.stringify(options.selector)})`
+      );
+      if (found) {
+        return {
+          targetId: target.id,
+          matched: `selector:${options.selector}`,
+          elapsedMs: Date.now() - started,
+        };
+      }
+    }
+
+    if (options.text) {
+      const found = await evalValue(
+        electronProcess,
+        target.id,
+        `document.body && document.body.innerText.includes(${JSON.stringify(
+          options.text
+        )})`
+      );
+      if (found) {
+        return {
+          targetId: target.id,
+          matched: `text:${options.text}`,
+          elapsedMs: Date.now() - started,
+        };
+      }
+    }
+
+    if (options.urlIncludes) {
+      const url = String(
+        (await evalValue(electronProcess, target.id, "location.href")) ?? ""
+      );
+      if (url.includes(options.urlIncludes)) {
+        return {
+          targetId: target.id,
+          matched: `url:${options.urlIncludes}`,
+          elapsedMs: Date.now() - started,
+        };
+      }
+    }
+
+    if (options.consoleIncludes) {
+      const hit = electronProcess.consoleMessages.some((m) =>
+        m.text.includes(options.consoleIncludes!)
+      );
+      if (hit) {
+        return {
+          targetId: target.id,
+          matched: `console:${options.consoleIncludes}`,
+          elapsedMs: Date.now() - started,
+        };
+      }
+    }
+
+    await new Promise((r) => setTimeout(r, 150));
+  }
+
+  throw new Error(
+    `wait_for timed out after ${timeoutMs}ms (selector=${options.selector ?? "-"}, text=${options.text ?? "-"}, urlIncludes=${options.urlIncludes ?? "-"}, consoleIncludes=${options.consoleIncludes ?? "-"})`
+  );
+}
