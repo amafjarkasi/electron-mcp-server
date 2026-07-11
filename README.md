@@ -5,24 +5,80 @@
 <h1 align="center">Electron Debug MCP</h1>
 
 <p align="center">
-  <strong>Give AI agents eyes, hands, and DevTools inside your Electron app.</strong><br/>
-  <em>Model Context Protocol server · Chrome DevTools Protocol · Cursor-ready</em>
+  <strong>An MCP server that lets AI agents launch, attach to, inspect, and drive Electron apps through the Chrome DevTools Protocol.</strong>
 </p>
 
 <p align="center">
   <a href="#-quick-start"><img src="https://img.shields.io/badge/Quick%20Start-0F766E?style=for-the-badge" alt="Quick Start" /></a>
-  <a href="#-tools-reference"><img src="https://img.shields.io/badge/Tools-22-47848F?style=for-the-badge" alt="22 Tools" /></a>
-  <a href="#-cursor--claude-desktop-setup"><img src="https://img.shields.io/badge/Cursor-Ready-3178C6?style=for-the-badge" alt="Cursor Ready" /></a>
+  <a href="#-tools-reference"><img src="https://img.shields.io/badge/22%20Tools-47848F?style=for-the-badge" alt="22 Tools" /></a>
+  <a href="#-resources-read-only"><img src="https://img.shields.io/badge/6%20Resources-0EA5E9?style=for-the-badge" alt="6 Resources" /></a>
+  <a href="#-cursor--claude-desktop-setup"><img src="https://img.shields.io/badge/Cursor%20%2B%20Claude-3178C6?style=for-the-badge" alt="Cursor + Claude" /></a>
   <a href="#-license"><img src="https://img.shields.io/badge/License-ISC-F59E0B?style=for-the-badge" alt="ISC License" /></a>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/MCP-stdio-0F766E?style=flat-square" alt="MCP stdio" />
-  <img src="https://img.shields.io/badge/Electron-CDP-47848F?style=flat-square&logo=electron&logoColor=white" alt="Electron CDP" />
-  <img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/Node-%3E%3D18-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node 18+" />
+  <img src="https://img.shields.io/badge/MCP-stdio%20JSON--RPC-0F766E?style=flat-square" alt="MCP stdio" />
+  <img src="https://img.shields.io/badge/Protocol-Chrome%20DevTools%20(CDP)-47848F?style=flat-square&logo=googlechrome&logoColor=white" alt="CDP" />
+  <img src="https://img.shields.io/badge/Runtime-Electron%20%2B%20Node%20%3E%3D%2018-339933?style=flat-square&logo=electron&logoColor=white" alt="Electron Node" />
+  <img src="https://img.shields.io/badge/Language-TypeScript%205.x-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" />
   <img src="https://img.shields.io/badge/version-1.2.0-blue?style=flat-square" alt="v1.2.0" />
+  <img src="https://img.shields.io/badge/tests-unit%20%2B%20e2e%20smoke-8B5CF6?style=flat-square" alt="tests" />
 </p>
+
+---
+
+### What this is
+
+**Electron Debug MCP** is a local [Model Context Protocol](https://modelcontextprotocol.io/) server for **Cursor**, **Claude Desktop**, and any MCP client that speaks **stdio**.
+
+It sits between the agent and your Electron app and exposes real debugger capabilities as tools:
+
+| Area | What the agent can do |
+| --- | --- |
+| 🚀 **Lifecycle** | `start_app`, `attach`, `discover_apps`, `stop_app`, `list_apps`, `diagnose` |
+| 🔍 **Inspect** | screenshots, DOM, `evaluate`, console errors/exceptions, network log, process logs, targets |
+| 🖱️ **Interact** | `navigate`, `wait_for`, `click`, `type_text`, `reload`, `pause` / `resume` |
+| 🧰 **Escape hatch** | raw `cdp_command` for any `Domain.method` DevTools call |
+| 📦 **Read-only context** | resources like `electron://info`, `electron://console/{id}`, `electron://logs/{id}` |
+| 🧭 **Guided flows** | prompts for blank windows, renderer exceptions, and UI smoke checks |
+
+Under the hood it uses **Chrome DevTools Protocol** (`--remote-debugging-port`) via `chrome-remote-interface`, keeps page targets monitored so console/network events buffer between tool calls, and writes diagnostics to **stderr only** so MCP JSON-RPC on stdout stays clean.
+
+### Who it’s for
+
+- **Cursor / Claude users** debugging Electron desktop apps with an AI pair-programmer
+- **Electron maintainers** who want agents to *see* blank windows, failed fetches, and renderer exceptions instead of guessing from source
+- **Tooling authors** who need a stdio MCP bridge into CDP for Electron (and other Chromium targets that expose remote debugging)
+
+### What you get in practice
+
+Ask the agent things like:
+
+- “Start my app and tell me if the renderer threw on boot.”
+- “Attach to port 9222, screenshot the window, and dump `#root`.”
+- “Type into `#email`, click Submit, wait for Welcome, and report console errors.”
+- “Diagnose why this window is white.”
+
+…and it can do that through tools instead of asking you to paste DevTools output.
+
+### At a glance
+
+| | |
+| --- | --- |
+| **Transport** | MCP over **stdio** (Cursor / Claude Desktop compatible) |
+| **Debug bridge** | Chrome DevTools Protocol (Runtime, Page, Network, Debugger, Input, Log, …) |
+| **App control** | Spawn Electron *or* attach to an existing `--remote-debugging-port` |
+| **Surface area** | **22 tools** · **6 resources** · **3 prompts** · logging + list-changed notifications |
+| **Platforms** | Windows · macOS · Linux (CI uses Xvfb + `ELECTRON_MCP_NO_SANDBOX`) |
+| **Requirements** | Node **≥ 18**, npm, network once to download the Electron binary |
+| **Safety defaults** | Optional `ELECTRON_MCP_ALLOWED_ROOTS` path allowlist; attached sessions are detach-only on stop |
+| **Verify install** | `npm test` runs unit helpers + a full MCP↔Electron smoke suite |
+
+### Status
+
+✅ Actively usable for local agent-driven Electron debugging  
+✅ End-to-end smoke tested (`start` → evaluate/console/DOM/click/type → `attach` → `stop`)  
+✅ Windows Electron binary recovery via `scripts/fix-electron.cmd` when npm blocks install scripts
 
 ---
 
