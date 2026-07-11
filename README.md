@@ -1,63 +1,106 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="Electron Debug MCP logo" width="128" height="128" />
+  <img src="assets/logo.svg" alt="Electron Debug MCP logo" width="140" height="140" />
 </p>
 
 <h1 align="center">Electron Debug MCP</h1>
 
 <p align="center">
-  <strong>Debug Electron apps from Cursor (and any MCP client) via Chrome DevTools Protocol.</strong>
+  <strong>Give AI agents eyes, hands, and DevTools inside your Electron app.</strong><br/>
+  <em>Model Context Protocol server · Chrome DevTools Protocol · Cursor-ready</em>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/MCP-Model%20Context%20Protocol-0F766E?style=for-the-badge" alt="MCP" />
-  <img src="https://img.shields.io/badge/Electron-CDP-47848F?style=for-the-badge&logo=electron&logoColor=white" alt="Electron" />
-  <img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/License-ISC-F59E0B?style=for-the-badge" alt="License" />
+  <a href="#-quick-start"><img src="https://img.shields.io/badge/Quick%20Start-0F766E?style=for-the-badge" alt="Quick Start" /></a>
+  <a href="#-tools-reference"><img src="https://img.shields.io/badge/Tools-22-47848F?style=for-the-badge" alt="22 Tools" /></a>
+  <a href="#-cursor--claude-desktop-setup"><img src="https://img.shields.io/badge/Cursor-Ready-3178C6?style=for-the-badge" alt="Cursor Ready" /></a>
+  <a href="#-license"><img src="https://img.shields.io/badge/License-ISC-F59E0B?style=for-the-badge" alt="ISC License" /></a>
 </p>
 
 <p align="center">
-  Start or attach to Electron · capture screenshots · read console errors · inspect the DOM · run CDP commands — all as MCP tools.
+  <img src="https://img.shields.io/badge/MCP-stdio-0F766E?style=flat-square" alt="MCP stdio" />
+  <img src="https://img.shields.io/badge/Electron-CDP-47848F?style=flat-square&logo=electron&logoColor=white" alt="Electron CDP" />
+  <img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/Node-%3E%3D18-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node 18+" />
+  <img src="https://img.shields.io/badge/version-1.2.0-blue?style=flat-square" alt="v1.2.0" />
 </p>
+
+---
+
+## 📖 Table of contents
+
+- [Why this exists](#-why-this-exists)
+- [Feature overview](#-feature-overview)
+- [Quick start](#-quick-start)
+- [Cursor / Claude Desktop setup](#-cursor--claude-desktop-setup)
+- [How it works](#-how-it-works)
+- [Tools reference](#-tools-reference)
+- [Resources](#-resources-read-only)
+- [Prompts](#-prompts)
+- [Recipes & workflows](#-recipes--workflows)
+- [Configuration](#-configuration)
+- [npm scripts](#-npm-scripts)
+- [Testing](#-testing)
+- [Project layout](#-project-layout)
+- [Security notes](#-security-notes)
+- [Troubleshooting](#-troubleshooting)
+- [Contributing](#-contributing)
+- [License](#-license)
 
 ---
 
 ## ✨ Why this exists
 
-Electron bugs are often invisible to an AI assistant: blank windows, silent renderer exceptions, failed network calls, wrong DOM state. This server bridges that gap.
+Electron bugs are often invisible to coding agents:
 
-| Without this server | With Electron Debug MCP |
-| --- | --- |
-| Guess from source code alone | See live `document.title`, DOM, screenshots |
-| No access to DevTools | Full CDP: evaluate, pause, reload, network |
-| Can't see `console.error` | Buffered console + exception capture |
-| Manual copy/paste from DevTools | Ask the agent to `diagnose` / `screenshot` |
+| Pain | What agents usually see | What this server adds |
+| --- | --- | --- |
+| ⬜ Blank / white window | Source files only | Live **screenshot** + DOM |
+| 💥 Silent renderer crash | Nothing | **Console + exception** buffer |
+| 🌐 Failed API calls | Guesswork | **Network** event log |
+| 🧭 Wrong route / URL | Unknown | **page_info** / `evaluate` |
+| 🖱️ UI not responding | Can't interact | **click** / **type_text** / **wait_for** |
+| 🔧 Need DevTools power | Manual only | Full **cdp_command** escape hatch |
 
----
-
-## 🚀 Features
-
-### 🔌 Process control
-- **Start** Electron apps with `--remote-debugging-port`
-- **Attach** to apps you already launched
-- **Discover** local debug ports (`9222+`)
-- **Stop** owned processes (or detach attached sessions)
-
-### 🩺 Live inspection
-- **Screenshots** (`Page.captureScreenshot`) as MCP image content
-- **DOM** snapshots + `querySelectorAll` summaries
-- **Console** buffer (`log` / `warn` / `error` / exceptions)
-- **Network** request/response buffer
-- **Stdout/stderr** process logs
-
-### 🧠 Agent-friendly UX
-- `diagnose` — one-shot health report (port, targets, recent errors)
-- Prompts: `debug_blank_window`, `find_renderer_exception`
-- Target roles: `page` / `worker` / `browser`
-- Stdio-safe logging (diagnostics go to **stderr** only)
+Electron Debug MCP is a stdio MCP server that launches or attaches to Electron, speaks Chrome DevTools Protocol, and exposes that power as tools an agent can call.
 
 ---
 
-## 📦 Install
+## 🚀 Feature overview
+
+### 🔌 Lifecycle
+- Start Electron with `--remote-debugging-port`
+- Attach to an already-running debug port
+- Discover local CDP ports in a range
+- Stop owned processes or detach attached sessions
+- List managed sessions with status / ports / buffer counts
+
+### 🩺 Inspection
+- Screenshots (PNG/JPEG) as MCP image content
+- DOM `outerHTML` and `querySelectorAll` summaries
+- JS evaluation in page / worker / browser targets
+- Buffered console (`log`/`warn`/`error`) + uncaught exceptions
+- Buffered network request/response/failure events
+- Process stdout/stderr capture
+- One-shot `diagnose` health report
+
+### 🖱️ Interaction
+- Navigate + wait for load
+- Wait for selector / text / URL / console match
+- Click elements (left/right/middle)
+- Type into inputs (clear + optional Enter)
+- Reload / debugger pause / resume
+- Clear console/network/log buffers
+
+### 🧠 Agent UX
+- MCP `instructions` baked into the server handshake
+- Prompts: blank-window debug, renderer exceptions, UI smoke check
+- Target role awareness: `page` · `worker` · `browser`
+- Resource list-changed + logging notifications
+- Stdio-safe: all diagnostics go to **stderr**
+
+---
+
+## 🏁 Quick start
 
 ```bash
 git clone https://github.com/amafjarkasi/electron-mcp-server.git
@@ -65,28 +108,30 @@ cd electron-mcp-server
 npm install
 npm run ensure-electron
 npm run build
+npm test
 ```
 
-### Windows note
+### Windows (if Electron binary is missing)
 
-If `npm install` warns about `allowScripts` / Electron postinstall, the binary may be missing. Fix with:
+npm may block Electron’s postinstall (`allowScripts`). Use the repair script:
 
 ```bat
 .\scripts\fix-electron.cmd
 ```
 
-Or manually:
-
-```powershell
-npm run ensure-electron
-npm test
-```
+This reinstalls Electron, downloads the real `electron.exe` (via system `tar`), then runs the full test suite.
 
 ---
 
-## ⚙️ Cursor setup
+## ⚙️ Cursor / Claude Desktop setup
 
-Add to your Cursor MCP config (path adjusted to your clone):
+### Cursor
+
+1. Build this repo (`npm run build`).
+2. Open Cursor MCP settings.
+3. Add a server entry (path must be absolute):
+
+**Windows**
 
 ```json
 {
@@ -99,252 +144,538 @@ Add to your Cursor MCP config (path adjusted to your clone):
 }
 ```
 
-macOS / Linux example:
+**macOS / Linux**
 
 ```json
 {
   "mcpServers": {
     "electron-debug": {
       "command": "node",
-      "args": ["/Users/you/code/electron-mcp-server/build/index.js"]
+      "args": ["/Users/you/code/electron-mcp-server/build/index.js"],
+      "env": {
+        "ELECTRON_MCP_NO_SANDBOX": "1"
+      }
     }
   }
 }
 ```
 
-Then **restart Cursor**. You should see tools like `start_app`, `attach`, `screenshot`, `get_console_messages`.
+4. Restart Cursor.
+5. Confirm tools appear: `start_app`, `attach`, `screenshot`, `get_console_messages`, `click`, …
 
-> ⚠️ Do **not** run `node build/index.js` in a normal terminal for day-to-day use — it waits on stdio for an MCP client. Let Cursor launch it.
+A ready-made template lives at [`examples/cursor-mcp.json`](./examples/cursor-mcp.json).
+
+### Claude Desktop
+
+Same shape — add under `mcpServers` in `claude_desktop_config.json`, pointing `args` at `build/index.js`.
+
+> ⚠️ **Do not** run `node build/index.js` in a normal terminal for daily use. It blocks on stdio waiting for an MCP client. Let Cursor/Claude launch it.
 
 ---
 
-## 🛠️ Tools
+## 🧩 How it works
+
+```text
+┌──────────────────────┐     stdio JSON-RPC      ┌─────────────────────────┐
+│  Cursor / MCP client │ ◄─────────────────────► │  Electron Debug MCP     │
+└──────────────────────┘                         │  tools · resources ·    │
+                                                 │  prompts · logging      │
+                                                 └───────────┬─────────────┘
+                                                             │
+                                              spawn / attach │ CDP (Runtime,
+                                                             │ Page, Network,
+                                                             │ Debugger, Input)
+                                                             ▼
+                                                 ┌─────────────────────────┐
+                                                 │  Electron app           │
+                                                 │  --remote-debugging-port│
+                                                 └─────────────────────────┘
+```
+
+| Layer | Role |
+| --- | --- |
+| **Tools** | Actions: start, evaluate, screenshot, click, … |
+| **Resources** | Read-only snapshots: info, logs, console, targets |
+| **Prompts** | Packaged debug workflows for the model |
+| **Monitoring** | Persistent CDP sessions buffer console + network between tool calls |
+| **Logging** | Server diagnostics → **stderr** only (stdout stays clean JSON-RPC) |
+
+After `start_app` / `attach`, the server enables `Runtime`, `Log`, `Network`, and `Page` on page targets so console/network events accumulate automatically.
+
+---
+
+## 🛠️ Tools reference
+
+All mutating/inspection APIs are MCP **tools**. Parameters below match the live Zod schemas.
 
 ### Lifecycle
 
-| Tool | What it does |
-| --- | --- |
-| `start_app` | Launch an Electron app with remote debugging |
-| `attach` | Connect to an existing `--remote-debugging-port` |
-| `discover_apps` | Scan local ports for CDP endpoints |
-| `stop_app` | Kill a started app, or detach an attached session |
-| `list_apps` | List managed / attached processes |
-| `diagnose` | Port reachability, target roles, recent console errors |
+#### `start_app`
+Launch an Electron application with remote debugging enabled.
 
-### Inspection
+| Param | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `appPath` | string | ✅ | — | Path to app directory or main script |
+| `debugPort` | int `1024–65535` | ❌ | random `9222–9999` | CDP port |
+| `extraArgs` | string[] | ❌ | `[]` | Extra Electron CLI flags (e.g. `["--no-sandbox"]`) |
 
-| Tool | What it does |
-| --- | --- |
-| `screenshot` | PNG/JPEG screenshot of a page target |
-| `get_dom` | `outerHTML` for `documentElement` or a CSS selector |
-| `query_selector` | Summarize matches from `querySelectorAll` |
-| `evaluate` | Run JS via `Runtime.evaluate` |
-| `get_console_messages` | Buffered console + exceptions (filter by `level`) |
-| `get_network_log` | Buffered Network domain events |
-| `get_logs` | Captured Electron stdout/stderr |
-| `list_targets` | CDP targets with role classification |
+**Also auto-adds** `--remote-debugging-port`, `--enable-logging`, `--disable-gpu`, and optionally `--no-sandbox` when `ELECTRON_MCP_NO_SANDBOX=1`, `CI=true`, or `DISPLAY` is unset.
 
-### Control
-
-| Tool | What it does |
-| --- | --- |
-| `reload` | `Page.reload` (one target or all pages) |
-| `pause` / `resume` | `Debugger.pause` / `Debugger.resume` |
-| `navigate` | `Page.navigate` + optional load wait |
-| `wait_for` | Wait for selector / text / URL / console match |
-| `click` | Click a CSS selector via CDP mouse events |
-| `type_text` | Type into focused/selected input |
-| `page_info` | URL, title, readyState, userAgent |
-| `clear_buffers` | Clear console / network / log buffers |
-| `cdp_command` | Any raw `Domain.method` CDP call |
+**Returns:** `id`, `name`, `status`, `pid`, `debugPort`, `appPath`, `targets`, `attached: false`
 
 ---
 
-## 📚 Usage examples
+#### `attach`
+Attach to an Electron/Chromium instance already listening for DevTools.
 
-### 1) Start your app and read the title
+| Param | Type | Required | Description |
+| --- | --- | --- | --- |
+| `debugPort` | int | ✅ | Existing remote debugging port |
+| `name` | string | ❌ | Friendly session name |
 
-**Tool:** `start_app`
+**Returns:** session `id`, `attached: true`, current `targets`  
+**Note:** `stop_app` on an attached session **detaches bookkeeping only** — it does not kill the external app.
 
-```json
-{
-  "appPath": "D:/apps/my-electron-app",
-  "debugPort": 9222,
-  "extraArgs": ["--no-sandbox"]
-}
-```
+---
 
-**Tool:** `evaluate`
+#### `discover_apps`
+Scan localhost for CDP endpoints.
 
-```json
-{
-  "processId": "electron-1710000000000",
-  "expression": "document.title"
-}
-```
+| Param | Type | Required | Default |
+| --- | --- | --- | --- |
+| `startPort` | int | ❌ | `9222` |
+| `endPort` | int | ❌ | `9235` |
 
-### 2) Attach to an app you already started
+**Returns:** `{ found: [{ port, version, targetCount }, ...] }`
 
-Launch Electron yourself:
+---
 
-```bash
-electron . --remote-debugging-port=9222
-```
+#### `stop_app`
 
-**Tool:** `attach`
+| Param | Type | Required | Description |
+| --- | --- | --- | --- |
+| `processId` | string | ✅ | Id from `start_app` or `attach` |
 
-```json
-{
-  "debugPort": 9222,
-  "name": "my-app"
-}
-```
+Started apps are terminated (Windows uses process-tree kill). Attached sessions are detached.
 
-### 3) Catch console errors
+---
 
-**Tool:** `get_console_messages`
+#### `list_apps`
+No parameters. Returns managed sessions with `status`, `attached`, `debugPort`, `targetCount`, `consoleCount`, `networkCount`, etc.
 
-```json
-{
-  "processId": "electron-1710000000000",
-  "level": "error",
-  "tail": 50
-}
-```
+---
 
-Also available as resource: `electron://console/{processId}`
+#### `diagnose`
+One-shot health report.
 
-### 4) Screenshot a blank / white window
+| Param | Type | Required | Description |
+| --- | --- | --- | --- |
+| `processId` | string | ❌ | Omit to diagnose **all** sessions |
 
-**Tool:** `screenshot`
+**Includes:** debug-port reachability, target role counts, recent console errors, monitoring target ids, discovered local ports, actionable `hints`.
 
-```json
-{
-  "processId": "electron-1710000000000",
-  "format": "png"
-}
-```
+---
 
-Then inspect:
+### Inspection
 
-```json
-{
-  "processId": "electron-1710000000000",
-  "selector": "#root"
-}
-```
+#### `screenshot`
 
-(`get_dom`)
+| Param | Type | Required | Default |
+| --- | --- | --- | --- |
+| `processId` | string | ✅ | — |
+| `targetId` | string | ❌ | first page target |
+| `format` | `"png"` \| `"jpeg"` | ❌ | `"png"` |
+| `quality` | int `0–100` | ❌ | — (jpeg only) |
 
-### 5) One-shot diagnosis
+**Returns:** MCP `image` content + JSON metadata.
 
-**Tool:** `diagnose`
+---
 
-```json
-{
-  "processId": "electron-1710000000000"
-}
-```
+#### `get_dom`
 
-Returns debug-port health, page/worker/browser target counts, monitoring status, and recent console errors.
+| Param | Type | Required | Description |
+| --- | --- | --- | --- |
+| `processId` | string | ✅ | — |
+| `selector` | string | ❌ | CSS selector; omit for `documentElement.outerHTML` |
+| `targetId` | string | ❌ | — |
 
-### 6) Raw CDP when you need full power
+---
 
-**Tool:** `cdp_command`
+#### `query_selector`
 
-```json
-{
-  "processId": "electron-1710000000000",
-  "method": "Page.navigate",
-  "params": { "url": "https://example.com" }
-}
-```
+| Param | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `processId` | string | ✅ | — | — |
+| `selector` | string | ✅ | — | CSS selector |
+| `targetId` | string | ❌ | — | — |
+| `limit` | int `1–100` | ❌ | `20` | Max nodes summarized |
 
-### 7) Typical agent workflow
+**Returns:** `{ count, nodes: [{ tag, id, className, text }] }`
 
-1. `discover_apps` or `start_app` / `attach`
-2. `diagnose`
-3. `get_console_messages` with `level: "error"`
-4. `screenshot`
-5. `get_dom` / `evaluate` to confirm root cause
-6. `stop_app` when finished
+---
 
-Built-in prompts (`debug_blank_window`, `find_renderer_exception`, `ui_smoke_check`) encode these flows for the model.
+#### `evaluate`
 
-### 8) Click + type UI automation
+| Param | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `processId` | string | ✅ | — | — |
+| `expression` | string | ✅ | — | JS to run |
+| `targetId` | string | ❌ | — | Explicit CDP target |
+| `role` | `page`\|`worker`\|`browser`\|`other` | ❌ | `page` | Preferred role if no `targetId` |
+| `returnByValue` | boolean | ❌ | `true` | CDP `returnByValue` |
 
-**Tool:** `type_text`
+Uses `Runtime.evaluate` with `awaitPromise: true`.
 
-```json
-{
-  "processId": "electron-1710000000000",
-  "selector": "#email",
-  "text": "ada@example.com",
-  "clear": true
-}
-```
+---
 
-**Tool:** `click`
+#### `get_console_messages`
 
-```json
-{
-  "processId": "electron-1710000000000",
-  "selector": "button[type=submit]"
-}
-```
+| Param | Type | Required | Description |
+| --- | --- | --- | --- |
+| `processId` | string | ✅ | — |
+| `tail` | positive int | ❌ | Last N messages |
+| `level` | string | ❌ | Filter e.g. `error`, `warning`, `log` |
 
-**Tool:** `wait_for`
+Captures `Runtime.consoleAPICalled`, `Runtime.exceptionThrown`, and `Log.entryAdded`.
 
-```json
-{
-  "processId": "electron-1710000000000",
-  "text": "Welcome",
-  "timeoutMs": 8000
-}
-```
+---
 
-### 9) Example Cursor config file
+#### `get_network_log`
 
-See [`examples/cursor-mcp.json`](./examples/cursor-mcp.json) — copy the `electron-debug` entry into your Cursor MCP settings and fix the path.
+| Param | Type | Required | Description |
+| --- | --- | --- | --- |
+| `processId` | string | ✅ | — |
+| `tail` | positive int | ❌ | Last N events |
+
+Events: `request` · `response` · `failed` · `finished` (where applicable).
+
+---
+
+#### `get_logs`
+
+| Param | Type | Required | Description |
+| --- | --- | --- | --- |
+| `processId` | string | ✅ | — |
+| `tail` | positive int | ❌ | Trailing stdout/stderr chunks |
+
+---
+
+#### `list_targets`
+
+| Param | Type | Required | Description |
+| --- | --- | --- | --- |
+| `processId` | string | ❌ | Omit = all running sessions |
+
+Each entry includes `role`: `page` | `worker` | `browser` | `other`.
+
+---
+
+#### `page_info`
+
+| Param | Type | Required |
+| --- | --- | --- |
+| `processId` | string | ✅ |
+| `targetId` | string | ❌ |
+
+**Returns:** `url`, `title`, `readyState`, `userAgent`, `targetId`.
+
+---
+
+### Interaction & control
+
+#### `navigate`
+
+| Param | Type | Required | Default |
+| --- | --- | --- | --- |
+| `processId` | string | ✅ | — |
+| `url` | string | ✅ | — |
+| `targetId` | string | ❌ | — |
+| `waitUntilLoad` | boolean | ❌ | `true` |
+| `timeoutMs` | int ≤ 120000 | ❌ | `15000` |
+
+---
+
+#### `wait_for`
+Provide **at least one** condition:
+
+| Param | Type | Required | Description |
+| --- | --- | --- | --- |
+| `processId` | string | ✅ | — |
+| `selector` | string | ❌ | CSS selector must exist |
+| `text` | string | ❌ | Must appear in `document.body.innerText` |
+| `urlIncludes` | string | ❌ | `location.href` substring |
+| `consoleIncludes` | string | ❌ | Buffered console text substring |
+| `timeoutMs` | int ≤ 120000 | ❌ | default `10000` |
+| `targetId` | string | ❌ | — |
+
+---
+
+#### `click`
+
+| Param | Type | Required | Default |
+| --- | --- | --- | --- |
+| `processId` | string | ✅ | — |
+| `selector` | string | ✅ | — |
+| `targetId` | string | ❌ | — |
+| `button` | `left`\|`right`\|`middle` | ❌ | `left` |
+
+Clicks the center of the element’s bounding rect via `Input.dispatchMouseEvent`.
+
+---
+
+#### `type_text`
+
+| Param | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `processId` | string | ✅ | — | — |
+| `text` | string | ✅ | — | Text to insert |
+| `selector` | string | ❌ | — | Click/focus before typing |
+| `clear` | boolean | ❌ | `false` | Clear field if `selector` set |
+| `pressEnter` | boolean | ❌ | `false` | Send Enter after typing |
+| `targetId` | string | ❌ | — | — |
+
+---
+
+#### `reload`
+
+| Param | Type | Required | Default |
+| --- | --- | --- | --- |
+| `processId` | string | ✅ | — |
+| `targetId` | string | ❌ | all page-like targets |
+| `ignoreCache` | boolean | ❌ | `false` |
+
+---
+
+#### `pause` / `resume`
+
+| Param | Type | Required |
+| --- | --- | --- |
+| `processId` | string | ✅ |
+| `targetId` | string | ❌ |
+
+Enables Debugger domain then pauses/resumes JS execution.
+
+---
+
+#### `clear_buffers`
+
+| Param | Type | Required | Default |
+| --- | --- | --- | --- |
+| `processId` | string | ✅ | — |
+| `console` | boolean | ❌ | `true` |
+| `network` | boolean | ❌ | `true` |
+| `logs` | boolean | ❌ | `false` |
+
+---
+
+#### `cdp_command`
+Raw DevTools escape hatch.
+
+| Param | Type | Required | Description |
+| --- | --- | --- | --- |
+| `processId` | string | ✅ | — |
+| `method` | string | ✅ | Must be `Domain.method` |
+| `targetId` | string | ❌ | — |
+| `params` | object | ❌ | CDP parameters JSON |
+
+Example methods: `Page.navigate`, `Runtime.evaluate`, `DOM.getDocument`, `Network.enable`, `Profiler.start`.
 
 ---
 
 ## 📡 Resources (read-only)
 
-| URI | Description |
-| --- | --- |
-| `electron://info` | Overview of managed processes |
-| `electron://targets` | All CDP targets |
-| `electron://process/{id}` | Process details + target summary |
-| `electron://logs/{id}` | stdout/stderr capture |
-| `electron://console/{id}` | Buffered console / exceptions |
-| `electron://cdp/{processId}/{targetId}` | Target metadata |
+| URI | MIME | Description |
+| --- | --- | --- |
+| `electron://info` | `application/json` | All managed processes |
+| `electron://targets` | `application/json` | All CDP targets across sessions |
+| `electron://process/{id}` | `application/json` | Detailed process + webContents + recent errors |
+| `electron://logs/{id}` | `text/plain` | Captured stdout/stderr |
+| `electron://console/{id}` | `application/json` | Buffered console/exceptions |
+| `electron://cdp/{processId}/{targetId}` | `application/json` | Single target metadata |
+
+Dynamic URIs are advertised via resource templates and refresh when processes start/stop (list-changed notifications).
 
 ---
 
-## 🔐 Environment variables
+## 💬 Prompts
 
-| Variable | Purpose |
-| --- | --- |
-| `ELECTRON_PATH` | Use a specific Electron binary |
-| `ELECTRON_MCP_NO_SANDBOX=1` | Auto-append `--no-sandbox` (CI / containers) |
-| `ELECTRON_MCP_ALLOWED_ROOTS` | `;` or `\|` separated allowlist for `start_app` paths |
-| `ELECTRON_MIRROR` | Alternate download mirror for Electron binaries |
-| `ELECTRON_SKIP_BINARY_DOWNLOAD` | If set in your environment, `ensure-electron` clears it and downloads anyway |
+| Prompt | Args | Purpose |
+| --- | --- | --- |
+| `debug_blank_window` | `processId` | Step-by-step blank/white window diagnosis |
+| `find_renderer_exception` | `processId` | Hunt console/exceptions + failed network |
+| `ui_smoke_check` | `processId`, `selector` | Wait → interact → verify UI path |
+
+Use these from clients that support MCP prompts to steer the model into a proven workflow.
 
 ---
 
-## 🧪 Tests
+## 📚 Recipes & workflows
 
-```bash
-npm test          # ensure-electron + build + unit + e2e smoke
-npm run test:unit
-npm run test:smoke
+### 1) Start app → read title
+
+```json
+// start_app
+{ "appPath": "D:/apps/my-electron-app", "debugPort": 9222 }
+
+// evaluate
+{ "processId": "electron-…", "expression": "document.title" }
 ```
 
-The smoke test speaks real MCP over stdio against `fixtures/minimal-electron-app`:
+### 2) Attach to an app you launched
 
-`initialize` → `start_app` → `evaluate` → console/network/DOM/screenshot → `attach` → `stop_app`
+```bash
+electron . --remote-debugging-port=9222
+```
+
+```json
+// attach
+{ "debugPort": 9222, "name": "my-app" }
+```
+
+### 3) Find console errors
+
+```json
+// get_console_messages
+{ "processId": "electron-…", "level": "error", "tail": 50 }
+```
+
+Or read resource `electron://console/{processId}`.
+
+### 4) Blank window playbook
+
+1. `diagnose`
+2. `list_targets`
+3. `get_console_messages` (`level: "error"`)
+4. `screenshot`
+5. `get_dom` / `query_selector` on `#root` / `#app`
+6. Summarize cause → fix
+
+### 5) UI automation
+
+```json
+// wait_for
+{ "processId": "electron-…", "selector": "#email", "timeoutMs": 8000 }
+
+// type_text
+{ "processId": "electron-…", "selector": "#email", "text": "ada@example.com", "clear": true }
+
+// click
+{ "processId": "electron-…", "selector": "button[type=submit]" }
+
+// wait_for
+{ "processId": "electron-…", "text": "Welcome", "timeoutMs": 8000 }
+```
+
+### 6) Navigate in-app
+
+```json
+// navigate
+{
+  "processId": "electron-…",
+  "url": "file:///path/to/renderer/settings.html",
+  "waitUntilLoad": true,
+  "timeoutMs": 15000
+}
+```
+
+### 7) Raw CDP
+
+```json
+// cdp_command
+{
+  "processId": "electron-…",
+  "method": "Page.captureScreenshot",
+  "params": { "format": "png", "fromSurface": true }
+}
+```
+
+### 8) Recommended agent loop
+
+```text
+discover_apps / start_app / attach
+        → diagnose
+        → get_console_messages(level=error)
+        → screenshot
+        → wait_for (if UI)
+        → click / type_text / evaluate / get_dom
+        → stop_app
+```
+
+---
+
+## 🔐 Configuration
+
+### Environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ELECTRON_PATH` | (auto) | Force a specific Electron binary |
+| `ELECTRON_MCP_NO_SANDBOX` | unset | If `1`, always pass `--no-sandbox` |
+| `ELECTRON_MCP_ALLOWED_ROOTS` | unset | `;` or `\|` separated allowlist for `start_app` paths |
+| `ELECTRON_MIRROR` | unset | Mirror base URL for Electron downloads |
+| `ELECTRON_SKIP_BINARY_DOWNLOAD` | unset | If set externally, `ensure-electron` clears it and still downloads |
+| `ELECTRON_CACHE` / `electron_config_cache` | OS default | Cache dir for Electron zips |
+| `CI` | unset | When `true`, enables no-sandbox auto flag |
+| `DISPLAY` | (Linux) | If unset, no-sandbox auto flag is enabled |
+
+### Auto CLI flags on `start_app`
+
+Always:
+
+- `--remote-debugging-port=<port>`
+- `--enable-logging`
+- `--disable-gpu`
+
+Conditionally:
+
+- `--no-sandbox` when `ELECTRON_MCP_NO_SANDBOX=1` **or** `CI=true` **or** no `DISPLAY`
+- plus any `extraArgs` you pass
+
+### Path allowlisting
+
+```powershell
+$env:ELECTRON_MCP_ALLOWED_ROOTS="D:\apps;D:\GH"
+```
+
+`start_app` will reject paths outside those roots.
+
+---
+
+## 📜 npm scripts
+
+| Script | What it does |
+| --- | --- |
+| `npm run ensure-electron` | Download/repair the Electron binary (`path.txt` + `dist/electron[.exe]`) |
+| `npm run fix-electron` | Alias of `ensure-electron` |
+| `npm run build` | Compile TypeScript → `build/` and chmod the bin entry |
+| `npm start` | Run the MCP server on stdio |
+| `npm run dev` | `build` then `start` |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm test` | `ensure-electron` (pretest) + build + unit + smoke |
+| `npm run test:unit` | Pure helper tests (`node --test`) |
+| `npm run test:smoke` | Full MCP stdio e2e against the fixture app |
+| `postinstall` | Runs `ensure-electron` after `npm install` |
+
+Windows helper scripts (not npm):
+
+| File | Purpose |
+| --- | --- |
+| `scripts/fix-electron.cmd` | Reinstall Electron + ensure binary + `npm test` |
+| `scripts/fix-electron.ps1` | PowerShell variant of the same flow |
+
+---
+
+## 🧪 Testing
+
+```bash
+npm test
+```
+
+Smoke coverage (real Electron + real MCP):
+
+`initialize` → tools/prompts/resources list → `start_app` → targets → evaluate → console → network → DOM → **page_info / type_text / click / wait_for / clear_buffers** → screenshot → diagnose → attach → discover → stop
+
+CI runs the same suite on Ubuntu under Xvfb (see [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)).
 
 ---
 
@@ -353,44 +684,41 @@ The smoke test speaks real MCP over stdio against `fixtures/minimal-electron-app
 ```text
 electron-mcp-server/
 ├── assets/
-│   ├── logo.svg                 # README logo
+│   ├── logo.svg                 # Brand mark (README)
 │   └── logo.png
+├── examples/
+│   └── cursor-mcp.json          # Cursor MCP config template
 ├── fixtures/
-│   └── minimal-electron-app/    # Tiny app used by smoke tests
+│   └── minimal-electron-app/    # Tiny app for smoke tests
 ├── scripts/
-│   ├── ensure-electron.mjs      # Download/repair Electron binary
-│   ├── fix-electron.cmd         # Windows one-shot repair + test
+│   ├── ensure-electron.mjs      # Binary download / repair
+│   ├── fix-electron.cmd         # Windows one-shot repair
 │   └── fix-electron.ps1
 ├── src/
 │   ├── index.ts                 # MCP tools, resources, prompts
-│   ├── process-manager.ts       # Electron + CDP lifecycle
-│   ├── events.ts                # Process / console event bus
-│   └── log.ts                   # stderr-only logger
+│   ├── process-manager.ts       # Electron + CDP lifecycle & automation
+│   ├── events.ts                # Process/console event bus
+│   ├── log.ts                   # stderr-only logger
+│   └── types/                   # Ambient typings
 ├── test/
 │   ├── mcp-smoke.mjs            # End-to-end MCP client
 │   └── unit-helpers.test.mjs
-└── package.json
+├── .github/workflows/ci.yml
+├── package.json
+├── tsconfig.json
+├── LICENSE
+└── README.md
 ```
 
 ---
 
-## 🧩 Architecture (short)
+## 🛡️ Security notes
 
-```text
-Cursor / MCP client
-        │  stdio JSON-RPC
-        ▼
- Electron Debug MCP  ──tools/resources/prompts──►  process-manager
-        │                                              │
-        │                         spawn/attach + CDP   │
-        ▼                                              ▼
-   stderr logs only                          Electron + DevTools port
-                                             (Runtime / Page / Network / Debugger)
-```
-
-- **Tools** mutate / act (start, evaluate, screenshot, …)
-- **Resources** are read-only snapshots
-- **Monitoring sessions** stay connected to page targets to buffer console + network events between tool calls
+- This server can **launch local executables**, **evaluate arbitrary JS** in app contexts, and **read page content**. Treat it as a powerful local debug tool.
+- Prefer `ELECTRON_MCP_ALLOWED_ROOTS` in shared environments.
+- Do not expose the stdio server over an open network transport without auth.
+- Attached mode can inspect any Chromium/Electron instance that enabled remote debugging — only attach to apps you trust.
+- Console/network buffers are held in memory (capped); they may contain secrets from the app under test.
 
 ---
 
@@ -398,30 +726,36 @@ Cursor / MCP client
 
 | Symptom | Fix |
 | --- | --- |
-| `Electron failed to install correctly` | Run `.\scripts\fix-electron.cmd` (Windows) or `npm run ensure-electron` |
-| `path.txt` missing / `dist` only has `locales` | Corrupt unzip/cache — `fix-electron` clears cache and uses system `tar` |
-| Smoke test hangs on a black console window titled **Select** | Windows QuickEdit paused the process — click the window, press `Esc`, disable QuickEdit |
-| No console messages | Call `get_console_messages` after the app has logged; monitoring attaches to page targets automatically on start/attach |
-| `start_app` path rejected | Check `ELECTRON_MCP_ALLOWED_ROOTS` |
-| Running `node build/index.js` “does nothing” | It's waiting for MCP stdio — configure it in Cursor instead |
+| `Electron failed to install correctly` | `.\scripts\fix-electron.cmd` or `npm run ensure-electron` |
+| `path.txt` missing / `dist` only has `locales` | Corrupt extract/cache — repair script clears cache and uses `tar` |
+| `allowScripts` warning for electron | Normal on newer npm; run `ensure-electron` / `fix-electron.cmd` |
+| Smoke hangs; console title starts with **Select** | Windows QuickEdit paused I/O — press `Esc`, disable QuickEdit |
+| No console messages | Ensure page finished loading; call `get_console_messages` after activity; monitoring attaches on start/attach |
+| `wait_for` timeout | Loosen condition, raise `timeoutMs`, or `screenshot` to see current UI |
+| `click` / `type_text` fails | Selector not visible yet — `wait_for` first |
+| `start_app` path rejected | Path outside `ELECTRON_MCP_ALLOWED_ROOTS` |
+| `node build/index.js` “does nothing” | It’s waiting on MCP stdio — configure in Cursor |
+| Port already in use | Pick another `debugPort` or `discover_apps` |
+| Linux CI / headless | Set `ELECTRON_MCP_NO_SANDBOX=1` and use Xvfb |
 
 ---
 
 ## 🤝 Contributing
 
-1. Fork + branch
+1. Fork and create a branch
 2. `npm test`
-3. Open a PR with a clear description of tools/behavior changes
+3. Open a PR describing tool/behavior changes
+4. Keep stdout MCP-clean (log to stderr only)
 
 ---
 
 ## 📄 License
 
-[ISC](./LICENSE) © contributors
+[ISC](./LICENSE) © Electron Debug MCP contributors
 
 ---
 
 <p align="center">
-  <img src="assets/logo.svg" alt="" width="48" height="48" /><br/>
-  <sub>Built for agents that need eyes inside Electron.</sub>
+  <img src="assets/logo.svg" width="56" height="56" alt="" /><br/>
+  <sub>Built for agents that need eyes — and hands — inside Electron.</sub>
 </p>
