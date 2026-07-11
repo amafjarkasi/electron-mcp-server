@@ -87,12 +87,10 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 
 ### ✅ Status
 
-| | |
-| --- | --- |
-| 🟢 Ready for local agent-driven Electron debugging | |
-| 🟢 E2E smoke: start → UI/automation → storage/cookies → tracing → find/attach-by-pid → stop | |
-| 🟢 Windows binary repair: `scripts/fix-electron.cmd` when npm blocks postinstall | |
-| 🟢 v1.5.0 — element screenshots, cookies/storage, tracing, attach-by-pid | |
+- 🟢 Ready for local agent-driven Electron debugging
+- 🟢 E2E smoke: start → UI/automation → storage/cookies → tracing → find/attach-by-pid → stop
+- 🟢 Windows binary repair: `scripts/fix-electron.cmd` when npm blocks postinstall
+- 🟢 v1.5.0 — element screenshots, cookies/storage, tracing, attach-by-pid
 
 ---
 
