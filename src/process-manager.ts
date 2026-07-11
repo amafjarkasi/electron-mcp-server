@@ -917,8 +917,14 @@ export async function captureScreenshot(
   electronProcess: ElectronProcess,
   targetId?: string,
   format: "png" | "jpeg" = "png",
-  quality?: number
-): Promise<{ targetId: string; mimeType: string; data: string }> {
+  quality?: number,
+  selector?: string
+): Promise<{
+  targetId: string;
+  mimeType: string;
+  data: string;
+  clip?: { x: number; y: number; width: number; height: number; selector: string };
+}> {
   await updateCDPTargets(electronProcess);
   const target = pickPageTarget(electronProcess, targetId);
   if (!target?.id) {
@@ -945,49 +951,121 @@ export async function captureScreenshot(
 
   await ensureMonitoring(electronProcess, target.id);
 
+  let clip:
+    | { x: number; y: number; width: number; height: number; scale: number }
+    | undefined;
+  let clipMeta:
+    | { x: number; y: number; width: number; height: number; selector: string }
+    | undefined;
+
+  if (selector) {
+    const box = (await evalValue(
+      electronProcess,
+      target.id,
+      `(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return null;
+        return {
+          x: r.x,
+          y: r.y,
+          width: r.width,
+          height: r.height,
+          scale: window.devicePixelRatio || 1
+        };
+      })()`
+    )) as {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      scale: number;
+    } | null;
+
+    if (!box) {
+      throw new Error(
+        `No visible element matched selector for screenshot clip: ${selector}`
+      );
+    }
+    clip = {
+      x: box.x,
+      y: box.y,
+      width: box.width,
+      height: box.height,
+      scale: 1,
+    };
+    clipMeta = {
+      x: box.x,
+      y: box.y,
+      width: box.width,
+      height: box.height,
+      selector,
+    };
+  }
+
   const paramsBase = {
     format,
     ...(format === "jpeg" && quality ? { quality } : {}),
+    ...(clip ? { clip } : {}),
   };
 
   let result: { data: string };
-  try {
-    // fromSurface can hang in some headless / no-GPU environments.
-    result = (await withTimeout(
+  const tryCapture = async (fromSurface: boolean) =>
+    (await withTimeout(
       executeCDPCommand(electronProcess, target.id, "Page.captureScreenshot", {
         ...paramsBase,
-        fromSurface: true,
+        fromSurface,
       }),
-      8000,
-      "Page.captureScreenshot(fromSurface)"
+      clip ? 10000 : 8000,
+      `Page.captureScreenshot(fromSurface=${fromSurface})`
     )) as { data: string };
-  } catch (err) {
-    log.warn(
-      `[${electronProcess.id}] screenshot fromSurface failed, retrying without:`,
-      err
-    );
+
+  const resetPageSocket = async () => {
     const mon = electronProcess.monitorClients.get(target.id);
     electronProcess.monitorClients.delete(target.id);
     if (mon) await closeClient(mon);
     if (electronProcess.cdpTargetId === target.id) {
+      if (
+        electronProcess.cdpClient &&
+        electronProcess.cdpClient !== mon
+      ) {
+        await closeClient(electronProcess.cdpClient);
+      }
       electronProcess.cdpClient = undefined;
       electronProcess.cdpTargetId = undefined;
     }
     await ensureMonitoring(electronProcess, target.id);
-    result = (await withTimeout(
-      executeCDPCommand(electronProcess, target.id, "Page.captureScreenshot", {
-        ...paramsBase,
-        fromSurface: false,
-      }),
-      8000,
-      "Page.captureScreenshot"
-    )) as { data: string };
+  };
+
+  try {
+    // Element clips + fromSurface often hang under headless/no-GPU; prefer
+    // fromSurface:false when clipping, otherwise try true then false.
+    if (clip) {
+      result = await tryCapture(false);
+    } else {
+      try {
+        result = await tryCapture(true);
+      } catch (err) {
+        log.warn(
+          `[${electronProcess.id}] screenshot fromSurface failed, retrying without:`,
+          err
+        );
+        await resetPageSocket();
+        result = await tryCapture(false);
+      }
+    }
+  } catch (err) {
+    log.warn(`[${electronProcess.id}] screenshot failed, one more reconnect:`, err);
+    await resetPageSocket();
+    result = await tryCapture(false);
   }
 
   return {
     targetId: target.id,
     mimeType: format === "jpeg" ? "image/jpeg" : "image/png",
     data: result.data,
+    ...(clipMeta ? { clip: clipMeta } : {}),
   };
 }
 
@@ -996,13 +1074,21 @@ export async function saveScreenshot(
   filePath: string,
   targetId?: string,
   format: "png" | "jpeg" = "png",
-  quality?: number
-): Promise<{ targetId: string; path: string; bytes: number; mimeType: string }> {
+  quality?: number,
+  selector?: string
+): Promise<{
+  targetId: string;
+  path: string;
+  bytes: number;
+  mimeType: string;
+  clip?: { x: number; y: number; width: number; height: number; selector: string };
+}> {
   const shot = await captureScreenshot(
     electronProcess,
     targetId,
     format,
-    quality
+    quality,
+    selector
   );
   const resolved = path.resolve(filePath);
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
@@ -1013,6 +1099,7 @@ export async function saveScreenshot(
     path: resolved,
     bytes: buffer.length,
     mimeType: shot.mimeType,
+    ...(shot.clip ? { clip: shot.clip } : {}),
   };
 }
 
@@ -1808,4 +1895,428 @@ export function listTargetsByRole(electronProcess: ElectronProcess): Array<{
       likelyMain,
     };
   });
+}
+
+export async function getCookies(
+  electronProcess: ElectronProcess,
+  options: { urls?: string[]; targetId?: string } = {}
+): Promise<{ targetId: string; cookies: unknown[] }> {
+  await updateCDPTargets(electronProcess);
+  const target = pickPageTarget(electronProcess, options.targetId);
+  await executeCDPCommand(electronProcess, target.id, "Network.enable", {});
+  const result = (await executeCDPCommand(
+    electronProcess,
+    target.id,
+    "Network.getCookies",
+    options.urls?.length ? { urls: options.urls } : {}
+  )) as { cookies?: unknown[] };
+  return { targetId: target.id, cookies: result.cookies ?? [] };
+}
+
+export async function setCookie(
+  electronProcess: ElectronProcess,
+  cookie: {
+    name: string;
+    value: string;
+    url?: string;
+    domain?: string;
+    path?: string;
+    secure?: boolean;
+    httpOnly?: boolean;
+    sameSite?: "Strict" | "Lax" | "None";
+    expires?: number;
+  },
+  targetId?: string
+): Promise<{ targetId: string; success: boolean }> {
+  await updateCDPTargets(electronProcess);
+  const target = pickPageTarget(electronProcess, targetId);
+  await executeCDPCommand(electronProcess, target.id, "Network.enable", {});
+  if (!cookie.url && !cookie.domain) {
+    const href = String(
+      (await evalValue(electronProcess, target.id, "location.href")) ?? ""
+    );
+    if (!href || href === "about:blank") {
+      throw new Error("Provide cookie.url or cookie.domain (page has no URL)");
+    }
+    cookie = { ...cookie, url: href };
+  }
+  const result = (await executeCDPCommand(
+    electronProcess,
+    target.id,
+    "Network.setCookie",
+    cookie
+  )) as { success?: boolean };
+  return { targetId: target.id, success: Boolean(result.success) };
+}
+
+export async function getStorage(
+  electronProcess: ElectronProcess,
+  kind: "localStorage" | "sessionStorage" = "localStorage",
+  targetId?: string
+): Promise<{ targetId: string; kind: string; entries: Record<string, string> }> {
+  await updateCDPTargets(electronProcess);
+  const target = pickPageTarget(electronProcess, targetId);
+  const entries = (await evalValue(
+    electronProcess,
+    target.id,
+    `(() => {
+      const store = window[${JSON.stringify(kind)}];
+      if (!store) return {};
+      const out = {};
+      for (let i = 0; i < store.length; i++) {
+        const key = store.key(i);
+        if (key != null) out[key] = store.getItem(key);
+      }
+      return out;
+    })()`
+  )) as Record<string, string>;
+  return { targetId: target.id, kind, entries: entries ?? {} };
+}
+
+export async function setStorage(
+  electronProcess: ElectronProcess,
+  kind: "localStorage" | "sessionStorage",
+  entries: Record<string, string>,
+  options: { clear?: boolean; targetId?: string } = {}
+): Promise<{ targetId: string; kind: string; keys: string[] }> {
+  await updateCDPTargets(electronProcess);
+  const target = pickPageTarget(electronProcess, options.targetId);
+  const keys = Object.keys(entries);
+  await evalValue(
+    electronProcess,
+    target.id,
+    `(() => {
+      const store = window[${JSON.stringify(kind)}];
+      if (!store) throw new Error(${JSON.stringify(kind)} + ' unavailable');
+      if (${options.clear ? "true" : "false"}) store.clear();
+      const entries = ${JSON.stringify(entries)};
+      for (const [k, v] of Object.entries(entries)) store.setItem(k, String(v));
+      return true;
+    })()`
+  );
+  return { targetId: target.id, kind, keys };
+}
+
+type TraceSession = {
+  targetId: string;
+  events: unknown[];
+  startedAt: number;
+  categories: string;
+};
+
+const traceSessions = new Map<string, TraceSession>();
+
+const DEFAULT_TRACE_CATEGORIES = [
+  "devtools.timeline",
+  "v8.execute",
+  "disabled-by-default-devtools.timeline",
+  "disabled-by-default-devtools.timeline.frame",
+  "disabled-by-default-devtools.timeline.stack",
+  "disabled-by-default-v8.cpu_profiler",
+  "disabled-by-default-v8.cpu_profiler.hires",
+].join(",");
+
+export async function startTracing(
+  electronProcess: ElectronProcess,
+  options: { categories?: string; targetId?: string } = {}
+): Promise<{ processId: string; targetId: string; categories: string }> {
+  await updateCDPTargets(electronProcess);
+  const target = pickPageTarget(electronProcess, options.targetId);
+  if (traceSessions.has(electronProcess.id)) {
+    throw new Error(
+      `Tracing already active for ${electronProcess.id}. Call stop_tracing first.`
+    );
+  }
+
+  const client = await connectToCDPTarget(electronProcess, target.id);
+  const categories = options.categories?.trim() || DEFAULT_TRACE_CATEGORIES;
+  const session: TraceSession = {
+    targetId: target.id,
+    events: [],
+    startedAt: Date.now(),
+    categories,
+  };
+
+  const onData = (params: unknown) => {
+    const p = params as { value?: unknown[] };
+    if (Array.isArray(p.value)) {
+      session.events.push(...p.value);
+    }
+  };
+  client.on("Tracing.dataCollected", onData);
+
+  await client.send("Tracing.start", {
+    categories,
+    transferMode: "ReportEvents",
+    options: "record-as-much-as-possible",
+  });
+
+  (session as TraceSession & { _onData?: (p: unknown) => void; _client?: CDP.Client })._onData =
+    onData;
+  (session as TraceSession & { _client?: CDP.Client })._client = client;
+  traceSessions.set(electronProcess.id, session);
+
+  return {
+    processId: electronProcess.id,
+    targetId: target.id,
+    categories,
+  };
+}
+
+export async function stopTracing(
+  electronProcess: ElectronProcess,
+  filePath?: string
+): Promise<{
+  processId: string;
+  targetId: string;
+  eventCount: number;
+  path: string;
+  elapsedMs: number;
+}> {
+  const session = traceSessions.get(electronProcess.id) as
+    | (TraceSession & {
+        _onData?: (p: unknown) => void;
+        _client?: CDP.Client;
+      })
+    | undefined;
+  if (!session) {
+    throw new Error(`No active tracing session for ${electronProcess.id}`);
+  }
+
+  const client =
+    session._client ??
+    (await connectToCDPTarget(electronProcess, session.targetId));
+
+  const complete = new Promise<void>((resolve) => {
+    const onComplete = () => {
+      client.removeListener("Tracing.tracingComplete", onComplete);
+      resolve();
+    };
+    client.on("Tracing.tracingComplete", onComplete);
+    setTimeout(resolve, 5000);
+  });
+
+  await client.send("Tracing.end");
+  await complete;
+
+  if (session._onData) {
+    client.removeListener("Tracing.dataCollected", session._onData);
+  }
+
+  const resolved = path.resolve(
+    filePath ??
+      path.join(
+        os.tmpdir(),
+        `electron-mcp-trace-${electronProcess.id}-${Date.now()}.json`
+      )
+  );
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  fs.writeFileSync(
+    resolved,
+    JSON.stringify(
+      {
+        metadata: {
+          processId: electronProcess.id,
+          targetId: session.targetId,
+          categories: session.categories,
+          startedAt: session.startedAt,
+          stoppedAt: Date.now(),
+        },
+        traceEvents: session.events,
+      },
+      null,
+      2
+    )
+  );
+
+  traceSessions.delete(electronProcess.id);
+
+  return {
+    processId: electronProcess.id,
+    targetId: session.targetId,
+    eventCount: session.events.length,
+    path: resolved,
+    elapsedMs: Date.now() - session.startedAt,
+  };
+}
+
+function parseDebugPortFromCommand(command: string): number | undefined {
+  const m =
+    command.match(/--remote-debugging-port(?:=|\s+)(\d+)/i) ??
+    command.match(/remote-debugging-port[=:](\d+)/i);
+  if (!m) return undefined;
+  const port = Number(m[1]);
+  return Number.isFinite(port) ? port : undefined;
+}
+
+function parseInspectPortFromCommand(command: string): number | undefined {
+  const m = command.match(/--inspect(?:=|\s+)(\d+)/i);
+  if (!m) return undefined;
+  const port = Number(m[1]);
+  return Number.isFinite(port) && port > 0 ? port : undefined;
+}
+
+async function listOsProcesses(): Promise<
+  Array<{ pid: number; command: string }>
+> {
+  if (process.platform === "win32") {
+    try {
+      const { stdout } = await execFileAsync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-Command",
+          "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+        ],
+        { maxBuffer: 20 * 1024 * 1024 }
+      );
+      const parsed = JSON.parse(stdout || "[]") as
+        | Array<{ ProcessId?: number; CommandLine?: string }>
+        | { ProcessId?: number; CommandLine?: string };
+      const rows = Array.isArray(parsed) ? parsed : [parsed];
+      return rows
+        .filter((r) => r.ProcessId && r.CommandLine)
+        .map((r) => ({
+          pid: Number(r.ProcessId),
+          command: String(r.CommandLine),
+        }));
+    } catch (err) {
+      log.warn("Windows process listing failed:", err);
+      return [];
+    }
+  }
+
+  // Linux / macOS: prefer `ps`
+  try {
+    const { stdout } = await execFileAsync(
+      "ps",
+      process.platform === "darwin"
+        ? ["-ax", "-o", "pid=,command="]
+        : ["-eo", "pid=,args="],
+      { maxBuffer: 20 * 1024 * 1024 }
+    );
+    return stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const m = line.match(/^(\d+)\s+(.*)$/);
+        if (!m) return null;
+        return { pid: Number(m[1]), command: m[2] };
+      })
+      .filter((x): x is { pid: number; command: string } => Boolean(x));
+  } catch (err) {
+    log.warn("ps process listing failed:", err);
+    return [];
+  }
+}
+
+export type FoundElectronApp = {
+  pid: number;
+  command: string;
+  debugPort?: number;
+  inspectPort?: number;
+  likelyElectron: boolean;
+};
+
+export async function findRunningElectronApps(): Promise<FoundElectronApp[]> {
+  const procs = await listOsProcesses();
+  const found: FoundElectronApp[] = [];
+  for (const p of procs) {
+    const cmd = p.command;
+    const mentionsElectron =
+      /(?:^|[\\/\s])electron(?:\.exe)?(?:\s|$)/i.test(cmd) ||
+      /Electron\.app/i.test(cmd) ||
+      /\belectron\b/i.test(cmd);
+    if (!mentionsElectron) continue;
+
+    const isHelper =
+      /--type=/.test(cmd) ||
+      /zygote/i.test(cmd) ||
+      /gpu-process/i.test(cmd) ||
+      /utility/i.test(cmd);
+    const debugPort = parseDebugPortFromCommand(cmd);
+    const inspectPort = parseInspectPortFromCommand(cmd);
+
+    // Prefer main processes; still include helpers that expose a debug port.
+    if (isHelper && !debugPort) continue;
+
+    found.push({
+      pid: p.pid,
+      command: cmd.length > 400 ? `${cmd.slice(0, 400)}…` : cmd,
+      debugPort,
+      inspectPort,
+      likelyElectron: true,
+    });
+  }
+
+  const byPid = new Map<number, FoundElectronApp>();
+  for (const f of found) byPid.set(f.pid, f);
+  return Array.from(byPid.values()).sort((a, b) => a.pid - b.pid);
+}
+
+export async function resolveDebugPortForPid(
+  pid: number
+): Promise<{ pid: number; debugPort: number; command?: string }> {
+  const apps = await findRunningElectronApps();
+  const match = apps.find((a) => a.pid === pid);
+  if (match?.debugPort) {
+    return { pid, debugPort: match.debugPort, command: match.command };
+  }
+
+  // Fallback: read cmdline directly for this pid
+  if (process.platform !== "win32") {
+    try {
+      const cmdline = fs
+        .readFileSync(`/proc/${pid}/cmdline`, "utf8")
+        .replace(/\0/g, " ")
+        .trim();
+      const debugPort = parseDebugPortFromCommand(cmdline);
+      if (debugPort) {
+        return { pid, debugPort, command: cmdline };
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // Last resort: scan common ports and match version Browser target title/user-agent? Can't match PID easily.
+  // Scan listening sockets owned by pid on Linux.
+  if (process.platform === "linux") {
+    try {
+      const { stdout } = await execFileAsync("bash", [
+        "-lc",
+        `ss -ltnp 2>/dev/null | grep -E 'pid=${pid},' || true`,
+      ]);
+      const ports = Array.from(
+        stdout.matchAll(/:(\d+)\s/g),
+        (m) => Number(m[1])
+      ).filter((p) => p >= 1024);
+      for (const port of [...new Set(ports)]) {
+        const probe = await probeDebugPort(port);
+        if (probe.ok) {
+          return { pid, debugPort: port };
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  throw new Error(
+    `Could not resolve a Chrome DevTools port for pid ${pid}. ` +
+      `Start the app with --remote-debugging-port=PORT, or use discover_apps / find_apps.`
+  );
+}
+
+export async function attachByPid(
+  pid: number,
+  name?: string
+): Promise<ElectronProcess> {
+  const resolved = await resolveDebugPortForPid(pid);
+  const proc = await attachToDebugPort(
+    resolved.debugPort,
+    name ?? `pid:${pid}`
+  );
+  return proc;
 }

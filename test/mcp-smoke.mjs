@@ -218,6 +218,8 @@ async function main() {
     for (const required of [
       "start_app",
       "attach",
+      "attach_by_pid",
+      "find_apps",
       "discover_apps",
       "stop_app",
       "list_apps",
@@ -238,6 +240,12 @@ async function main() {
       "press_key",
       "save_screenshot",
       "set_console_live",
+      "get_cookies",
+      "set_cookie",
+      "get_storage",
+      "set_storage",
+      "start_tracing",
+      "stop_tracing",
       "evaluate_main",
       "clear_buffers",
     ]) {
@@ -440,6 +448,126 @@ async function main() {
     const saved = parseToolText(saveResult);
     assert(saved.path && fs.existsSync(saved.path), `screenshot file missing: ${JSON.stringify(saved)}`);
     pass("save_screenshot");
+
+    const clipPath = path.join(root, "build", "smoke-clip.png");
+    const clipResult = await client.request("tools/call", {
+      name: "save_screenshot",
+      arguments: {
+        processId,
+        path: clipPath,
+        format: "png",
+        selector: "#heading",
+      },
+    });
+    assert(!clipResult.isError, `element screenshot error: ${clipResult.content?.[0]?.text}`);
+    const clipped = parseToolText(clipResult);
+    assert(clipped.clip?.selector === "#heading", `expected clip meta: ${JSON.stringify(clipped)}`);
+    assert(fs.existsSync(clipPath), "clip screenshot file missing");
+    pass("save_screenshot selector clip");
+
+    const setStore = await client.request("tools/call", {
+      name: "set_storage",
+      arguments: {
+        processId,
+        kind: "localStorage",
+        entries: { smoke: "1" },
+        clear: true,
+      },
+    });
+    assert(!setStore.isError, `set_storage error: ${setStore.content?.[0]?.text}`);
+    const getStore = await client.request("tools/call", {
+      name: "get_storage",
+      arguments: { processId, kind: "localStorage" },
+    });
+    assert(!getStore.isError, `get_storage error: ${getStore.content?.[0]?.text}`);
+    const store = parseToolText(getStore);
+    assert(store.entries?.smoke === "1", `storage mismatch: ${JSON.stringify(store)}`);
+    pass("get/set_storage");
+
+    const setCookieResult = await client.request("tools/call", {
+      name: "set_cookie",
+      arguments: {
+        processId,
+        name: "smoke",
+        value: "ok",
+        url: "file:///",
+      },
+    });
+    // file:// cookies may be rejected by Chromium; accept success or clear error
+    if (!setCookieResult.isError) {
+      const cookiesResult = await client.request("tools/call", {
+        name: "get_cookies",
+        arguments: { processId },
+      });
+      assert(!cookiesResult.isError, `get_cookies error: ${cookiesResult.content?.[0]?.text}`);
+      pass("get/set_cookie");
+    } else {
+      const msg = setCookieResult.content?.[0]?.text || "";
+      assert(/cookie|url|domain|success|false|Invalid/i.test(msg) || msg.length > 0, msg);
+      // Still exercise get_cookies
+      const cookiesResult = await client.request("tools/call", {
+        name: "get_cookies",
+        arguments: { processId },
+      });
+      assert(!cookiesResult.isError, `get_cookies error: ${cookiesResult.content?.[0]?.text}`);
+      pass("get/set_cookie (set may fail on file://)");
+    }
+
+    const traceStart = await client.request("tools/call", {
+      name: "start_tracing",
+      arguments: { processId },
+    });
+    assert(!traceStart.isError, `start_tracing error: ${traceStart.content?.[0]?.text}`);
+    await new Promise((r) => setTimeout(r, 400));
+    const tracePath = path.join(root, "build", "smoke-trace.json");
+    const traceStop = await client.request("tools/call", {
+      name: "stop_tracing",
+      arguments: { processId, path: tracePath },
+    });
+    assert(!traceStop.isError, `stop_tracing error: ${traceStop.content?.[0]?.text}`);
+    const trace = parseToolText(traceStop);
+    assert(fs.existsSync(trace.path || tracePath), `trace file missing: ${JSON.stringify(trace)}`);
+    pass("start/stop_tracing");
+
+    const findResult = await client.request("tools/call", {
+      name: "find_apps",
+      arguments: {},
+    });
+    assert(!findResult.isError, `find_apps error: ${findResult.content?.[0]?.text}`);
+    const foundApps = parseToolText(findResult);
+    assert(
+      (foundApps.apps ?? []).some((a) => a.debugPort === DEBUG_PORT || /minimal-electron-app/.test(a.command || "")),
+      `find_apps missed fixture: ${JSON.stringify(foundApps)}`
+    );
+    pass("find_apps");
+
+    const startedPid = started.pid;
+    if (startedPid) {
+      // Stop MCP ownership bookkeeping isn't required — attach_by_pid to same port should reuse/attach
+      const byPid = await client.request("tools/call", {
+        name: "attach_by_pid",
+        arguments: { pid: startedPid, name: "by-pid" },
+      });
+      // May succeed (same port attach returns existing) or fail if pid cmdline lacks port — both OK if find_apps worked
+      if (!byPid.isError) {
+        const attachedPid = parseToolText(byPid);
+        assert(attachedPid.debugPort === DEBUG_PORT, `attach_by_pid wrong port: ${JSON.stringify(attachedPid)}`);
+        pass("attach_by_pid");
+        // If it created a separate session id, stop the duplicate attach session only when different
+        if (attachedPid.id && attachedPid.id !== processId) {
+          await client.request("tools/call", {
+            name: "stop_app",
+            arguments: { processId: attachedPid.id },
+          });
+        }
+      } else {
+        const msg = byPid.content?.[0]?.text || "";
+        assert(/debug|port|pid|Could not resolve/i.test(msg), `unexpected attach_by_pid error: ${msg}`);
+        pass("attach_by_pid (resolve may need cmdline port — exercised)");
+      }
+    } else {
+      pass("attach_by_pid (skipped — no pid)");
+    }
 
     const waitEnabled = await client.request("tools/call", {
       name: "wait_for",

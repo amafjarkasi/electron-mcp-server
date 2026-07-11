@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="#-60-second-quick-start"><img src="https://img.shields.io/badge/⚡_Quick_Start-0F766E?style=for-the-badge" alt="Quick Start" /></a>
-  <a href="#-complete-tools-cheatsheet"><img src="https://img.shields.io/badge/🛠️_28_Tools-47848F?style=for-the-badge" alt="28 Tools" /></a>
+  <a href="#-complete-tools-cheatsheet"><img src="https://img.shields.io/badge/🛠️_36_Tools-47848F?style=for-the-badge" alt="36 Tools" /></a>
   <a href="#-usage-examples"><img src="https://img.shields.io/badge/📚_Examples-0EA5E9?style=for-the-badge" alt="Examples" /></a>
   <a href="#-cursor--claude-desktop-setup"><img src="https://img.shields.io/badge/🖥️_Cursor_Ready-3178C6?style=for-the-badge" alt="Cursor Ready" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/📜_ISC-F59E0B?style=for-the-badge" alt="ISC" /></a>
@@ -295,10 +295,10 @@ After `start_app` / `attach`, page targets get **Runtime / Log / Network / Page*
 
 | Category | Tools |
 | --- | --- |
-| 🚀 Lifecycle | `start_app` · `attach` · `discover_apps` · `stop_app` · `list_apps` · `diagnose` |
-| 🔍 Inspect | `screenshot` · `save_screenshot` · `get_dom` · `query_selector` · `evaluate` · `evaluate_main` · `get_console_messages` · `get_network_log` · `get_logs` · `list_targets` · `page_info` |
+| 🚀 Lifecycle | `start_app` · `attach` · `attach_by_pid` · `find_apps` · `discover_apps` · `stop_app` · `list_apps` · `diagnose` |
+| 🔍 Inspect | `screenshot` · `save_screenshot` · `get_dom` · `query_selector` · `evaluate` · `evaluate_main` · `get_cookies` · `set_cookie` · `get_storage` · `set_storage` · `get_console_messages` · `get_network_log` · `get_logs` · `list_targets` · `page_info` |
 | 🖱️ Interact | `navigate` · `wait_for` · `click` · `type_text` · `press_key` · `reload` · `pause` · `resume` · `clear_buffers` · `set_console_live` |
-| 🧰 Power | `cdp_command` |
+| 🧰 Power | `start_tracing` · `stop_tracing` · `cdp_command` |
 
 ---
 
@@ -331,6 +331,9 @@ Launch Electron with remote debugging.
 | `debugPort` | int | ✅ | Existing DevTools port |
 | `name` | string | ❌ | Friendly session name |
 
+#### `attach_by_pid` — `{ pid, name? }` (resolves `--remote-debugging-port` from process argv)  
+#### `find_apps` — list running Electron PIDs + debug ports from command lines  
+
 `stop_app` on attached sessions **detaches only** (does not kill the external app).
 
 ---
@@ -361,12 +364,14 @@ Launch Electron with remote debugging.
 | `format` | `png` \| `jpeg` | `png` |
 | `quality` | int `0–100` | jpeg only |
 
-#### `save_screenshot` — same params plus required `path` (writes file to disk)
+#### `save_screenshot` — same params plus required `path` (writes file to disk); both accept optional `selector` to clip an element box
 
 #### `get_dom` — `{ processId, selector?, targetId? }`  
 #### `query_selector` — `{ processId, selector, targetId?, limit?=20 }`  
 #### `evaluate` — `{ processId, expression, targetId?, role?=page, returnByValue?=true }`  
 #### `evaluate_main` — `{ processId, expression, targetId?, returnByValue?=true }` (use `inspectMain` or a node target)  
+#### `get_cookies` / `set_cookie` — Network cookie helpers  
+#### `get_storage` / `set_storage` — `localStorage` / `sessionStorage` get/set (+ optional clear)  
 #### `get_console_messages` — `{ processId, tail?, level? }`  
 #### `get_network_log` — `{ processId, tail? }`  
 #### `get_logs` — `{ processId, tail? }`  
@@ -385,6 +390,7 @@ Console capture includes `console.*`, CDP Log entries, and `Runtime.exceptionThr
 #### `type_text` — `{ processId, text, selector?, clear?, pressEnter?, targetId? }`  
 #### `press_key` — `{ processId, key, selector?, modifiers?, repeat?, targetId? }`  
 #### `set_console_live` — `{ enabled }` (stream console as MCP logs; errors always notify)  
+#### `start_tracing` / `stop_tracing` — CDP performance trace → JSON file (`chrome://tracing`)  
 #### `reload` — `{ processId, targetId?, ignoreCache?=false }`  
 #### `pause` / `resume` — `{ processId, targetId? }`  
 #### `clear_buffers` — `{ processId, console?=true, network?=true, logs?=false }`  
