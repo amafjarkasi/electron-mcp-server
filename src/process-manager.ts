@@ -892,6 +892,27 @@ export async function executeCDPCommand(
   }
 }
 
+async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} timed out after ${ms}ms`)),
+          ms
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function captureScreenshot(
   electronProcess: ElectronProcess,
   targetId?: string,
@@ -903,25 +924,65 @@ export async function captureScreenshot(
   if (!target?.id) {
     throw new Error("No page target available for screenshot");
   }
-  // Prefer a dedicated short-lived connection for screenshots so prior
-  // main/node evaluate sessions cannot leave the page socket wedged.
+
+  // Always close any existing debugger session on this target before
+  // reconnecting — Chromium allows only one CDP websocket per target.
+  const existingMonitor = electronProcess.monitorClients.get(target.id);
   electronProcess.monitorClients.delete(target.id);
+  if (existingMonitor) {
+    await closeClient(existingMonitor);
+  }
   if (electronProcess.cdpTargetId === target.id) {
-    await closeClient(electronProcess.cdpClient);
+    if (
+      electronProcess.cdpClient &&
+      electronProcess.cdpClient !== existingMonitor
+    ) {
+      await closeClient(electronProcess.cdpClient);
+    }
     electronProcess.cdpClient = undefined;
     electronProcess.cdpTargetId = undefined;
   }
+
   await ensureMonitoring(electronProcess, target.id);
-  const result = (await executeCDPCommand(
-    electronProcess,
-    target.id,
-    "Page.captureScreenshot",
-    {
-      format,
-      ...(format === "jpeg" && quality ? { quality } : {}),
-      fromSurface: true,
+
+  const paramsBase = {
+    format,
+    ...(format === "jpeg" && quality ? { quality } : {}),
+  };
+
+  let result: { data: string };
+  try {
+    // fromSurface can hang in some headless / no-GPU environments.
+    result = (await withTimeout(
+      executeCDPCommand(electronProcess, target.id, "Page.captureScreenshot", {
+        ...paramsBase,
+        fromSurface: true,
+      }),
+      8000,
+      "Page.captureScreenshot(fromSurface)"
+    )) as { data: string };
+  } catch (err) {
+    log.warn(
+      `[${electronProcess.id}] screenshot fromSurface failed, retrying without:`,
+      err
+    );
+    const mon = electronProcess.monitorClients.get(target.id);
+    electronProcess.monitorClients.delete(target.id);
+    if (mon) await closeClient(mon);
+    if (electronProcess.cdpTargetId === target.id) {
+      electronProcess.cdpClient = undefined;
+      electronProcess.cdpTargetId = undefined;
     }
-  )) as { data: string };
+    await ensureMonitoring(electronProcess, target.id);
+    result = (await withTimeout(
+      executeCDPCommand(electronProcess, target.id, "Page.captureScreenshot", {
+        ...paramsBase,
+        fromSurface: false,
+      }),
+      8000,
+      "Page.captureScreenshot"
+    )) as { data: string };
+  }
 
   return {
     targetId: target.id,

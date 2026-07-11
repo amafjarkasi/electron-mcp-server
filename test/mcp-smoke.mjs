@@ -78,11 +78,24 @@ class McpClient {
     }
   }
 
-  request(method, params = {}) {
+  request(method, params = {}, timeoutMs = 60000) {
     const id = this.nextId++;
     const payload = { jsonrpc: "2.0", id, method, params };
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`MCP request timed out: ${method} (${timeoutMs}ms)`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      });
       this.child.stdin.write(JSON.stringify(payload) + "\n");
     });
   }
