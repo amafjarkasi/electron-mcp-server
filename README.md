@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="#-60-second-quick-start"><img src="https://img.shields.io/badge/⚡_Quick_Start-0F766E?style=for-the-badge" alt="Quick Start" /></a>
-  <a href="#-complete-tools-cheatsheet"><img src="https://img.shields.io/badge/🛠️_22_Tools-47848F?style=for-the-badge" alt="22 Tools" /></a>
+  <a href="#-complete-tools-cheatsheet"><img src="https://img.shields.io/badge/🛠️_28_Tools-47848F?style=for-the-badge" alt="28 Tools" /></a>
   <a href="#-usage-examples"><img src="https://img.shields.io/badge/📚_Examples-0EA5E9?style=for-the-badge" alt="Examples" /></a>
   <a href="#-cursor--claude-desktop-setup"><img src="https://img.shields.io/badge/🖥️_Cursor_Ready-3178C6?style=for-the-badge" alt="Cursor Ready" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/📜_ISC-F59E0B?style=for-the-badge" alt="ISC" /></a>
@@ -43,12 +43,14 @@ Instead of guessing from source alone, the agent can:
 | --- | --- |
 | Boot your app under a debugger | `start_app` with `--remote-debugging-port` |
 | Hook an app you already launched | `attach` / `discover_apps` |
-| See the UI | `screenshot` (PNG/JPEG image content) |
+| See the UI | `screenshot` / `save_screenshot` (PNG/JPEG) |
 | Read renderer failures | `get_console_messages` (`level: "error"`) + exceptions |
 | Inspect markup | `get_dom` / `query_selector` |
 | Run JS in the page | `evaluate` |
 | Watch network | `get_network_log` |
-| Drive the UI | `wait_for` → `type_text` → `click` → `navigate` |
+| Drive the UI | `wait_for` → `type_text` / `press_key` → `click` → `navigate` |
+| Main process | `start_app(inspectMain)` → `evaluate_main` |
+| Live console | `set_console_live` streams MCP log notifications |
 | One-shot health check | `diagnose` |
 | Full DevTools power | `cdp_command` (`Domain.method`) |
 
@@ -148,8 +150,9 @@ Electron bugs are often **invisible** to coding agents:
 
 ### 🔍 Inspection
 - 📸 `screenshot` — PNG/JPEG as MCP image  
+- 💾 `save_screenshot` — write PNG/JPEG to disk  
 - 🌳 `get_dom` / `query_selector`  
-- 🧮 `evaluate` — page/worker/browser roles  
+- 🧮 `evaluate` / `evaluate_main`  
 - 🧾 `get_console_messages` — log/warn/error/exceptions  
 - 🌐 `get_network_log` — request/response/fail  
 - 📜 `get_logs` — Electron stdout/stderr  
@@ -162,9 +165,9 @@ Electron bugs are often **invisible** to coding agents:
 
 ### 🖱️ Interaction
 - 🧭 `navigate` + load wait  
-- ⏳ `wait_for` selector/text/URL/console  
+- ⏳ `wait_for` selector/hidden/enabled/count/text/URL/console  
 - 🖱️ `click` left/right/middle  
-- ⌨️ `type_text` (+ clear / Enter)  
+- ⌨️ `type_text` (+ clear / Enter) · `press_key`  
 - 🔄 `reload` · ⏸️ `pause` · ▶️ `resume`  
 - 🧹 `clear_buffers`  
 
@@ -175,7 +178,7 @@ Electron bugs are often **invisible** to coding agents:
 - 📝 MCP handshake **instructions**  
 - 💬 Prompts: blank window · exceptions · UI smoke  
 - 🏷️ Target roles: page / worker / browser  
-- 🔔 Logging + resource list-changed events  
+- 🔔 `set_console_live` + resource list-changed  
 - 🛡️ stderr-only diagnostics (stdio-safe)  
 - 🧰 `cdp_command` for any DevTools method  
 
@@ -293,8 +296,8 @@ After `start_app` / `attach`, page targets get **Runtime / Log / Network / Page*
 | Category | Tools |
 | --- | --- |
 | 🚀 Lifecycle | `start_app` · `attach` · `discover_apps` · `stop_app` · `list_apps` · `diagnose` |
-| 🔍 Inspect | `screenshot` · `get_dom` · `query_selector` · `evaluate` · `get_console_messages` · `get_network_log` · `get_logs` · `list_targets` · `page_info` |
-| 🖱️ Interact | `navigate` · `wait_for` · `click` · `type_text` · `reload` · `pause` · `resume` · `clear_buffers` |
+| 🔍 Inspect | `screenshot` · `save_screenshot` · `get_dom` · `query_selector` · `evaluate` · `evaluate_main` · `get_console_messages` · `get_network_log` · `get_logs` · `list_targets` · `page_info` |
+| 🖱️ Interact | `navigate` · `wait_for` · `click` · `type_text` · `press_key` · `reload` · `pause` · `resume` · `clear_buffers` · `set_console_live` |
 | 🧰 Power | `cdp_command` |
 
 ---
@@ -313,6 +316,7 @@ Launch Electron with remote debugging.
 | `appPath` | string | ✅ | — | App directory or main script |
 | `debugPort` | int `1024–65535` | ❌ | random `9222–9999` | CDP port |
 | `extraArgs` | string[] | ❌ | `[]` | Extra CLI flags |
+| `inspectMain` | bool | ❌ | `false` | Pass `--inspect=0` so main appears as a node target for `evaluate_main` |
 
 **Auto flags:** `--remote-debugging-port`, `--enable-logging`, `--disable-gpu`, and `--no-sandbox` when `ELECTRON_MCP_NO_SANDBOX=1` / `CI=true` / no `DISPLAY`.
 
@@ -348,7 +352,7 @@ Launch Electron with remote debugging.
 
 ### 🔍 Inspection
 
-#### `screenshot`
+#### `screenshot` / `save_screenshot`
 
 | Param | Type | Default |
 | --- | --- | --- |

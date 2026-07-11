@@ -2,6 +2,7 @@ import { spawn, ChildProcess, execFile } from "child_process";
 import { createRequire } from "module";
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
 import { promisify } from "util";
 import CDP from "chrome-remote-interface";
 import { log } from "./log.js";
@@ -341,7 +342,8 @@ function wireChildProcess(
 export async function startElectronApp(
   appPath: string,
   debugPort?: number,
-  extraArgs: string[] = []
+  extraArgs: string[] = [],
+  options: { inspectMain?: boolean } = {}
 ): Promise<ElectronProcess> {
   const resolvedAppPath = assertAppPathAllowed(appPath);
   if (!fs.existsSync(resolvedAppPath)) {
@@ -359,6 +361,10 @@ export async function startElectronApp(
     !process.env.DISPLAY
   ) {
     autoArgs.push("--no-sandbox");
+  }
+  if (options.inspectMain) {
+    // Expose the Electron main process to the inspector (shows up as a node target).
+    autoArgs.push("--inspect=0");
   }
 
   const args = [
@@ -894,6 +900,17 @@ export async function captureScreenshot(
 ): Promise<{ targetId: string; mimeType: string; data: string }> {
   await updateCDPTargets(electronProcess);
   const target = pickPageTarget(electronProcess, targetId);
+  if (!target?.id) {
+    throw new Error("No page target available for screenshot");
+  }
+  // Prefer a dedicated short-lived connection for screenshots so prior
+  // main/node evaluate sessions cannot leave the page socket wedged.
+  electronProcess.monitorClients.delete(target.id);
+  if (electronProcess.cdpTargetId === target.id) {
+    await closeClient(electronProcess.cdpClient);
+    electronProcess.cdpClient = undefined;
+    electronProcess.cdpTargetId = undefined;
+  }
   await ensureMonitoring(electronProcess, target.id);
   const result = (await executeCDPCommand(
     electronProcess,
@@ -910,6 +927,31 @@ export async function captureScreenshot(
     targetId: target.id,
     mimeType: format === "jpeg" ? "image/jpeg" : "image/png",
     data: result.data,
+  };
+}
+
+export async function saveScreenshot(
+  electronProcess: ElectronProcess,
+  filePath: string,
+  targetId?: string,
+  format: "png" | "jpeg" = "png",
+  quality?: number
+): Promise<{ targetId: string; path: string; bytes: number; mimeType: string }> {
+  const shot = await captureScreenshot(
+    electronProcess,
+    targetId,
+    format,
+    quality
+  );
+  const resolved = path.resolve(filePath);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  const buffer = Buffer.from(shot.data, "base64");
+  fs.writeFileSync(resolved, buffer);
+  return {
+    targetId: shot.targetId,
+    path: resolved,
+    bytes: buffer.length,
+    mimeType: shot.mimeType,
   };
 }
 
@@ -1344,18 +1386,41 @@ export async function waitForCondition(
     text?: string;
     urlIncludes?: string;
     consoleIncludes?: string;
+    /** Wait until selector matches no elements (or is not visible). */
+    hidden?: string;
+    /** Wait until selector is present and not disabled. */
+    enabled?: string;
+    /** Wait until selector matches at least this many nodes. */
+    count?: { selector: string; min: number };
     timeoutMs?: number;
     targetId?: string;
+    screenshotOnTimeout?: boolean;
   }
 ): Promise<{
   targetId: string;
   matched: string;
   elapsedMs: number;
+  timeoutScreenshotPath?: string;
 }> {
   const timeoutMs = options.timeoutMs ?? 10000;
   await updateCDPTargets(electronProcess);
   const target = pickPageTarget(electronProcess, options.targetId);
   const started = Date.now();
+
+  const hasCondition = Boolean(
+    options.selector ||
+      options.text ||
+      options.urlIncludes ||
+      options.consoleIncludes ||
+      options.hidden ||
+      options.enabled ||
+      options.count
+  );
+  if (!hasCondition) {
+    throw new Error(
+      "Provide at least one wait condition (selector, text, urlIncludes, consoleIncludes, hidden, enabled, count)"
+    );
+  }
 
   while (Date.now() - started < timeoutMs) {
     if (options.selector) {
@@ -1368,6 +1433,74 @@ export async function waitForCondition(
         return {
           targetId: target.id,
           matched: `selector:${options.selector}`,
+          elapsedMs: Date.now() - started,
+        };
+      }
+    }
+
+    if (options.hidden) {
+      const gone = await evalValue(
+        electronProcess,
+        target.id,
+        `(() => {
+          const el = document.querySelector(${JSON.stringify(options.hidden)});
+          if (!el) return true;
+          const style = window.getComputedStyle(el);
+          const hidden =
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            style.opacity === '0' ||
+            el.getClientRects().length === 0;
+          return hidden;
+        })()`
+      );
+      if (gone) {
+        return {
+          targetId: target.id,
+          matched: `hidden:${options.hidden}`,
+          elapsedMs: Date.now() - started,
+        };
+      }
+    }
+
+    if (options.enabled) {
+      const ok = await evalValue(
+        electronProcess,
+        target.id,
+        `(() => {
+          const el = document.querySelector(${JSON.stringify(options.enabled)});
+          if (!el) return false;
+          const disabled =
+            el.hasAttribute('disabled') ||
+            el.getAttribute('aria-disabled') === 'true' ||
+            (el instanceof HTMLButtonElement && el.disabled) ||
+            (el instanceof HTMLInputElement && el.disabled);
+          return !disabled;
+        })()`
+      );
+      if (ok) {
+        return {
+          targetId: target.id,
+          matched: `enabled:${options.enabled}`,
+          elapsedMs: Date.now() - started,
+        };
+      }
+    }
+
+    if (options.count) {
+      const n = Number(
+        (await evalValue(
+          electronProcess,
+          target.id,
+          `document.querySelectorAll(${JSON.stringify(
+            options.count.selector
+          )}).length`
+        )) ?? 0
+      );
+      if (n >= options.count.min) {
+        return {
+          targetId: target.id,
+          matched: `count:${options.count.selector}>=${options.count.min} (got ${n})`,
           elapsedMs: Date.now() - started,
         };
       }
@@ -1419,7 +1552,199 @@ export async function waitForCondition(
     await new Promise((r) => setTimeout(r, 150));
   }
 
+  let timeoutScreenshotPath: string | undefined;
+  if (options.screenshotOnTimeout) {
+    try {
+      const file = path.join(
+        os.tmpdir(),
+        `electron-mcp-timeout-${electronProcess.id}-${Date.now()}.png`
+      );
+      const saved = await saveScreenshot(
+        electronProcess,
+        file,
+        target.id,
+        "png"
+      );
+      timeoutScreenshotPath = saved.path;
+    } catch (err) {
+      log.warn("screenshotOnTimeout failed:", err);
+    }
+  }
+
   throw new Error(
-    `wait_for timed out after ${timeoutMs}ms (selector=${options.selector ?? "-"}, text=${options.text ?? "-"}, urlIncludes=${options.urlIncludes ?? "-"}, consoleIncludes=${options.consoleIncludes ?? "-"})`
+    `wait_for timed out after ${timeoutMs}ms (selector=${options.selector ?? "-"}, hidden=${options.hidden ?? "-"}, enabled=${options.enabled ?? "-"}, count=${options.count ? `${options.count.selector}>=${options.count.min}` : "-"}, text=${options.text ?? "-"}, urlIncludes=${options.urlIncludes ?? "-"}, consoleIncludes=${options.consoleIncludes ?? "-"}${
+      timeoutScreenshotPath ? `, screenshot=${timeoutScreenshotPath}` : ""
+    })`
   );
+}
+
+const KEY_MAP: Record<
+  string,
+  { key: string; code: string; text?: string; windowsVirtualKeyCode?: number }
+> = {
+  Enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" },
+  Escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
+  Tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
+  Backspace: { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
+  Delete: { key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 },
+  ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37 },
+  ArrowRight: {
+    key: "ArrowRight",
+    code: "ArrowRight",
+    windowsVirtualKeyCode: 39,
+  },
+  ArrowUp: { key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 },
+  ArrowDown: { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 },
+  Home: { key: "Home", code: "Home", windowsVirtualKeyCode: 36 },
+  End: { key: "End", code: "End", windowsVirtualKeyCode: 35 },
+  Space: { key: " ", code: "Space", windowsVirtualKeyCode: 32, text: " " },
+};
+
+export async function pressKey(
+  electronProcess: ElectronProcess,
+  key: string,
+  options: {
+    targetId?: string;
+    selector?: string;
+    modifiers?: Array<"Alt" | "Control" | "Meta" | "Shift">;
+    repeat?: number;
+  } = {}
+): Promise<{ targetId: string; key: string; modifiers: string[]; repeat: number }> {
+  await updateCDPTargets(electronProcess);
+  const target = pickPageTarget(electronProcess, options.targetId);
+  if (options.selector) {
+    await clickSelector(electronProcess, options.selector, target.id);
+  }
+
+  const modifiers = options.modifiers ?? [];
+  const repeat = Math.max(1, options.repeat ?? 1);
+  const mapped = KEY_MAP[key] ?? {
+    key,
+    code: key.length === 1 ? `Key${key.toUpperCase()}` : key,
+    text: key.length === 1 ? key : undefined,
+  };
+
+  let modifierBits = 0;
+  if (modifiers.includes("Alt")) modifierBits |= 1;
+  if (modifiers.includes("Control")) modifierBits |= 2;
+  if (modifiers.includes("Meta")) modifierBits |= 4;
+  if (modifiers.includes("Shift")) modifierBits |= 8;
+
+  for (let i = 0; i < repeat; i++) {
+    await executeCDPCommand(electronProcess, target.id, "Input.dispatchKeyEvent", {
+      type: "keyDown",
+      modifiers: modifierBits,
+      key: mapped.key,
+      code: mapped.code,
+      windowsVirtualKeyCode: mapped.windowsVirtualKeyCode,
+      text: mapped.text,
+    });
+    if (mapped.text && modifiers.length === 0) {
+      await executeCDPCommand(electronProcess, target.id, "Input.dispatchKeyEvent", {
+        type: "char",
+        modifiers: modifierBits,
+        key: mapped.key,
+        code: mapped.code,
+        text: mapped.text,
+      });
+    }
+    await executeCDPCommand(electronProcess, target.id, "Input.dispatchKeyEvent", {
+      type: "keyUp",
+      modifiers: modifierBits,
+      key: mapped.key,
+      code: mapped.code,
+      windowsVirtualKeyCode: mapped.windowsVirtualKeyCode,
+    });
+  }
+
+  return { targetId: target.id, key, modifiers, repeat };
+}
+
+/** Live MCP logging for console events (all levels when enabled). */
+let consoleLiveLogging = false;
+
+export function setConsoleLiveLogging(enabled: boolean): boolean {
+  consoleLiveLogging = enabled;
+  return consoleLiveLogging;
+}
+
+export function isConsoleLiveLoggingEnabled(): boolean {
+  return consoleLiveLogging;
+}
+
+export function pickMainTarget(
+  electronProcess: ElectronProcess,
+  targetId?: string
+): CDPTarget {
+  if (!electronProcess.targets?.length) {
+    throw new Error(
+      `No CDP targets available for process ${electronProcess.id}`
+    );
+  }
+  if (targetId) {
+    return pickPageTarget(electronProcess, targetId, "any");
+  }
+
+  const targets = electronProcess.targets;
+  const nodeLike =
+    targets.find((t) => t.type === "node") ??
+    targets.find((t) => t.type === "service_worker" && /electron|main/i.test(`${t.title} ${t.url}`)) ??
+    targets.find((t) => /node/i.test(t.type));
+
+  if (!nodeLike) {
+    throw new Error(
+      `No main/node target found for ${electronProcess.id}. Start with inspectMain:true (adds --inspect) or pass targetId from list_targets.`
+    );
+  }
+  return nodeLike;
+}
+
+export async function evaluateMain(
+  electronProcess: ElectronProcess,
+  expression: string,
+  targetId?: string,
+  returnByValue = true
+): Promise<{ targetId: string; targetType: string; result: unknown }> {
+  await updateCDPTargets(electronProcess);
+  const target = pickMainTarget(electronProcess, targetId);
+  const result = await executeCDPCommand(
+    electronProcess,
+    target.id,
+    "Runtime.evaluate",
+    {
+      expression,
+      returnByValue,
+      awaitPromise: true,
+    }
+  );
+  return {
+    targetId: target.id,
+    targetType: target.type,
+    result,
+  };
+}
+
+export function listTargetsByRole(electronProcess: ElectronProcess): Array<{
+  id: string;
+  type: string;
+  role: ReturnType<typeof classifyTargetRole>;
+  title: string;
+  url: string;
+  likelyMain: boolean;
+}> {
+  return (electronProcess.targets ?? []).map((t) => {
+    const role = classifyTargetRole(t.type);
+    const likelyMain =
+      t.type === "node" ||
+      t.type === "browser" ||
+      /main|electron/i.test(`${t.type} ${t.title} ${t.url}`);
+    return {
+      id: t.id,
+      type: t.type,
+      role,
+      title: t.title,
+      url: t.url,
+      likelyMain,
+    };
+  });
 }

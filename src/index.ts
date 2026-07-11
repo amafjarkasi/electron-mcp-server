@@ -16,16 +16,22 @@ import {
   diagnoseProcess,
   discoverDebugPorts,
   ensureMonitoring,
+  evaluateMain,
   executeCDPCommand,
   getAllProcesses,
   getElectronDebugInfo,
   getOuterHtml,
   getPageInfo,
   getProcess,
+  isConsoleLiveLoggingEnabled,
   listProcesses,
+  listTargetsByRole,
   navigatePage,
   pickPageTarget,
   pickTargetByRole,
+  pressKey,
+  saveScreenshot,
+  setConsoleLiveLogging,
   startElectronApp,
   stopElectronApp,
   typeText,
@@ -78,7 +84,7 @@ async function notifyLog(
 const server = new McpServer(
   {
     name: "electron-debug-mcp",
-    version: "1.2.0",
+    version: "1.3.0",
   },
   {
     capabilities: {
@@ -86,9 +92,10 @@ const server = new McpServer(
     },
     instructions: [
       "Electron Debug MCP controls and inspects Electron apps over Chrome DevTools Protocol.",
-      "Preferred workflow: start_app or attach → diagnose → get_console_messages(level=error) → screenshot → get_dom/evaluate.",
-      "Use wait_for before interacting with UI that may still be loading.",
-      "Use click/type_text/navigate for basic UI automation; use cdp_command for advanced DevTools needs.",
+      "Preferred workflow: start_app or attach → diagnose → get_console_messages(level=error) → screenshot/save_screenshot → get_dom/evaluate.",
+      "Use wait_for (selector/hidden/enabled/count/text) before interacting with UI that may still be loading.",
+      "Use click/type_text/press_key/navigate for UI automation; evaluate_main for Electron main-process targets (start with inspectMain:true).",
+      "Enable set_console_live for streaming console events as MCP log notifications.",
       "Console and network events are buffered automatically for monitored page targets.",
     ].join(" "),
   }
@@ -96,11 +103,14 @@ const server = new McpServer(
 
 processEvents.onEvent((event) => {
   void notifyResourceListChanged();
-  if (event.type === "console" && (event.level === "error" || event.level === "assert")) {
-    void notifyLog(
-      "error",
-      `[${event.processId}/${event.targetId}] ${event.level}: ${event.text}`
-    );
+  if (event.type === "console") {
+    const isError = event.level === "error" || event.level === "assert";
+    if (isError || isConsoleLiveLoggingEnabled()) {
+      void notifyLog(
+        isError ? "error" : event.level === "warning" || event.level === "warn" ? "warning" : "info",
+        `[${event.processId}/${event.targetId}] ${event.level}: ${event.text}`
+      );
+    }
   } else if (
     event.type === "process_started" ||
     event.type === "process_attached" ||
@@ -134,10 +144,21 @@ server.tool(
       .describe(
         'Optional extra Electron CLI args (e.g. ["--no-sandbox"] for CI/containers)'
       ),
+    inspectMain: z
+      .boolean()
+      .optional()
+      .describe(
+        "If true, pass --inspect so the Electron main process appears as a CDP node target for evaluate_main"
+      ),
   },
-  async ({ appPath, debugPort, extraArgs }) => {
+  async ({ appPath, debugPort, extraArgs, inspectMain }) => {
     try {
-      const proc = await startElectronApp(appPath, debugPort, extraArgs ?? []);
+      const proc = await startElectronApp(
+        appPath,
+        debugPort,
+        extraArgs ?? [],
+        { inspectMain: inspectMain ?? false }
+      );
       await notifyResourceListChanged();
       return textResult({
         id: proc.id,
@@ -513,6 +534,36 @@ server.tool(
 );
 
 server.tool(
+  "save_screenshot",
+  "Capture a screenshot and write it to a local file path (PNG/JPEG)",
+  {
+    processId: z.string(),
+    path: z.string().describe("Absolute or relative file path to write"),
+    targetId: z.string().optional(),
+    format: z.enum(["png", "jpeg"]).optional(),
+    quality: z.number().int().min(0).max(100).optional(),
+  },
+  async ({ processId, path: filePath, targetId, format, quality }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      const saved = await saveScreenshot(
+        proc,
+        filePath,
+        targetId,
+        format ?? "png",
+        quality
+      );
+      return textResult({ processId, ...saved });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
   "get_dom",
   "Read documentElement.outerHTML or a specific element's outerHTML",
   {
@@ -788,10 +839,28 @@ server.tool(
 
 server.tool(
   "wait_for",
-  "Wait until a selector exists, text appears, URL matches, or console message appears",
+  "Wait until a selector exists/hides/enables, text/URL/console matches, or node count is met",
   {
     processId: z.string(),
     selector: z.string().optional().describe("CSS selector that must exist"),
+    hidden: z
+      .string()
+      .optional()
+      .describe("CSS selector that must be absent or not visible"),
+    enabled: z
+      .string()
+      .optional()
+      .describe("CSS selector that must exist and not be disabled"),
+    countSelector: z
+      .string()
+      .optional()
+      .describe("CSS selector to count (use with minCount)"),
+    minCount: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Minimum matches required for countSelector"),
     text: z.string().optional().describe("Text that must appear in document.body"),
     urlIncludes: z.string().optional().describe("Substring that location.href must include"),
     consoleIncludes: z
@@ -799,21 +868,44 @@ server.tool(
       .optional()
       .describe("Substring that a buffered console message must include"),
     timeoutMs: z.number().int().positive().max(120000).optional(),
+    screenshotOnTimeout: z
+      .boolean()
+      .optional()
+      .describe("If true, save a PNG to the OS temp dir when wait times out"),
     targetId: z.string().optional(),
   },
   async ({
     processId,
     selector,
+    hidden,
+    enabled,
+    countSelector,
+    minCount,
     text,
     urlIncludes,
     consoleIncludes,
     timeoutMs,
+    screenshotOnTimeout,
     targetId,
   }) => {
     try {
-      if (!selector && !text && !urlIncludes && !consoleIncludes) {
+      if (
+        !selector &&
+        !hidden &&
+        !enabled &&
+        !countSelector &&
+        !text &&
+        !urlIncludes &&
+        !consoleIncludes
+      ) {
         return textResult(
-          "Provide at least one of: selector, text, urlIncludes, consoleIncludes",
+          "Provide at least one of: selector, hidden, enabled, countSelector, text, urlIncludes, consoleIncludes",
+          true
+        );
+      }
+      if ((countSelector && minCount == null) || (!countSelector && minCount != null)) {
+        return textResult(
+          "countSelector and minCount must be provided together",
           true
         );
       }
@@ -823,10 +915,17 @@ server.tool(
       }
       const result = await waitForCondition(proc, {
         selector,
+        hidden,
+        enabled,
+        count:
+          countSelector && minCount != null
+            ? { selector: countSelector, min: minCount }
+            : undefined,
         text,
         urlIncludes,
         consoleIncludes,
         timeoutMs,
+        screenshotOnTimeout,
         targetId,
       });
       return textResult({ processId, ...result });
@@ -894,6 +993,95 @@ server.tool(
         targetId,
       });
       return textResult({ processId, ...result });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "press_key",
+  "Press a key or shortcut (Enter, Escape, Tab, Arrow*, or a character) with optional modifiers",
+  {
+    processId: z.string(),
+    key: z
+      .string()
+      .describe('Key name, e.g. "Enter", "Escape", "a", "Tab", "ArrowDown"'),
+    selector: z
+      .string()
+      .optional()
+      .describe("Optional CSS selector to focus before keypress"),
+    modifiers: z
+      .array(z.enum(["Alt", "Control", "Meta", "Shift"]))
+      .optional()
+      .describe('Modifier keys, e.g. ["Control"] for Ctrl+A'),
+    repeat: z.number().int().positive().max(50).optional(),
+    targetId: z.string().optional(),
+  },
+  async ({ processId, key, selector, modifiers, repeat, targetId }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      const result = await pressKey(proc, key, {
+        selector,
+        modifiers,
+        repeat,
+        targetId,
+      });
+      return textResult({ processId, ...result });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "set_console_live",
+  "Enable/disable live MCP log notifications for console events (all levels when enabled; errors always notify)",
+  {
+    enabled: z.boolean().describe("true to stream console events as MCP logs"),
+  },
+  async ({ enabled }) => {
+    const value = setConsoleLiveLogging(enabled);
+    return textResult({
+      consoleLiveLogging: value,
+      note: "Errors/asserts always emit MCP logs. When enabled, log/info/warn/debug also stream live.",
+    });
+  }
+);
+
+server.tool(
+  "evaluate_main",
+  "Evaluate JavaScript in the Electron main/node CDP target (use start_app with inspectMain:true for best results)",
+  {
+    processId: z.string(),
+    expression: z.string(),
+    targetId: z
+      .string()
+      .optional()
+      .describe("Optional explicit main/node target id from list_targets"),
+    returnByValue: z.boolean().optional(),
+  },
+  async ({ processId, expression, targetId, returnByValue }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      await updateCDPTargets(proc);
+      const result = await evaluateMain(
+        proc,
+        expression,
+        targetId,
+        returnByValue ?? true
+      );
+      return textResult({
+        processId,
+        ...result,
+        targets: listTargetsByRole(proc),
+      });
     } catch (err) {
       return textResult(
         err instanceof Error ? err.message : String(err),
