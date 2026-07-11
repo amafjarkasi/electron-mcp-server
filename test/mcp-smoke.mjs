@@ -200,6 +200,12 @@ async function main() {
       "get_network_log",
       "list_targets",
       "cdp_command",
+      "page_info",
+      "navigate",
+      "wait_for",
+      "click",
+      "type_text",
+      "clear_buffers",
     ]) {
       assert(names.has(required), `missing tool ${required}`);
     }
@@ -341,6 +347,48 @@ async function main() {
       `expected button match: ${JSON.stringify(queried)}`
     );
     pass("query_selector");
+
+    const pageInfoResult = await client.request("tools/call", {
+      name: "page_info",
+      arguments: { processId },
+    });
+    assert(!pageInfoResult.isError, `page_info error: ${pageInfoResult.content?.[0]?.text}`);
+    const pageInfo = parseToolText(pageInfoResult);
+    assert(pageInfo.title?.includes("Minimal Electron Fixture"), "bad page title");
+    pass("page_info");
+
+    const typeResult = await client.request("tools/call", {
+      name: "type_text",
+      arguments: {
+        processId,
+        selector: "#name",
+        text: "ada",
+        clear: true,
+      },
+    });
+    assert(!typeResult.isError, `type_text error: ${typeResult.content?.[0]?.text}`);
+    pass("type_text");
+
+    const clickResult = await client.request("tools/call", {
+      name: "click",
+      arguments: { processId, selector: "#go" },
+    });
+    assert(!clickResult.isError, `click error: ${clickResult.content?.[0]?.text}`);
+    pass("click");
+
+    const waitResult = await client.request("tools/call", {
+      name: "wait_for",
+      arguments: { processId, text: "clicked:ada", timeoutMs: 5000 },
+    });
+    assert(!waitResult.isError, `wait_for error: ${waitResult.content?.[0]?.text}`);
+    pass("wait_for");
+
+    const clearResult = await client.request("tools/call", {
+      name: "clear_buffers",
+      arguments: { processId, console: true, network: true, logs: false },
+    });
+    assert(!clearResult.isError, `clear_buffers error: ${clearResult.content?.[0]?.text}`);
+    pass("clear_buffers");
 
     const shotResult = await client.request("tools/call", {
       name: "screenshot",

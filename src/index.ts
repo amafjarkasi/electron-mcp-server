@@ -10,6 +10,8 @@ import { processEvents } from "./events.js";
 import {
   attachToDebugPort,
   captureScreenshot,
+  clearProcessBuffers,
+  clickSelector,
   connectToCDPTarget,
   diagnoseProcess,
   discoverDebugPorts,
@@ -18,13 +20,17 @@ import {
   getAllProcesses,
   getElectronDebugInfo,
   getOuterHtml,
+  getPageInfo,
   getProcess,
   listProcesses,
+  navigatePage,
   pickPageTarget,
   pickTargetByRole,
   startElectronApp,
   stopElectronApp,
+  typeText,
   updateCDPTargets,
+  waitForCondition,
 } from "./process-manager.js";
 
 function textResult(data: unknown, isError = false) {
@@ -72,12 +78,19 @@ async function notifyLog(
 const server = new McpServer(
   {
     name: "electron-debug-mcp",
-    version: "1.1.0",
+    version: "1.2.0",
   },
   {
     capabilities: {
       logging: {},
     },
+    instructions: [
+      "Electron Debug MCP controls and inspects Electron apps over Chrome DevTools Protocol.",
+      "Preferred workflow: start_app or attach → diagnose → get_console_messages(level=error) → screenshot → get_dom/evaluate.",
+      "Use wait_for before interacting with UI that may still be loading.",
+      "Use click/type_text/navigate for basic UI automation; use cdp_command for advanced DevTools needs.",
+      "Console and network events are buffered automatically for monitored page targets.",
+    ].join(" "),
   }
 );
 
@@ -723,6 +736,205 @@ server.tool(
   }
 );
 
+server.tool(
+  "page_info",
+  "Get URL, title, readyState, and userAgent for a page target",
+  {
+    processId: z.string(),
+    targetId: z.string().optional(),
+  },
+  async ({ processId, targetId }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      return textResult(await getPageInfo(proc, targetId));
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "navigate",
+  "Navigate a page target to a URL (Page.navigate) and optionally wait for load",
+  {
+    processId: z.string(),
+    url: z.string().describe("Absolute or app URL to navigate to"),
+    targetId: z.string().optional(),
+    waitUntilLoad: z.boolean().optional(),
+    timeoutMs: z.number().int().positive().max(120000).optional(),
+  },
+  async ({ processId, url, targetId, waitUntilLoad, timeoutMs }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      const result = await navigatePage(
+        proc,
+        url,
+        targetId,
+        waitUntilLoad ?? true,
+        timeoutMs ?? 15000
+      );
+      return textResult({ processId, ...result });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "wait_for",
+  "Wait until a selector exists, text appears, URL matches, or console message appears",
+  {
+    processId: z.string(),
+    selector: z.string().optional().describe("CSS selector that must exist"),
+    text: z.string().optional().describe("Text that must appear in document.body"),
+    urlIncludes: z.string().optional().describe("Substring that location.href must include"),
+    consoleIncludes: z
+      .string()
+      .optional()
+      .describe("Substring that a buffered console message must include"),
+    timeoutMs: z.number().int().positive().max(120000).optional(),
+    targetId: z.string().optional(),
+  },
+  async ({
+    processId,
+    selector,
+    text,
+    urlIncludes,
+    consoleIncludes,
+    timeoutMs,
+    targetId,
+  }) => {
+    try {
+      if (!selector && !text && !urlIncludes && !consoleIncludes) {
+        return textResult(
+          "Provide at least one of: selector, text, urlIncludes, consoleIncludes",
+          true
+        );
+      }
+      const proc = requireRunningProcess(processId);
+      if (consoleIncludes) {
+        await ensureMonitoring(proc);
+      }
+      const result = await waitForCondition(proc, {
+        selector,
+        text,
+        urlIncludes,
+        consoleIncludes,
+        timeoutMs,
+        targetId,
+      });
+      return textResult({ processId, ...result });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "click",
+  "Click the center of a CSS selector via CDP Input.dispatchMouseEvent",
+  {
+    processId: z.string(),
+    selector: z.string().describe("CSS selector to click"),
+    targetId: z.string().optional(),
+    button: z.enum(["left", "right", "middle"]).optional(),
+  },
+  async ({ processId, selector, targetId, button }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      const result = await clickSelector(
+        proc,
+        selector,
+        targetId,
+        button ?? "left"
+      );
+      return textResult({ processId, ...result });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "type_text",
+  "Type text into the focused element (optionally click a selector first)",
+  {
+    processId: z.string(),
+    text: z.string(),
+    selector: z
+      .string()
+      .optional()
+      .describe("Optional CSS selector to focus before typing"),
+    clear: z
+      .boolean()
+      .optional()
+      .describe("If true and selector is set, clear the field first"),
+    pressEnter: z.boolean().optional(),
+    targetId: z.string().optional(),
+  },
+  async ({ processId, text, selector, clear, pressEnter, targetId }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      const result = await typeText(proc, text, {
+        selector,
+        clear,
+        pressEnter,
+        targetId,
+      });
+      return textResult({ processId, ...result });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "clear_buffers",
+  "Clear buffered console messages, network events, and/or process logs",
+  {
+    processId: z.string(),
+    console: z.boolean().optional(),
+    network: z.boolean().optional(),
+    logs: z.boolean().optional(),
+  },
+  async ({ processId, console: clearConsole, network, logs }) => {
+    try {
+      const proc = getProcess(processId);
+      if (!proc) {
+        return textResult(`Process not found: ${processId}`, true);
+      }
+      const what: Array<"console" | "network" | "logs"> = [];
+      if (clearConsole ?? true) what.push("console");
+      if (network ?? true) what.push("network");
+      if (logs ?? false) what.push("logs");
+      return textResult({
+        processId,
+        ...clearProcessBuffers(proc, what),
+      });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
 // --- Prompts ---
 
 server.prompt(
@@ -767,6 +979,34 @@ server.prompt(
 2. Filter errors/exceptions; if empty, evaluate a canary then reproduce the user bug.
 3. Use get_network_log for failed requests.
 4. Report stack/text, targetId, and suggested fix.`,
+        },
+      },
+    ],
+  })
+);
+
+server.prompt(
+  "ui_smoke_check",
+  "Workflow for a quick interactive UI smoke check in an Electron window",
+  {
+    processId: z.string(),
+    selector: z
+      .string()
+      .describe("Primary interactive CSS selector, e.g. a button or input"),
+  },
+  async ({ processId, selector }) => ({
+    messages: [
+      {
+        role: "user",
+        content: {
+          type: "text",
+          text: `Run a quick UI smoke check for process ${processId}.
+1. page_info to confirm URL/title.
+2. wait_for selector=${selector}.
+3. screenshot before interaction.
+4. If selector is an input, type_text a sample value; if a button, click it.
+5. wait_for a visible status/text change, then screenshot again.
+6. get_console_messages(level=error) and summarize pass/fail.`,
         },
       },
     ],

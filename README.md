@@ -150,6 +150,12 @@ Then **restart Cursor**. You should see tools like `start_app`, `attach`, `scree
 | --- | --- |
 | `reload` | `Page.reload` (one target or all pages) |
 | `pause` / `resume` | `Debugger.pause` / `Debugger.resume` |
+| `navigate` | `Page.navigate` + optional load wait |
+| `wait_for` | Wait for selector / text / URL / console match |
+| `click` | Click a CSS selector via CDP mouse events |
+| `type_text` | Type into focused/selected input |
+| `page_info` | URL, title, readyState, userAgent |
+| `clear_buffers` | Clear console / network / log buffers |
 | `cdp_command` | Any raw `Domain.method` CDP call |
 
 ---
@@ -263,7 +269,43 @@ Returns debug-port health, page/worker/browser target counts, monitoring status,
 5. `get_dom` / `evaluate` to confirm root cause
 6. `stop_app` when finished
 
-Built-in prompts (`debug_blank_window`, `find_renderer_exception`) encode these flows for the model.
+Built-in prompts (`debug_blank_window`, `find_renderer_exception`, `ui_smoke_check`) encode these flows for the model.
+
+### 8) Click + type UI automation
+
+**Tool:** `type_text`
+
+```json
+{
+  "processId": "electron-1710000000000",
+  "selector": "#email",
+  "text": "ada@example.com",
+  "clear": true
+}
+```
+
+**Tool:** `click`
+
+```json
+{
+  "processId": "electron-1710000000000",
+  "selector": "button[type=submit]"
+}
+```
+
+**Tool:** `wait_for`
+
+```json
+{
+  "processId": "electron-1710000000000",
+  "text": "Welcome",
+  "timeoutMs": 8000
+}
+```
+
+### 9) Example Cursor config file
+
+See [`examples/cursor-mcp.json`](./examples/cursor-mcp.json) — copy the `electron-debug` entry into your Cursor MCP settings and fix the path.
 
 ---
 
