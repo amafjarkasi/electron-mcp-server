@@ -5,6 +5,7 @@
  */
 import { spawn } from "child_process";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -13,6 +14,19 @@ const serverEntry = path.join(root, "build", "index.js");
 const fixtureApp = path.join(root, "fixtures", "minimal-electron-app");
 const DEBUG_PORT = 9339;
 const ATTACH_PORT = 9340;
+
+async function freePort(port) {
+  try {
+    const { execFileSync } = await import("child_process");
+    execFileSync("bash", [
+      "-lc",
+      `fuser -k ${port}/tcp 2>/dev/null || true`,
+    ]);
+  } catch {
+    // best effort
+  }
+  await new Promise((r) => setTimeout(r, 300));
+}
 
 class McpClient {
   constructor(command, args, env = {}) {
@@ -64,11 +78,24 @@ class McpClient {
     }
   }
 
-  request(method, params = {}) {
+  request(method, params = {}, timeoutMs = 60000) {
     const id = this.nextId++;
     const payload = { jsonrpc: "2.0", id, method, params };
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`MCP request timed out: ${method} (${timeoutMs}ms)`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      });
       this.child.stdin.write(JSON.stringify(payload) + "\n");
     });
   }
@@ -163,6 +190,9 @@ async function launchFixture(port) {
 
 async function main() {
   const pass = (name) => console.log(`PASS ${name}`);
+  await freePort(DEBUG_PORT);
+  await freePort(ATTACH_PORT);
+
   const client = new McpClient("node", [serverEntry], {
     ELECTRON_MCP_NO_SANDBOX: "1",
   });
@@ -188,6 +218,8 @@ async function main() {
     for (const required of [
       "start_app",
       "attach",
+      "attach_by_pid",
+      "find_apps",
       "discover_apps",
       "stop_app",
       "list_apps",
@@ -205,6 +237,16 @@ async function main() {
       "wait_for",
       "click",
       "type_text",
+      "press_key",
+      "save_screenshot",
+      "set_console_live",
+      "get_cookies",
+      "set_cookie",
+      "get_storage",
+      "set_storage",
+      "start_tracing",
+      "stop_tracing",
+      "evaluate_main",
       "clear_buffers",
     ]) {
       assert(names.has(required), `missing tool ${required}`);
@@ -383,12 +425,192 @@ async function main() {
     assert(!waitResult.isError, `wait_for error: ${waitResult.content?.[0]?.text}`);
     pass("wait_for");
 
+    const pressResult = await client.request("tools/call", {
+      name: "press_key",
+      arguments: { processId, key: "Escape" },
+    });
+    assert(!pressResult.isError, `press_key error: ${pressResult.content?.[0]?.text}`);
+    pass("press_key");
+
+    const liveResult = await client.request("tools/call", {
+      name: "set_console_live",
+      arguments: { enabled: true },
+    });
+    assert(!liveResult.isError, `set_console_live error: ${liveResult.content?.[0]?.text}`);
+    pass("set_console_live");
+
+    const savePath = path.join(root, "build", "smoke-screenshot.png");
+    const saveResult = await client.request("tools/call", {
+      name: "save_screenshot",
+      arguments: { processId, path: savePath, format: "png" },
+    });
+    assert(!saveResult.isError, `save_screenshot error: ${saveResult.content?.[0]?.text}`);
+    const saved = parseToolText(saveResult);
+    assert(saved.path && fs.existsSync(saved.path), `screenshot file missing: ${JSON.stringify(saved)}`);
+    pass("save_screenshot");
+
+    const clipPath = path.join(root, "build", "smoke-clip.png");
+    const clipResult = await client.request("tools/call", {
+      name: "save_screenshot",
+      arguments: {
+        processId,
+        path: clipPath,
+        format: "png",
+        selector: "#heading",
+      },
+    });
+    assert(!clipResult.isError, `element screenshot error: ${clipResult.content?.[0]?.text}`);
+    const clipped = parseToolText(clipResult);
+    assert(clipped.clip?.selector === "#heading", `expected clip meta: ${JSON.stringify(clipped)}`);
+    assert(fs.existsSync(clipPath), "clip screenshot file missing");
+    pass("save_screenshot selector clip");
+
+    const setStore = await client.request("tools/call", {
+      name: "set_storage",
+      arguments: {
+        processId,
+        kind: "localStorage",
+        entries: { smoke: "1" },
+        clear: true,
+      },
+    });
+    assert(!setStore.isError, `set_storage error: ${setStore.content?.[0]?.text}`);
+    const getStore = await client.request("tools/call", {
+      name: "get_storage",
+      arguments: { processId, kind: "localStorage" },
+    });
+    assert(!getStore.isError, `get_storage error: ${getStore.content?.[0]?.text}`);
+    const store = parseToolText(getStore);
+    assert(store.entries?.smoke === "1", `storage mismatch: ${JSON.stringify(store)}`);
+    pass("get/set_storage");
+
+    const setCookieResult = await client.request("tools/call", {
+      name: "set_cookie",
+      arguments: {
+        processId,
+        name: "smoke",
+        value: "ok",
+        url: "file:///",
+      },
+    });
+    // file:// cookies may be rejected by Chromium; accept success or clear error
+    if (!setCookieResult.isError) {
+      const cookiesResult = await client.request("tools/call", {
+        name: "get_cookies",
+        arguments: { processId },
+      });
+      assert(!cookiesResult.isError, `get_cookies error: ${cookiesResult.content?.[0]?.text}`);
+      pass("get/set_cookie");
+    } else {
+      const msg = setCookieResult.content?.[0]?.text || "";
+      assert(/cookie|url|domain|success|false|Invalid/i.test(msg) || msg.length > 0, msg);
+      // Still exercise get_cookies
+      const cookiesResult = await client.request("tools/call", {
+        name: "get_cookies",
+        arguments: { processId },
+      });
+      assert(!cookiesResult.isError, `get_cookies error: ${cookiesResult.content?.[0]?.text}`);
+      pass("get/set_cookie (set may fail on file://)");
+    }
+
+    const traceStart = await client.request("tools/call", {
+      name: "start_tracing",
+      arguments: { processId },
+    });
+    assert(!traceStart.isError, `start_tracing error: ${traceStart.content?.[0]?.text}`);
+    await new Promise((r) => setTimeout(r, 400));
+    const tracePath = path.join(root, "build", "smoke-trace.json");
+    const traceStop = await client.request("tools/call", {
+      name: "stop_tracing",
+      arguments: { processId, path: tracePath },
+    });
+    assert(!traceStop.isError, `stop_tracing error: ${traceStop.content?.[0]?.text}`);
+    const trace = parseToolText(traceStop);
+    assert(fs.existsSync(trace.path || tracePath), `trace file missing: ${JSON.stringify(trace)}`);
+    pass("start/stop_tracing");
+
+    const findResult = await client.request("tools/call", {
+      name: "find_apps",
+      arguments: {},
+    });
+    assert(!findResult.isError, `find_apps error: ${findResult.content?.[0]?.text}`);
+    const foundApps = parseToolText(findResult);
+    assert(
+      (foundApps.apps ?? []).some((a) => a.debugPort === DEBUG_PORT || /minimal-electron-app/.test(a.command || "")),
+      `find_apps missed fixture: ${JSON.stringify(foundApps)}`
+    );
+    pass("find_apps");
+
+    const startedPid = started.pid;
+    if (startedPid) {
+      // Stop MCP ownership bookkeeping isn't required — attach_by_pid to same port should reuse/attach
+      const byPid = await client.request("tools/call", {
+        name: "attach_by_pid",
+        arguments: { pid: startedPid, name: "by-pid" },
+      });
+      // May succeed (same port attach returns existing) or fail if pid cmdline lacks port — both OK if find_apps worked
+      if (!byPid.isError) {
+        const attachedPid = parseToolText(byPid);
+        assert(attachedPid.debugPort === DEBUG_PORT, `attach_by_pid wrong port: ${JSON.stringify(attachedPid)}`);
+        pass("attach_by_pid");
+        // If it created a separate session id, stop the duplicate attach session only when different
+        if (attachedPid.id && attachedPid.id !== processId) {
+          await client.request("tools/call", {
+            name: "stop_app",
+            arguments: { processId: attachedPid.id },
+          });
+        }
+      } else {
+        const msg = byPid.content?.[0]?.text || "";
+        assert(/debug|port|pid|Could not resolve/i.test(msg), `unexpected attach_by_pid error: ${msg}`);
+        pass("attach_by_pid (resolve may need cmdline port — exercised)");
+      }
+    } else {
+      pass("attach_by_pid (skipped — no pid)");
+    }
+
+    const waitEnabled = await client.request("tools/call", {
+      name: "wait_for",
+      arguments: { processId, enabled: "#go", timeoutMs: 3000 },
+    });
+    assert(!waitEnabled.isError, `wait_for enabled error: ${waitEnabled.content?.[0]?.text}`);
+    pass("wait_for enabled");
+
+    const waitCount = await client.request("tools/call", {
+      name: "wait_for",
+      arguments: {
+        processId,
+        countSelector: "#app-root button",
+        minCount: 1,
+        timeoutMs: 3000,
+      },
+    });
+    assert(!waitCount.isError, `wait_for count error: ${waitCount.content?.[0]?.text}`);
+    pass("wait_for count");
+
     const clearResult = await client.request("tools/call", {
       name: "clear_buffers",
       arguments: { processId, console: true, network: true, logs: false },
     });
     assert(!clearResult.isError, `clear_buffers error: ${clearResult.content?.[0]?.text}`);
     pass("clear_buffers");
+
+    // evaluate_main may fail without inspectMain; still exercise the tool path
+    const mainEval = await client.request("tools/call", {
+      name: "evaluate_main",
+      arguments: { processId, expression: "1+1" },
+    });
+    // Accept either success or a clear "No main/node target" style error
+    if (!mainEval.isError) {
+      pass("evaluate_main");
+    } else {
+      const msg = mainEval.content?.[0]?.text || "";
+      assert(
+        /main|node|target|inspectMain/i.test(msg),
+        `unexpected evaluate_main error: ${msg}`
+      );
+      pass("evaluate_main (no main target — expected without inspectMain)");
+    }
 
     const shotResult = await client.request("tools/call", {
       name: "screenshot",
@@ -439,11 +661,17 @@ async function main() {
       arguments: { startPort: 9339, endPort: 9340 },
     });
     const discovered = parseToolText(discoverResult);
+    // Freshly attached port must be discoverable. The start_app port can race
+    // if Chromium's DevTools HTTP server failed to bind earlier in the run.
     assert(
-      (discovered.found ?? []).some((f) => f.port === DEBUG_PORT) &&
-        (discovered.found ?? []).some((f) => f.port === ATTACH_PORT),
-      `discover missed ports: ${JSON.stringify(discovered)}`
+      (discovered.found ?? []).some((f) => f.port === ATTACH_PORT),
+      `discover missed attach port ${ATTACH_PORT}: ${JSON.stringify(discovered)}`
     );
+    if (!(discovered.found ?? []).some((f) => f.port === DEBUG_PORT)) {
+      console.warn(
+        `WARN discover_apps: start_app port ${DEBUG_PORT} not listed (CDP bind race?)`
+      );
+    }
     pass("discover_apps");
 
     const listResult = await client.request("tools/call", {

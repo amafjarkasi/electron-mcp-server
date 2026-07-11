@@ -8,6 +8,7 @@ import { z } from "zod";
 import { log } from "./log.js";
 import { processEvents } from "./events.js";
 import {
+  attachByPid,
   attachToDebugPort,
   captureScreenshot,
   clearProcessBuffers,
@@ -16,18 +17,31 @@ import {
   diagnoseProcess,
   discoverDebugPorts,
   ensureMonitoring,
+  evaluateMain,
   executeCDPCommand,
+  findRunningElectronApps,
   getAllProcesses,
+  getCookies,
   getElectronDebugInfo,
   getOuterHtml,
   getPageInfo,
   getProcess,
+  getStorage,
+  isConsoleLiveLoggingEnabled,
   listProcesses,
+  listTargetsByRole,
   navigatePage,
   pickPageTarget,
   pickTargetByRole,
+  pressKey,
+  saveScreenshot,
+  setConsoleLiveLogging,
+  setCookie,
+  setStorage,
   startElectronApp,
+  startTracing,
   stopElectronApp,
+  stopTracing,
   typeText,
   updateCDPTargets,
   waitForCondition,
@@ -78,7 +92,7 @@ async function notifyLog(
 const server = new McpServer(
   {
     name: "electron-debug-mcp",
-    version: "1.2.0",
+    version: "1.5.0",
   },
   {
     capabilities: {
@@ -86,9 +100,11 @@ const server = new McpServer(
     },
     instructions: [
       "Electron Debug MCP controls and inspects Electron apps over Chrome DevTools Protocol.",
-      "Preferred workflow: start_app or attach → diagnose → get_console_messages(level=error) → screenshot → get_dom/evaluate.",
-      "Use wait_for before interacting with UI that may still be loading.",
-      "Use click/type_text/navigate for basic UI automation; use cdp_command for advanced DevTools needs.",
+      "Preferred workflow: start_app / attach / attach_by_pid / find_apps → diagnose → get_console_messages(level=error) → screenshot/save_screenshot → get_dom/evaluate.",
+      "Use wait_for (selector/hidden/enabled/count/text) before interacting with UI that may still be loading.",
+      "Use click/type_text/press_key/navigate for UI automation; evaluate_main for Electron main-process targets (start with inspectMain:true).",
+      "screenshot/save_screenshot accept selector to clip an element. Use get/set_cookies and get/set_storage for web state; start_tracing/stop_tracing for perf traces.",
+      "Enable set_console_live for streaming console events as MCP log notifications.",
       "Console and network events are buffered automatically for monitored page targets.",
     ].join(" "),
   }
@@ -96,11 +112,14 @@ const server = new McpServer(
 
 processEvents.onEvent((event) => {
   void notifyResourceListChanged();
-  if (event.type === "console" && (event.level === "error" || event.level === "assert")) {
-    void notifyLog(
-      "error",
-      `[${event.processId}/${event.targetId}] ${event.level}: ${event.text}`
-    );
+  if (event.type === "console") {
+    const isError = event.level === "error" || event.level === "assert";
+    if (isError || isConsoleLiveLoggingEnabled()) {
+      void notifyLog(
+        isError ? "error" : event.level === "warning" || event.level === "warn" ? "warning" : "info",
+        `[${event.processId}/${event.targetId}] ${event.level}: ${event.text}`
+      );
+    }
   } else if (
     event.type === "process_started" ||
     event.type === "process_attached" ||
@@ -134,10 +153,21 @@ server.tool(
       .describe(
         'Optional extra Electron CLI args (e.g. ["--no-sandbox"] for CI/containers)'
       ),
+    inspectMain: z
+      .boolean()
+      .optional()
+      .describe(
+        "If true, pass --inspect so the Electron main process appears as a CDP node target for evaluate_main"
+      ),
   },
-  async ({ appPath, debugPort, extraArgs }) => {
+  async ({ appPath, debugPort, extraArgs, inspectMain }) => {
     try {
-      const proc = await startElectronApp(appPath, debugPort, extraArgs ?? []);
+      const proc = await startElectronApp(
+        appPath,
+        debugPort,
+        extraArgs ?? [],
+        { inspectMain: inspectMain ?? false }
+      );
       await notifyResourceListChanged();
       return textResult({
         id: proc.id,
@@ -185,6 +215,52 @@ server.tool(
         debugPort: proc.debugPort,
         targets: proc.targets ?? [],
       });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "attach_by_pid",
+  "Attach to a running Electron app by OS process id (resolves --remote-debugging-port from the process command line)",
+  {
+    pid: z.number().int().positive().describe("OS process id of the Electron main process"),
+    name: z.string().optional(),
+  },
+  async ({ pid, name }) => {
+    try {
+      const proc = await attachByPid(pid, name);
+      await notifyResourceListChanged();
+      return textResult({
+        id: proc.id,
+        name: proc.name,
+        status: proc.status,
+        attached: proc.attached,
+        debugPort: proc.debugPort,
+        pid,
+        targets: proc.targets ?? [],
+      });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "find_apps",
+  "Find running Electron processes on this machine (PID, command, debugPort if present in argv)",
+  {},
+  async () => {
+    try {
+      const apps = await findRunningElectronApps();
+      return textResult({ apps, count: apps.length });
     } catch (err) {
       return textResult(
         err instanceof Error ? err.message : String(err),
@@ -465,21 +541,26 @@ server.tool(
 
 server.tool(
   "screenshot",
-  "Capture a PNG/JPEG screenshot of a page target via Page.captureScreenshot",
+  "Capture a PNG/JPEG screenshot of a page target via Page.captureScreenshot (optional CSS selector clips to element bounds)",
   {
     processId: z.string(),
     targetId: z.string().optional(),
     format: z.enum(["png", "jpeg"]).optional(),
     quality: z.number().int().min(0).max(100).optional(),
+    selector: z
+      .string()
+      .optional()
+      .describe("Optional CSS selector — capture only that element's bounding box"),
   },
-  async ({ processId, targetId, format, quality }) => {
+  async ({ processId, targetId, format, quality, selector }) => {
     try {
       const proc = requireRunningProcess(processId);
       const shot = await captureScreenshot(
         proc,
         targetId,
         format ?? "png",
-        quality
+        quality,
+        selector
       );
       return {
         content: [
@@ -496,6 +577,7 @@ server.tool(
                 targetId: shot.targetId,
                 mimeType: shot.mimeType,
                 bytesBase64: shot.data.length,
+                clip: shot.clip ?? null,
               },
               null,
               2
@@ -503,6 +585,41 @@ server.tool(
           },
         ],
       };
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "save_screenshot",
+  "Capture a screenshot and write it to a local file path (PNG/JPEG); optional selector clips to element",
+  {
+    processId: z.string(),
+    path: z.string().describe("Absolute or relative file path to write"),
+    targetId: z.string().optional(),
+    format: z.enum(["png", "jpeg"]).optional(),
+    quality: z.number().int().min(0).max(100).optional(),
+    selector: z
+      .string()
+      .optional()
+      .describe("Optional CSS selector — capture only that element's bounding box"),
+  },
+  async ({ processId, path: filePath, targetId, format, quality, selector }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      const saved = await saveScreenshot(
+        proc,
+        filePath,
+        targetId,
+        format ?? "png",
+        quality,
+        selector
+      );
+      return textResult({ processId, ...saved });
     } catch (err) {
       return textResult(
         err instanceof Error ? err.message : String(err),
@@ -788,10 +905,28 @@ server.tool(
 
 server.tool(
   "wait_for",
-  "Wait until a selector exists, text appears, URL matches, or console message appears",
+  "Wait until a selector exists/hides/enables, text/URL/console matches, or node count is met",
   {
     processId: z.string(),
     selector: z.string().optional().describe("CSS selector that must exist"),
+    hidden: z
+      .string()
+      .optional()
+      .describe("CSS selector that must be absent or not visible"),
+    enabled: z
+      .string()
+      .optional()
+      .describe("CSS selector that must exist and not be disabled"),
+    countSelector: z
+      .string()
+      .optional()
+      .describe("CSS selector to count (use with minCount)"),
+    minCount: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Minimum matches required for countSelector"),
     text: z.string().optional().describe("Text that must appear in document.body"),
     urlIncludes: z.string().optional().describe("Substring that location.href must include"),
     consoleIncludes: z
@@ -799,21 +934,44 @@ server.tool(
       .optional()
       .describe("Substring that a buffered console message must include"),
     timeoutMs: z.number().int().positive().max(120000).optional(),
+    screenshotOnTimeout: z
+      .boolean()
+      .optional()
+      .describe("If true, save a PNG to the OS temp dir when wait times out"),
     targetId: z.string().optional(),
   },
   async ({
     processId,
     selector,
+    hidden,
+    enabled,
+    countSelector,
+    minCount,
     text,
     urlIncludes,
     consoleIncludes,
     timeoutMs,
+    screenshotOnTimeout,
     targetId,
   }) => {
     try {
-      if (!selector && !text && !urlIncludes && !consoleIncludes) {
+      if (
+        !selector &&
+        !hidden &&
+        !enabled &&
+        !countSelector &&
+        !text &&
+        !urlIncludes &&
+        !consoleIncludes
+      ) {
         return textResult(
-          "Provide at least one of: selector, text, urlIncludes, consoleIncludes",
+          "Provide at least one of: selector, hidden, enabled, countSelector, text, urlIncludes, consoleIncludes",
+          true
+        );
+      }
+      if ((countSelector && minCount == null) || (!countSelector && minCount != null)) {
+        return textResult(
+          "countSelector and minCount must be provided together",
           true
         );
       }
@@ -823,10 +981,17 @@ server.tool(
       }
       const result = await waitForCondition(proc, {
         selector,
+        hidden,
+        enabled,
+        count:
+          countSelector && minCount != null
+            ? { selector: countSelector, min: minCount }
+            : undefined,
         text,
         urlIncludes,
         consoleIncludes,
         timeoutMs,
+        screenshotOnTimeout,
         targetId,
       });
       return textResult({ processId, ...result });
@@ -894,6 +1059,277 @@ server.tool(
         targetId,
       });
       return textResult({ processId, ...result });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "press_key",
+  "Press a key or shortcut (Enter, Escape, Tab, Arrow*, or a character) with optional modifiers",
+  {
+    processId: z.string(),
+    key: z
+      .string()
+      .describe('Key name, e.g. "Enter", "Escape", "a", "Tab", "ArrowDown"'),
+    selector: z
+      .string()
+      .optional()
+      .describe("Optional CSS selector to focus before keypress"),
+    modifiers: z
+      .array(z.enum(["Alt", "Control", "Meta", "Shift"]))
+      .optional()
+      .describe('Modifier keys, e.g. ["Control"] for Ctrl+A'),
+    repeat: z.number().int().positive().max(50).optional(),
+    targetId: z.string().optional(),
+  },
+  async ({ processId, key, selector, modifiers, repeat, targetId }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      const result = await pressKey(proc, key, {
+        selector,
+        modifiers,
+        repeat,
+        targetId,
+      });
+      return textResult({ processId, ...result });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "set_console_live",
+  "Enable/disable live MCP log notifications for console events (all levels when enabled; errors always notify)",
+  {
+    enabled: z.boolean().describe("true to stream console events as MCP logs"),
+  },
+  async ({ enabled }) => {
+    const value = setConsoleLiveLogging(enabled);
+    return textResult({
+      consoleLiveLogging: value,
+      note: "Errors/asserts always emit MCP logs. When enabled, log/info/warn/debug also stream live.",
+    });
+  }
+);
+
+server.tool(
+  "get_cookies",
+  "Read cookies for the page (optionally filtered by URL)",
+  {
+    processId: z.string(),
+    urls: z.array(z.string()).optional(),
+    targetId: z.string().optional(),
+  },
+  async ({ processId, urls, targetId }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      const result = await getCookies(proc, { urls, targetId });
+      return textResult({ processId, ...result });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "set_cookie",
+  "Set a cookie on the page (provide url or domain; defaults to current location.href)",
+  {
+    processId: z.string(),
+    name: z.string(),
+    value: z.string(),
+    url: z.string().optional(),
+    domain: z.string().optional(),
+    path: z.string().optional(),
+    secure: z.boolean().optional(),
+    httpOnly: z.boolean().optional(),
+    sameSite: z.enum(["Strict", "Lax", "None"]).optional(),
+    expires: z.number().optional().describe("Unix time in seconds"),
+    targetId: z.string().optional(),
+  },
+  async ({
+    processId,
+    name,
+    value,
+    url,
+    domain,
+    path: cookiePath,
+    secure,
+    httpOnly,
+    sameSite,
+    expires,
+    targetId,
+  }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      const result = await setCookie(
+        proc,
+        {
+          name,
+          value,
+          url,
+          domain,
+          path: cookiePath,
+          secure,
+          httpOnly,
+          sameSite,
+          expires,
+        },
+        targetId
+      );
+      return textResult({ processId, ...result });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "get_storage",
+  "Read localStorage or sessionStorage key/value pairs from the page",
+  {
+    processId: z.string(),
+    kind: z.enum(["localStorage", "sessionStorage"]).optional(),
+    targetId: z.string().optional(),
+  },
+  async ({ processId, kind, targetId }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      const result = await getStorage(
+        proc,
+        kind ?? "localStorage",
+        targetId
+      );
+      return textResult({ processId, ...result });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "set_storage",
+  "Write localStorage or sessionStorage entries (optionally clear first)",
+  {
+    processId: z.string(),
+    kind: z.enum(["localStorage", "sessionStorage"]).optional(),
+    entries: z.record(z.string()),
+    clear: z.boolean().optional(),
+    targetId: z.string().optional(),
+  },
+  async ({ processId, kind, entries, clear, targetId }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      const result = await setStorage(
+        proc,
+        kind ?? "localStorage",
+        entries,
+        { clear, targetId }
+      );
+      return textResult({ processId, ...result });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "start_tracing",
+  "Start Chrome DevTools Protocol performance tracing (pair with stop_tracing)",
+  {
+    processId: z.string(),
+    categories: z
+      .string()
+      .optional()
+      .describe("Comma-separated CDP trace categories (default: timeline + v8)"),
+    targetId: z.string().optional(),
+  },
+  async ({ processId, categories, targetId }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      const result = await startTracing(proc, { categories, targetId });
+      return textResult(result);
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "stop_tracing",
+  "Stop CDP tracing and write a JSON trace file (open in chrome://tracing)",
+  {
+    processId: z.string(),
+    path: z
+      .string()
+      .optional()
+      .describe("Output file path (default: OS temp dir)"),
+  },
+  async ({ processId, path: filePath }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      const result = await stopTracing(proc, filePath);
+      return textResult(result);
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
+);
+
+server.tool(
+  "evaluate_main",
+  "Evaluate JavaScript in the Electron main/node CDP target (use start_app with inspectMain:true for best results)",
+  {
+    processId: z.string(),
+    expression: z.string(),
+    targetId: z
+      .string()
+      .optional()
+      .describe("Optional explicit main/node target id from list_targets"),
+    returnByValue: z.boolean().optional(),
+  },
+  async ({ processId, expression, targetId, returnByValue }) => {
+    try {
+      const proc = requireRunningProcess(processId);
+      await updateCDPTargets(proc);
+      const result = await evaluateMain(
+        proc,
+        expression,
+        targetId,
+        returnByValue ?? true
+      );
+      return textResult({
+        processId,
+        ...result,
+        targets: listTargetsByRole(proc),
+      });
     } catch (err) {
       return textResult(
         err instanceof Error ? err.message : String(err),
