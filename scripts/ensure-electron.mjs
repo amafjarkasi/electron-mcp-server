@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 /**
  * Ensure the electron package has a real platform binary.
- * Downloads via @electron/get directly (does not trust electron/install.js,
- * which no-ops when ELECTRON_SKIP_BINARY_DOWNLOAD is set).
+ * Downloads via @electron/get directly (ignores ELECTRON_SKIP_BINARY_DOWNLOAD).
  */
 import { spawnSync } from "child_process";
 import fs from "fs";
@@ -18,10 +17,11 @@ const distDir = path.join(electronDir, "dist");
 
 function fail(message) {
   console.error(`[ensure-electron] ${message}`);
-  process.exit(1);
+  process.exitCode = 1;
+  throw new Error(message);
 }
 
-function platformPath() {
+function platformRelPath() {
   switch (os.platform()) {
     case "darwin":
     case "mas":
@@ -54,20 +54,22 @@ function requireFrom(dir, id) {
   return req(id);
 }
 
+function loadDep(id) {
+  try {
+    return requireFrom(root, id);
+  } catch {
+    return requireFrom(electronDir, id);
+  }
+}
+
 function ensureDeps() {
   const tryResolve = () => {
     try {
-      requireFrom(root, "@electron/get");
-      requireFrom(root, "extract-zip");
+      loadDep("@electron/get");
+      loadDep("extract-zip");
       return true;
     } catch {
-      try {
-        requireFrom(electronDir, "@electron/get");
-        requireFrom(electronDir, "extract-zip");
-        return true;
-      } catch {
-        return false;
-      }
+      return false;
     }
   };
 
@@ -94,11 +96,14 @@ function ensureDeps() {
   }
 }
 
-function loadDep(id) {
-  try {
-    return requireFrom(root, id);
-  } catch {
-    return requireFrom(electronDir, id);
+function clearElectronCache() {
+  const cacheRoot =
+    process.env.electron_config_cache ||
+    process.env.ELECTRON_CACHE ||
+    path.join(os.homedir(), "AppData", "Local", "electron", "Cache");
+  if (fs.existsSync(cacheRoot)) {
+    console.warn(`[ensure-electron] Clearing Electron cache: ${cacheRoot}`);
+    rmQuiet(cacheRoot);
   }
 }
 
@@ -116,50 +121,85 @@ function dumpElectronEnv() {
   }
 }
 
-async function downloadElectron() {
+function asPromise(maybePromise) {
+  return Promise.resolve(maybePromise);
+}
+
+async function downloadElectron({ clearCache }) {
   const pkg = JSON.parse(
     fs.readFileSync(path.join(electronDir, "package.json"), "utf8")
   );
   const version = pkg.version;
-  const rel = platformPath();
+  const rel = platformRelPath();
   const { downloadArtifact } = loadDep("@electron/get");
-  const extract = loadDep("extract-zip");
+  const extractZip = loadDep("extract-zip");
 
   console.log(
     `[ensure-electron] Downloading Electron ${version} for ${os.platform()}/${os.arch()} ...`
   );
 
-  // Never honor skip flags for this recovery path.
   delete process.env.ELECTRON_SKIP_BINARY_DOWNLOAD;
   delete process.env.npm_config_electron_skip_binary_download;
+
+  if (clearCache) {
+    clearElectronCache();
+  }
 
   rmQuiet(distDir);
   rmQuiet(pathTxt);
   fs.mkdirSync(distDir, { recursive: true });
 
-  const zipPath = await downloadArtifact({
-    version,
-    artifactName: "electron",
-    force: true,
-    platform: process.env.npm_config_platform || process.platform,
-    arch: process.env.npm_config_arch || process.arch,
-  });
+  const zipPath = await asPromise(
+    downloadArtifact({
+      version,
+      artifactName: "electron",
+      force: true,
+      platform: process.env.npm_config_platform || process.platform,
+      arch: process.env.npm_config_arch || process.arch,
+    })
+  );
 
-  console.log(`[ensure-electron] Extracting ${zipPath} ...`);
-  await extract(zipPath, { dir: distDir });
+  if (!zipPath || !fs.existsSync(zipPath)) {
+    fail(`downloadArtifact did not return a zip file: ${String(zipPath)}`);
+  }
 
-  const binary = path.join(distDir, rel);
-  if (!fs.existsSync(binary)) {
-    const listing = fs.existsSync(distDir)
-      ? fs.readdirSync(distDir).slice(0, 30).join(", ")
-      : "(empty)";
-    throw new Error(
-      `Extract finished but ${rel} is missing. dist contains: ${listing}`
+  const zipSize = fs.statSync(zipPath).size;
+  console.log(
+    `[ensure-electron] Extracting ${zipPath} (${zipSize} bytes) ...`
+  );
+  if (zipSize < 1_000_000) {
+    fail(
+      `Electron zip is suspiciously small (${zipSize} bytes). Cache is likely corrupt.`
     );
   }
 
-  fs.writeFileSync(pathTxt, rel);
-  fs.writeFileSync(path.join(distDir, "version"), version);
+  await asPromise(extractZip(zipPath, { dir: distDir }));
+
+  const listing = fs.existsSync(distDir)
+    ? fs.readdirSync(distDir)
+    : [];
+  console.log(
+    `[ensure-electron] dist entries (${listing.length}): ${listing
+      .slice(0, 20)
+      .join(", ")}`
+  );
+
+  const binary = path.join(distDir, rel);
+  if (!fs.existsSync(binary)) {
+    fail(
+      `Extract finished but ${rel} is missing. dist contains: ${
+        listing.slice(0, 30).join(", ") || "(empty)"
+      }`
+    );
+  }
+
+  fs.writeFileSync(pathTxt, rel, "utf8");
+  fs.writeFileSync(path.join(distDir, "version"), version, "utf8");
+
+  if (!resolveBinary()) {
+    fail("Wrote path.txt but binary still does not resolve.");
+  }
+
   return binary;
 }
 
@@ -180,24 +220,46 @@ async function main() {
   ensureDeps();
 
   try {
-    const binary = await downloadElectron();
+    const binary = await downloadElectron({ clearCache: false });
     console.log(`[ensure-electron] Installed: ${binary}`);
   } catch (err) {
-    const message = err instanceof Error ? err.stack || err.message : String(err);
-    fail(
+    console.error(
+      `[ensure-electron] First download attempt failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+    console.warn("[ensure-electron] Retrying after clearing Electron cache...");
+    const binary = await downloadElectron({ clearCache: true });
+    console.log(`[ensure-electron] Installed after cache clear: ${binary}`);
+  }
+}
+
+main()
+  .then(() => {
+    const binary = resolveBinary();
+    if (!binary) {
+      console.error(
+        "[ensure-electron] Finished without a resolvable Electron binary."
+      );
+      process.exit(1);
+    }
+    process.exit(0);
+  })
+  .catch((err) => {
+    console.error(
+      `[ensure-electron] ${err instanceof Error ? err.stack || err.message : String(err)}`
+    );
+    console.error(
       [
-        "Failed to download Electron binary.",
-        message,
         "",
         "Try in PowerShell:",
         "  Remove-Item Env:ELECTRON_SKIP_BINARY_DOWNLOAD -ErrorAction SilentlyContinue",
         "  $env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/'",
+        "  Remove-Item -Recurse -Force \"$env:LOCALAPPDATA\\electron\\Cache\" -ErrorAction SilentlyContinue",
         "  Remove-Item -Recurse -Force node_modules\\electron -ErrorAction SilentlyContinue",
         "  npm install electron --foreground-scripts",
-        "  npm run ensure-electron",
+        "  node .\\scripts\\ensure-electron.mjs",
       ].join("\n")
     );
-  }
-}
-
-main();
+    process.exit(1);
+  });

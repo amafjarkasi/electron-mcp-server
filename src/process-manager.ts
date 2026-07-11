@@ -135,39 +135,43 @@ function getElectronExecutablePath(): string {
   }
 
   const installHint =
-    "Electron binary is not installed. From the repo root run: npm run ensure-electron   (or: npm install electron --foreground-scripts)";
+    "Electron binary is not installed. From the repo root run: npm run ensure-electron   (or: .\\scripts\\fix-electron.cmd)";
+
+  // Prefer path.txt — require('electron') throws on incomplete installs.
+  try {
+    const electronPkgDir = path.dirname(require.resolve("electron/package.json"));
+    const pathTxt = path.join(electronPkgDir, "path.txt");
+    if (fs.existsSync(pathTxt)) {
+      const rel = fs.readFileSync(pathTxt, "utf8").trim();
+      const candidate = path.join(electronPkgDir, "dist", rel);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
+    const winExe = path.join(electronPkgDir, "dist", "electron.exe");
+    if (fs.existsSync(winExe)) {
+      return winExe;
+    }
+    const nixBin = path.join(electronPkgDir, "dist", "electron");
+    if (fs.existsSync(nixBin)) {
+      return nixBin;
+    }
+  } catch {
+    // fall through
+  }
 
   try {
     const fromPackage = require("electron") as string;
     if (fromPackage && fs.existsSync(fromPackage)) {
       return fromPackage;
     }
-    throw new Error(
-      `electron package resolved to missing path: ${String(fromPackage)}. ${installHint}`
-    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    if (
-      message.includes("failed to install correctly") ||
-      message.includes("missing path") ||
-      message.includes("Cannot find module")
-    ) {
-      throw new Error(`${message}\n${installHint}`);
-    }
+    throw new Error(`${message}\n${installHint}`);
   }
 
-  // Last resort: PATH lookup (user-provided global electron).
-  return "electron";
-}
-
-function resolveElectronBinaryOrThrow(): string {
-  const electronPath = getElectronExecutablePath();
-  if (electronPath !== "electron" && !fs.existsSync(electronPath)) {
-    throw new Error(
-      `Electron executable not found at ${electronPath}. Run: npm run ensure-electron`
-    );
-  }
-  return electronPath;
+  throw new Error(installHint);
 }
 
 export async function waitForDebugPort(
@@ -366,7 +370,7 @@ export async function startElectronApp(
     resolvedAppPath,
   ];
 
-  const electronPath = resolveElectronBinaryOrThrow();
+  const electronPath = getElectronExecutablePath();
   log.info(`Starting ${resolvedAppPath} via ${electronPath} on port ${port}`);
 
   const electronProc = spawn(electronPath, args, {

@@ -1,14 +1,10 @@
 @echo off
-setlocal
+setlocal EnableExtensions
 cd /d "%~dp0\.."
 echo Working directory: %CD%
 
-REM Clear skip flags that make electron/install.js exit without downloading
 set ELECTRON_SKIP_BINARY_DOWNLOAD=
 set npm_config_electron_skip_binary_download=
-
-echo Electron-related env:
-set | findstr /I ELECTRON
 
 echo Removing old electron package...
 if exist node_modules\electron rmdir /s /q node_modules\electron
@@ -19,20 +15,39 @@ if errorlevel 1 (
   echo Direct install failed; trying mirror...
   set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
   call npm install electron --foreground-scripts
-  if errorlevel 1 exit /b 1
+  if errorlevel 1 (
+    echo npm install electron failed
+    exit /b 1
+  )
 )
 
-echo Forcing binary download via ensure-electron...
-call npm run ensure-electron
+echo Forcing binary download via node scripts\ensure-electron.mjs ...
+node "%~dp0ensure-electron.mjs"
 if errorlevel 1 (
-  echo ensure-electron failed; retrying with mirror...
+  echo ensure-electron failed; clearing cache and retrying with mirror...
+  if exist "%LOCALAPPDATA%\electron\Cache" rmdir /s /q "%LOCALAPPDATA%\electron\Cache"
   set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
-  call npm run ensure-electron
-  if errorlevel 1 exit /b 1
+  node "%~dp0ensure-electron.mjs"
+  if errorlevel 1 (
+    echo ensure-electron failed again
+    exit /b 1
+  )
 )
 
+if not exist "node_modules\electron\path.txt" (
+  echo path.txt still missing after ensure-electron
+  exit /b 1
+)
+
+if not exist "node_modules\electron\dist\electron.exe" (
+  echo electron.exe still missing after ensure-electron
+  exit /b 1
+)
+
+echo Electron binary OK.
 echo Running tests...
 call npm test
 if errorlevel 1 exit /b 1
 
 echo Done. Electron is installed and tests passed.
+exit /b 0
