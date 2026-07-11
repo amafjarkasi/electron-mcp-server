@@ -375,8 +375,12 @@ export async function startElectronApp(
 
   const electronProc = spawn(electronPath, args, {
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, ELECTRON_ENABLE_LOGGING: "1" },
-    // Spawn the real binary from electron/dist — never shell out to .cmd
+    env: {
+      ...process.env,
+      ELECTRON_ENABLE_LOGGING: "1",
+      // Prevent Windows console QuickEdit freezes when launched from a terminal.
+      ELECTRON_NO_ATTACH_CONSOLE: "1",
+    },
     windowsHide: true,
   });
 

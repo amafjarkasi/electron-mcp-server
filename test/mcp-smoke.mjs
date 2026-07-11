@@ -138,7 +138,11 @@ async function launchFixture(port) {
     ],
     {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ELECTRON_ENABLE_LOGGING: "1" },
+      env: {
+        ...process.env,
+        ELECTRON_ENABLE_LOGGING: "1",
+        ELECTRON_NO_ATTACH_CONSOLE: "1",
+      },
       windowsHide: true,
     }
   );
