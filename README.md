@@ -10,10 +10,6 @@
 </p>
 
 <p align="center">
-  <img src="assets/logo.png" alt="" width="72" height="72" />
-</p>
-
-<p align="center">
   <a href="#-60-second-quick-start"><img src="https://img.shields.io/badge/⚡_Quick_Start-0F766E?style=for-the-badge" alt="Quick Start" /></a>
   <a href="#-complete-tools-cheatsheet"><img src="https://img.shields.io/badge/🛠️_36_Tools-47848F?style=for-the-badge" alt="36 Tools" /></a>
   <a href="#-usage-examples"><img src="https://img.shields.io/badge/📚_Examples-0EA5E9?style=for-the-badge" alt="Examples" /></a>
@@ -74,7 +70,7 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 
 ### 📊 At a glance
 
-| | |
+| Aspect | Details |
 | :--- | :--- |
 | 🔌 **Transport** | MCP **stdio** JSON-RPC |
 | 🧬 **Debug bridge** | Chrome DevTools Protocol (Runtime · Page · Network · Debugger · Input · Log · Tracing) |
@@ -151,6 +147,7 @@ Electron bugs are often **invisible** to coding agents:
 - ⏹️ `stop_app` — kill owned / detach attached
 - 📋 `list_apps` — sessions, ports, buffer counts
 - 🩺 `diagnose` — port health + recent errors
+
 </td>
 <td width="50%" valign="top">
 
@@ -164,6 +161,7 @@ Electron bugs are often **invisible** to coding agents:
 - 🌐 `get_network_log` — request/response/fail
 - 📜 `get_logs` — Electron stdout/stderr
 - 🎯 `list_targets` / `page_info`
+
 </td>
 </tr>
 <tr>
@@ -176,6 +174,7 @@ Electron bugs are often **invisible** to coding agents:
 - ⌨️ `type_text` (+ clear / Enter) · `press_key` (+ modifiers)
 - 🔄 `reload` · ⏸️ `pause` · ▶️ `resume`
 - 🧹 `clear_buffers`
+
 </td>
 <td width="50%" valign="top">
 
@@ -187,6 +186,7 @@ Electron bugs are often **invisible** to coding agents:
 - 📈 `start_tracing` / `stop_tracing`
 - 🛡️ stderr-only diagnostics (stdio-safe)
 - 🧰 `cdp_command` for any DevTools method
+
 </td>
 </tr>
 </table>
@@ -899,7 +899,7 @@ CI: [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) (Ubuntu + Xvfb).
 
 ```text
 electron-mcp-server/
-├── assets/logo.svg · logo.png
+├── assets/logo.svg
 ├── examples/cursor-mcp.json
 ├── fixtures/minimal-electron-app/
 ├── scripts/ensure-electron.mjs · fix-electron.cmd · fix-electron.ps1
