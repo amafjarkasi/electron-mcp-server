@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 /**
- * Unit tests for pure helpers (no Electron GUI required).
+ * Unit tests for pure helpers in process-manager (no Electron GUI required).
+ *
+ * Covers: target role classification, allowlist enforcement, target pickers,
+ * buffer capping/creation/clearing, port/inspect-port parsing from command
+ * lines, console live-logging toggle, and process listing/getters.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -8,19 +12,103 @@ import path from "path";
 import {
   assertAppPathAllowed,
   classifyTargetRole,
+  clearProcessBuffers,
+  classifyTargetRole as _classify, // re-import guard (unused, ensures module loads)
+  createProcessRecord,
+  getAllProcesses,
   getAllowedRoots,
+  getProcess,
+  isConsoleLiveLoggingEnabled,
+  listProcesses,
+  listTargetsByRole,
+  parseDebugPortFromCommand,
+  parseInspectPortFromCommand,
+  pickMainTarget,
   pickPageTarget,
+  pickTargetByRole,
+  pushCapped,
+  setConsoleLiveLogging,
 } from "../build/process-manager.js";
 
-test("classifyTargetRole maps CDP types", () => {
+void _classify;
+
+// --- Minimal factory for a fake ElectronProcess used across tests ---
+function makeTargets(list) {
+  return list.map((t) => ({
+    id: t.id,
+    type: t.type,
+    title: t.title ?? "",
+    url: t.url ?? "",
+    webSocketDebuggerUrl: t.webSocketDebuggerUrl,
+  }));
+}
+
+function makeProc(overrides = {}) {
+  return createProcessRecord({
+    id: overrides.id ?? "p1",
+    name: overrides.name ?? "test",
+    status: overrides.status ?? "running",
+    attached: overrides.attached ?? false,
+    pid: overrides.pid ?? 1234,
+    debugPort: overrides.debugPort ?? 9222,
+    startTime: overrides.startTime ?? new Date(0),
+    appPath: overrides.appPath ?? "/tmp/app",
+    targets: overrides.targets,
+    logs: overrides.logs,
+  });
+}
+
+// ===========================================================================
+// classifyTargetRole
+// ===========================================================================
+
+test("classifyTargetRole maps known CDP types", () => {
   assert.equal(classifyTargetRole("page"), "page");
   assert.equal(classifyTargetRole("worker"), "worker");
   assert.equal(classifyTargetRole("service_worker"), "worker");
   assert.equal(classifyTargetRole("browser"), "browser");
-  assert.equal(classifyTargetRole("iframe"), "other");
 });
 
-test("getAllowedRoots parses ELECTRON_MCP_ALLOWED_ROOTS", () => {
+test("classifyTargetRole collapses unknown types to 'other'", () => {
+  assert.equal(classifyTargetRole("iframe"), "other");
+  assert.equal(classifyTargetRole("node"), "other");
+  assert.equal(classifyTargetRole("shared_worker"), "other");
+  assert.equal(classifyTargetRole(""), "other");
+  assert.equal(classifyTargetRole("whatever"), "other");
+});
+
+test("classifyTargetRole is case-sensitive (only lowercase CDP types match)", () => {
+  // CDP always sends lowercase; uppercase should fall through to "other".
+  assert.equal(classifyTargetRole("Page"), "other");
+  assert.equal(classifyTargetRole("BROWSER"), "other");
+});
+
+// ===========================================================================
+// getAllowedRoots
+// ===========================================================================
+
+test("getAllowedRoots returns [] when env unset", () => {
+  const prev = process.env.ELECTRON_MCP_ALLOWED_ROOTS;
+  delete process.env.ELECTRON_MCP_ALLOWED_ROOTS;
+  try {
+    assert.deepEqual(getAllowedRoots(), []);
+  } finally {
+    if (prev !== undefined) process.env.ELECTRON_MCP_ALLOWED_ROOTS = prev;
+  }
+});
+
+test("getAllowedRoots returns [] when env is whitespace-only", () => {
+  const prev = process.env.ELECTRON_MCP_ALLOWED_ROOTS;
+  process.env.ELECTRON_MCP_ALLOWED_ROOTS = "   ";
+  try {
+    assert.deepEqual(getAllowedRoots(), []);
+  } finally {
+    if (prev === undefined) delete process.env.ELECTRON_MCP_ALLOWED_ROOTS;
+    else process.env.ELECTRON_MCP_ALLOWED_ROOTS = prev;
+  }
+});
+
+test("getAllowedRoots splits on both ';' and '|'", () => {
   const prev = process.env.ELECTRON_MCP_ALLOWED_ROOTS;
   process.env.ELECTRON_MCP_ALLOWED_ROOTS = `/tmp/a;/tmp/b|/tmp/c`;
   try {
@@ -33,12 +121,61 @@ test("getAllowedRoots parses ELECTRON_MCP_ALLOWED_ROOTS", () => {
   }
 });
 
-test("assertAppPathAllowed enforces allowlist", () => {
+test("getAllowedRoots resolves to absolute + trims whitespace", () => {
+  const prev = process.env.ELECTRON_MCP_ALLOWED_ROOTS;
+  process.env.ELECTRON_MCP_ALLOWED_ROOTS = `  /tmp/x  `;
+  try {
+    const roots = getAllowedRoots();
+    assert.equal(roots.length, 1);
+    assert.equal(roots[0], path.resolve("/tmp/x"));
+    assert.ok(path.isAbsolute(roots[0]));
+  } finally {
+    if (prev === undefined) delete process.env.ELECTRON_MCP_ALLOWED_ROOTS;
+    else process.env.ELECTRON_MCP_ALLOWED_ROOTS = prev;
+  }
+});
+
+// ===========================================================================
+// assertAppPathAllowed
+// ===========================================================================
+
+test("assertAppPathAllowed is permissive when no roots configured", () => {
+  const prev = process.env.ELECTRON_MCP_ALLOWED_ROOTS;
+  delete process.env.ELECTRON_MCP_ALLOWED_ROOTS;
+  try {
+    // With no allowlist, anything resolves and is returned unchanged (resolved).
+    assert.equal(
+      assertAppPathAllowed("/anywhere/app"),
+      path.resolve("/anywhere/app")
+    );
+  } finally {
+    if (prev !== undefined) process.env.ELECTRON_MCP_ALLOWED_ROOTS = prev;
+  }
+});
+
+test("assertAppPathAllowed accepts paths inside a configured root", () => {
   const prev = process.env.ELECTRON_MCP_ALLOWED_ROOTS;
   process.env.ELECTRON_MCP_ALLOWED_ROOTS = "/tmp/allowed-root";
   try {
-    const ok = assertAppPathAllowed("/tmp/allowed-root/app");
-    assert.equal(ok, path.resolve("/tmp/allowed-root/app"));
+    assert.equal(
+      assertAppPathAllowed("/tmp/allowed-root/app"),
+      path.resolve("/tmp/allowed-root/app")
+    );
+    // The root itself is allowed.
+    assert.equal(
+      assertAppPathAllowed("/tmp/allowed-root"),
+      path.resolve("/tmp/allowed-root")
+    );
+  } finally {
+    if (prev === undefined) delete process.env.ELECTRON_MCP_ALLOWED_ROOTS;
+    else process.env.ELECTRON_MCP_ALLOWED_ROOTS = prev;
+  }
+});
+
+test("assertAppPathAllowed rejects paths outside configured root", () => {
+  const prev = process.env.ELECTRON_MCP_ALLOWED_ROOTS;
+  process.env.ELECTRON_MCP_ALLOWED_ROOTS = "/tmp/allowed-root";
+  try {
     assert.throws(
       () => assertAppPathAllowed("/tmp/other/app"),
       /outside ELECTRON_MCP_ALLOWED_ROOTS/
@@ -49,16 +186,460 @@ test("assertAppPathAllowed enforces allowlist", () => {
   }
 });
 
+test("assertAppPathAllowed rejects sibling-prefix attacks (not a real subdir)", () => {
+  // "/tmp/allowed-root-evil" shares a string prefix with "/tmp/allowed-root"
+  // but must NOT be considered inside it.
+  const prev = process.env.ELECTRON_MCP_ALLOWED_ROOTS;
+  process.env.ELECTRON_MCP_ALLOWED_ROOTS = "/tmp/allowed-root";
+  try {
+    assert.throws(
+      () => assertAppPathAllowed("/tmp/allowed-root-evil/app"),
+      /outside ELECTRON_MCP_ALLOWED_ROOTS/
+    );
+  } finally {
+    if (prev === undefined) delete process.env.ELECTRON_MCP_ALLOWED_ROOTS;
+    else process.env.ELECTRON_MCP_ALLOWED_ROOTS = prev;
+  }
+});
+
+// ===========================================================================
+// pushCapped
+// ===========================================================================
+
+test("pushCapped appends while under the cap", () => {
+  const arr = [1, 2];
+  pushCapped(arr, 3, 10);
+  assert.deepEqual(arr, [1, 2, 3]);
+});
+
+test("pushCapped evicts oldest entries once cap exceeded", () => {
+  const arr = [1, 2, 3];
+  pushCapped(arr, 4, 3); // would be length 4 → trim to 3, drop first
+  assert.deepEqual(arr, [2, 3, 4]);
+});
+
+test("pushCapped maintains exactly max items under sustained push", () => {
+  const arr = [];
+  const max = 3;
+  for (let i = 0; i < 100; i++) pushCapped(arr, i, max);
+  assert.equal(arr.length, max);
+  assert.deepEqual(arr, [97, 98, 99]);
+});
+
+test("pushCapped with max=1 keeps only the latest", () => {
+  const arr = [];
+  pushCapped(arr, "a", 1);
+  pushCapped(arr, "b", 1);
+  assert.deepEqual(arr, ["b"]);
+});
+
+test("pushCapped works on empty array (first insert at cap boundary)", () => {
+  const arr = [];
+  pushCapped(arr, "x", 0);
+  // length(1) > 0 → splice all but last 0 → empty
+  assert.equal(arr.length, 0);
+});
+
+// ===========================================================================
+// createProcessRecord
+// ===========================================================================
+
+test("createProcessRecord seeds empty buffers and a monitorClients map", () => {
+  const proc = makeProc();
+  assert.deepEqual(proc.consoleMessages, []);
+  assert.deepEqual(proc.networkEntries, []);
+  assert.deepEqual(proc.logs, []);
+  assert.ok(proc.monitorClients instanceof Map);
+  assert.equal(proc.monitorClients.size, 0);
+});
+
+test("createProcessRecord preserves caller-supplied fields", () => {
+  const proc = makeProc({ id: "xyz", name: "myapp", debugPort: 9999 });
+  assert.equal(proc.id, "xyz");
+  assert.equal(proc.name, "myapp");
+  assert.equal(proc.debugPort, 9999);
+});
+
+test("createProcessRecord accepts provided logs", () => {
+  const proc = makeProc({ logs: ["line1", "line2"] });
+  assert.deepEqual(proc.logs, ["line1", "line2"]);
+});
+
+test("createProcessRecord does not share buffer references between instances", () => {
+  const a = makeProc({ id: "a" });
+  const b = makeProc({ id: "b" });
+  a.consoleMessages.push({ timestamp: "", targetId: "", level: "", text: "", source: "console" });
+  a.logs.push("shared?");
+  assert.equal(b.consoleMessages.length, 0);
+  assert.equal(b.logs.length, 0);
+});
+
+// ===========================================================================
+// parseDebugPortFromCommand
+// ===========================================================================
+
+test("parseDebugPortFromCommand parses --remote-debugging-port=PORT", () => {
+  assert.equal(
+    parseDebugPortFromCommand("/usr/bin/electron --remote-debugging-port=9222 ./app"),
+    9222
+  );
+});
+
+test("parseDebugPortFromCommand parses space-separated form", () => {
+  assert.equal(
+    parseDebugPortFromCommand("electron --remote-debugging-port 9333 app"),
+    9333
+  );
+});
+
+test("parseDebugPortFromCommand is case-insensitive", () => {
+  assert.equal(
+    parseDebugPortFromCommand("electron --REMOTE-DEBUGGING-PORT=9229"),
+    9229
+  );
+});
+
+test("parseDebugPortFromCommand returns undefined when absent", () => {
+  assert.equal(parseDebugPortFromCommand("electron app"), undefined);
+  assert.equal(parseDebugPortFromCommand(""), undefined);
+});
+
+test("parseDebugPortFromCommand returns undefined when no port digits follow", () => {
+  // Regex requires digits after the separator; a non-numeric value yields no match.
+  assert.equal(
+    parseDebugPortFromCommand("electron --remote-debugging-port=abc"),
+    undefined
+  );
+  assert.equal(
+    parseDebugPortFromCommand("electron --remote-debugging-port"),
+    undefined
+  );
+});
+
+// ===========================================================================
+// parseInspectPortFromCommand
+// ===========================================================================
+
+test("parseInspectPortFromCommand parses --inspect=PORT", () => {
+  assert.equal(
+    parseInspectPortFromCommand("electron --inspect=9229 app"),
+    9229
+  );
+});
+
+test("parseInspectPortFromCommand parses space-separated form", () => {
+  assert.equal(
+    parseInspectPortFromCommand("electron --inspect 9230 app"),
+    9230
+  );
+});
+
+test("parseInspectPortFromCommand is case-insensitive", () => {
+  assert.equal(
+    parseInspectPortFromCommand("electron --INSPECT=9231"),
+    9231
+  );
+});
+
+test("parseInspectPortFromCommand returns undefined when absent", () => {
+  assert.equal(parseInspectPortFromCommand("electron app"), undefined);
+  assert.equal(parseInspectPortFromCommand(""), undefined);
+});
+
+test("parseInspectPortFromCommand rejects port 0", () => {
+  assert.equal(parseInspectPortFromCommand("electron --inspect=0"), undefined);
+});
+
+// ===========================================================================
+// pickPageTarget
+// ===========================================================================
+
+test("pickPageTarget throws when process has no targets", () => {
+  const proc = makeProc({ targets: undefined });
+  assert.throws(() => pickPageTarget(proc), /No CDP targets available/);
+});
+
 test("pickPageTarget prefers page targets", () => {
-  const proc = {
-    id: "p1",
-    targets: [
+  const proc = makeProc({
+    targets: makeTargets([
       { id: "b", type: "browser", title: "browser", url: "" },
       { id: "p", type: "page", title: "Page", url: "file://x" },
-    ],
-  };
-  const target = pickPageTarget(proc);
-  assert.equal(target.id, "p");
+    ]),
+  });
+  assert.equal(pickPageTarget(proc).id, "p");
+});
+
+test("pickPageTarget falls back to webSocketDebuggerUrl then first target", () => {
+  const proc = makeProc({
+    targets: makeTargets([
+      { id: "first", type: "browser" },
+      { id: "ws", type: "other", webSocketDebuggerUrl: "ws://x" },
+    ]),
+  });
+  assert.equal(pickPageTarget(proc).id, "ws");
+});
+
+test("pickPageTarget falls back to first target if nothing else matches", () => {
+  const proc = makeProc({
+    targets: makeTargets([{ id: "only", type: "browser" }]),
+  });
+  assert.equal(pickPageTarget(proc).id, "only");
+});
+
+test("pickPageTarget honors explicit targetId when it exists", () => {
+  const proc = makeProc({
+    targets: makeTargets([
+      { id: "b", type: "browser" },
+      { id: "p", type: "page" },
+    ]),
+  });
   assert.equal(pickPageTarget(proc, "b").id, "b");
+});
+
+test("pickPageTarget throws when explicit targetId is missing", () => {
+  const proc = makeProc({
+    targets: makeTargets([{ id: "p", type: "page" }]),
+  });
   assert.throws(() => pickPageTarget(proc, "missing"), /not found/);
+});
+
+test("pickPageTarget respects preferredRole when no page present", () => {
+  const proc = makeProc({
+    targets: makeTargets([
+      { id: "sw", type: "service_worker" },
+      { id: "br", type: "browser" },
+    ]),
+  });
+  assert.equal(pickPageTarget(proc, undefined, "worker").id, "sw");
+  assert.equal(pickPageTarget(proc, undefined, "browser").id, "br");
+});
+
+test("pickPageTarget preferredRole='any' skips role matching", () => {
+  const proc = makeProc({
+    targets: makeTargets([
+      { id: "sw", type: "service_worker" },
+      { id: "ws", type: "other", webSocketDebuggerUrl: "ws://x" },
+    ]),
+  });
+  // No page; 'any' → falls through to webSocketDebuggerUrl target.
+  assert.equal(pickPageTarget(proc, undefined, "any").id, "ws");
+});
+
+// ===========================================================================
+// pickTargetByRole
+// ===========================================================================
+
+test("pickTargetByRole returns the first target matching the role", () => {
+  const proc = makeProc({
+    targets: makeTargets([
+      { id: "p", type: "page" },
+      { id: "sw", type: "service_worker" },
+    ]),
+  });
+  assert.equal(pickTargetByRole(proc, "worker").id, "sw");
+  assert.equal(pickTargetByRole(proc, "page").id, "p");
+});
+
+test("pickTargetByRole throws when no target of that role exists", () => {
+  const proc = makeProc({
+    targets: makeTargets([{ id: "p", type: "page" }]),
+  });
+  assert.throws(() => pickTargetByRole(proc, "browser"), /No browser target/);
+});
+
+test("pickTargetByRole delegates to pickPageTarget when targetId given", () => {
+  const proc = makeProc({
+    targets: makeTargets([
+      { id: "p", type: "page" },
+      { id: "br", type: "browser" },
+    ]),
+  });
+  // targetId wins regardless of requested role.
+  assert.equal(pickTargetByRole(proc, "browser", "p").id, "p");
+  assert.throws(
+    () => pickTargetByRole(proc, "page", "nope"),
+    /not found/
+  );
+});
+
+test("pickTargetByRole handles empty targets gracefully", () => {
+  const proc = makeProc({ targets: [] });
+  assert.throws(() => pickTargetByRole(proc, "page"), /No page target/);
+});
+
+// ===========================================================================
+// pickMainTarget
+// ===========================================================================
+
+test("pickMainTarget prefers a 'node' target", () => {
+  const proc = makeProc({
+    targets: makeTargets([
+      { id: "p", type: "page" },
+      { id: "n", type: "node" },
+    ]),
+  });
+  assert.equal(pickMainTarget(proc).id, "n");
+});
+
+test("pickMainTarget picks electron-like service_worker", () => {
+  const proc = makeProc({
+    targets: makeTargets([
+      { id: "p", type: "page" },
+      { id: "sw", type: "service_worker", title: "Electron Main", url: "" },
+    ]),
+  });
+  assert.equal(pickMainTarget(proc).id, "sw");
+});
+
+test("pickMainTarget throws when no node-like target exists", () => {
+  const proc = makeProc({
+    targets: makeTargets([{ id: "p", type: "page" }]),
+  });
+  assert.throws(() => pickMainTarget(proc), /No main\/node target/);
+});
+
+test("pickMainTarget throws when process has no targets", () => {
+  const proc = makeProc({ targets: undefined });
+  assert.throws(() => pickMainTarget(proc), /No CDP targets available/);
+});
+
+test("pickMainTarget honors explicit targetId", () => {
+  const proc = makeProc({
+    targets: makeTargets([
+      { id: "p", type: "page" },
+      { id: "n", type: "node" },
+    ]),
+  });
+  // Explicit id bypasses the node heuristic.
+  assert.equal(pickMainTarget(proc, "p").id, "p");
+});
+
+// ===========================================================================
+// listTargetsByRole
+// ===========================================================================
+
+test("listTargetsByRole maps each target to its role", () => {
+  const proc = makeProc({
+    targets: makeTargets([
+      { id: "p", type: "page", title: "P", url: "file://p" },
+      { id: "sw", type: "service_worker", title: "SW", url: "" },
+      { id: "br", type: "browser", title: "BR", url: "" },
+      { id: "if", type: "iframe", title: "IF", url: "" },
+    ]),
+  });
+  const list = listTargetsByRole(proc);
+  assert.equal(list.length, 4);
+  assert.deepEqual(
+    list.map((t) => t.role),
+    ["page", "worker", "browser", "other"]
+  );
+});
+
+test("listTargetsByRole flags node/browser/electron-ish targets as likelyMain", () => {
+  const proc = makeProc({
+    targets: makeTargets([
+      { id: "p", type: "page", title: "Page", url: "" },
+      { id: "n", type: "node", title: "n", url: "" },
+      { id: "br", type: "browser", title: "br", url: "" },
+      { id: "e", type: "other", title: "Electron main", url: "" },
+    ]),
+  });
+  const list = listTargetsByRole(proc);
+  const byId = Object.fromEntries(list.map((t) => [t.id, t.likelyMain]));
+  assert.equal(byId.p, false);
+  assert.equal(byId.n, true);
+  assert.equal(byId.br, true);
+  assert.equal(byId.e, true);
+});
+
+test("listTargetsByRole returns [] for process with no targets", () => {
+  const proc = makeProc({ targets: undefined });
+  assert.deepEqual(listTargetsByRole(proc), []);
+});
+
+// ===========================================================================
+// clearProcessBuffers
+// ===========================================================================
+
+test("clearProcessBuffers clears all buffers by default", () => {
+  const proc = makeProc();
+  proc.consoleMessages.push({ timestamp: "", targetId: "", level: "", text: "", source: "console" });
+  proc.networkEntries.push({ timestamp: "", targetId: "", requestId: "", event: "request" });
+  proc.logs.push("a log line");
+  const { cleared } = clearProcessBuffers(proc);
+  assert.deepEqual(cleared.sort(), ["console", "logs", "network"]);
+  assert.equal(proc.consoleMessages.length, 0);
+  assert.equal(proc.networkEntries.length, 0);
+  assert.equal(proc.logs.length, 0);
+});
+
+test("clearProcessBuffers clears only the requested buffers", () => {
+  const proc = makeProc();
+  proc.consoleMessages.push({ timestamp: "", targetId: "", level: "", text: "", source: "console" });
+  proc.networkEntries.push({ timestamp: "", targetId: "", requestId: "", event: "request" });
+  proc.logs.push("keep me");
+  const { cleared } = clearProcessBuffers(proc, ["console"]);
+  assert.deepEqual(cleared, ["console"]);
+  assert.equal(proc.consoleMessages.length, 0);
+  assert.equal(proc.networkEntries.length, 1); // untouched
+  assert.deepEqual(proc.logs, ["keep me"]); // untouched
+});
+
+test("clearProcessBuffers with empty list clears nothing", () => {
+  const proc = makeProc();
+  proc.logs.push("stay");
+  const { cleared } = clearProcessBuffers(proc, []);
+  assert.deepEqual(cleared, []);
+  assert.deepEqual(proc.logs, ["stay"]);
+});
+
+// ===========================================================================
+// setConsoleLiveLogging / isConsoleLiveLoggingEnabled
+// ===========================================================================
+
+test("setConsoleLiveLogging toggles and reports the flag", () => {
+  const before = isConsoleLiveLoggingEnabled();
+  try {
+    assert.equal(setConsoleLiveLogging(true), true);
+    assert.equal(isConsoleLiveLoggingEnabled(), true);
+    assert.equal(setConsoleLiveLogging(false), false);
+    assert.equal(isConsoleLiveLoggingEnabled(), false);
+  } finally {
+    setConsoleLiveLogging(before);
+  }
+});
+
+// ===========================================================================
+// Process registry: getProcess / getAllProcesses / listProcesses
+// ===========================================================================
+
+test("getProcess returns undefined for unknown id", () => {
+  assert.equal(getProcess("definitely-not-present"), undefined);
+});
+
+test("getAllProcesses returns a Map", () => {
+  const all = getAllProcesses();
+  assert.ok(all instanceof Map);
+});
+
+test("listProcesses returns an array of summary objects", () => {
+  const list = listProcesses();
+  assert.ok(Array.isArray(list));
+  // Each entry, if present, has the documented summary shape.
+  if (list.length > 0) {
+    const entry = list[0];
+    for (const key of [
+      "id",
+      "name",
+      "status",
+      "attached",
+      "startTime",
+      "appPath",
+      "targetCount",
+      "consoleCount",
+      "networkCount",
+    ]) {
+      assert.ok(key in entry, `listProcesses entry missing ${key}`);
+    }
+  }
 });

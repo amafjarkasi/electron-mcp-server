@@ -247,14 +247,14 @@ export async function discoverDebugPorts(
   return found;
 }
 
-function pushCapped<T>(arr: T[], item: T, max: number): void {
+export function pushCapped<T>(arr: T[], item: T, max: number): void {
   arr.push(item);
   if (arr.length > max) {
     arr.splice(0, arr.length - max);
   }
 }
 
-function createProcessRecord(
+export function createProcessRecord(
   partial: Omit<ElectronProcess, "consoleMessages" | "networkEntries" | "monitorClients" | "logs"> & {
     logs?: string[];
   }
@@ -1039,10 +1039,22 @@ export async function captureScreenshot(
   };
 
   try {
-    // Element clips + fromSurface often hang under headless/no-GPU; prefer
-    // fromSurface:false when clipping, otherwise try true then false.
+    // fromSurface behavior is environment-dependent: under headless/no-GPU,
+    // capture can hang on one value and succeed on the other. Try both,
+    // reconnecting the page socket between attempts so we never retry an
+    // identical-failing call.
     if (clip) {
-      result = await tryCapture(false);
+      // Clipping: fromSurface:false is usually more reliable, fall back to true.
+      try {
+        result = await tryCapture(false);
+      } catch (err) {
+        log.warn(
+          `[${electronProcess.id}] clipped screenshot fromSurface=false failed, retrying with true:`,
+          err
+        );
+        await resetPageSocket();
+        result = await tryCapture(true);
+      }
     } else {
       try {
         result = await tryCapture(true);
@@ -1058,7 +1070,8 @@ export async function captureScreenshot(
   } catch (err) {
     log.warn(`[${electronProcess.id}] screenshot failed, one more reconnect:`, err);
     await resetPageSocket();
-    result = await tryCapture(false);
+    // Final attempt: try whichever mode we haven't tried last.
+    result = await tryCapture(clip ? true : false);
   }
 
   return {
@@ -2140,7 +2153,7 @@ export async function stopTracing(
   };
 }
 
-function parseDebugPortFromCommand(command: string): number | undefined {
+export function parseDebugPortFromCommand(command: string): number | undefined {
   const m =
     command.match(/--remote-debugging-port(?:=|\s+)(\d+)/i) ??
     command.match(/remote-debugging-port[=:](\d+)/i);
@@ -2149,7 +2162,7 @@ function parseDebugPortFromCommand(command: string): number | undefined {
   return Number.isFinite(port) ? port : undefined;
 }
 
-function parseInspectPortFromCommand(command: string): number | undefined {
+export function parseInspectPortFromCommand(command: string): number | undefined {
   const m = command.match(/--inspect(?:=|\s+)(\d+)/i);
   if (!m) return undefined;
   const port = Number(m[1]);

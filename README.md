@@ -229,7 +229,7 @@ That reinstalls Electron, extracts `electron.exe` with system `tar`, then runs t
   "mcpServers": {
     "electron-debug": {
       "command": "node",
-      "args": ["D:/GH/electron-mcp-server/build/index.js"]
+      "args": ["C:/Users/you/code/electron-mcp-server/build/index.js"]
     }
   }
 }
@@ -258,7 +258,13 @@ That reinstalls Electron, extracts `electron.exe` with system `tar`, then runs t
 
 ### Claude Desktop
 
-Same `mcpServers` block in `claude_desktop_config.json`, pointing at `build/index.js`.
+Same `mcpServers` block in `claude_desktop_config.json`, pointing at `build/index.js`. Edit the file at:
+
+- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+- **Linux:** `~/.config/Claude/claude_desktop_config.json`
+
+📄 Template: [`examples/claude-desktop-config.json`](./examples/claude-desktop-config.json)
 
 > ⚠️ **Don’t** run `node build/index.js` in a normal terminal for daily use — it waits on stdio for an MCP client. Let Cursor/Claude spawn it.
 
@@ -415,7 +421,7 @@ HTTP-probes each port for Chromium/Electron DevTools (`/json/version` + `/json/l
 | `processId` | string ✅ | — |
 | `expression` | string ✅ | — |
 | `targetId` | string | auto |
-| `role` | `page` \| `worker` \| `browser` \| `any` | `page` |
+| `role` | `page` \| `worker` \| `browser` \| `other` | `page` |
 | `returnByValue` | bool | `true` |
 
 #### `evaluate_main`
@@ -899,14 +905,15 @@ CI: [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) (Ubuntu + Xvfb).
 
 ```text
 electron-mcp-server/
-├── assets/logo.svg
-├── examples/cursor-mcp.json
+├── assets/logo.svg · logo.png
+├── examples/cursor-mcp.json · claude-desktop-config.json
 ├── fixtures/minimal-electron-app/
 ├── scripts/ensure-electron.mjs · fix-electron.cmd · fix-electron.ps1
 ├── src/index.ts · process-manager.ts · events.ts · log.ts
+├── src/types/chrome-remote-interface.d.ts
 ├── test/mcp-smoke.mjs · unit-helpers.test.mjs
 ├── .github/workflows/ci.yml
-└── README.md · LICENSE · package.json
+└── README.md · LICENSE · package.json · tsconfig.json
 ```
 
 ---
