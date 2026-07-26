@@ -8,6 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "os";
 import path from "path";
 import {
   assertAppPathAllowed,
@@ -28,6 +29,7 @@ import {
   pickTargetByRole,
   pushCapped,
   setConsoleLiveLogging,
+  validateOutputPath,
 } from "../build/process-manager.js";
 
 void _classify;
@@ -641,5 +643,128 @@ test("listProcesses returns an array of summary objects", () => {
     ]) {
       assert.ok(key in entry, `listProcesses entry missing ${key}`);
     }
+  }
+});
+
+// ===========================================================================
+// validateOutputPath
+// ===========================================================================
+// Blocks tool output (screenshots, traces) from landing in sensitive system
+// locations. Blocklist is platform-specific; tests run on the host platform.
+
+const isWin = process.platform === "win32";
+const setEnv = (val) => {
+  const prev = process.env.ELECTRON_MCP_OUTPUT_ROOTS;
+  if (val === undefined) delete process.env.ELECTRON_MCP_OUTPUT_ROOTS;
+  else process.env.ELECTRON_MCP_OUTPUT_ROOTS = val;
+  return prev;
+};
+const restoreEnv = (prev) => {
+  if (prev === undefined) delete process.env.ELECTRON_MCP_OUTPUT_ROOTS;
+  else process.env.ELECTRON_MCP_OUTPUT_ROOTS = prev;
+};
+
+test("validateOutputPath resolves and returns ordinary paths", () => {
+  const prev = setEnv(undefined);
+  try {
+    const p = isWin ? "C:\\tmp\\shot.png" : "/tmp/shot.png";
+    assert.equal(validateOutputPath(p), path.resolve(p));
+  } finally {
+    restoreEnv(prev);
+  }
+});
+
+test("validateOutputPath rejects system/sensitive locations", () => {
+  const prev = setEnv(undefined);
+  try {
+    const blocked = isWin
+      ? [
+          "C:\\Windows\\System32\\evil.png",
+          "C:\\Program Files\\x.png",
+          "C:\\ProgramData\\y.json",
+        ]
+      : ["/etc/passwd.png", "/proc/self/x", "/usr/share/y.json", "/boot/evil"];
+    for (const p of blocked) {
+      assert.throws(
+        () => validateOutputPath(p),
+        /sensitive location/i,
+        `expected ${p} to be blocked`
+      );
+    }
+  } finally {
+    restoreEnv(prev);
+  }
+});
+
+test("validateOutputPath blocks the home .ssh directory", () => {
+  const prev = setEnv(undefined);
+  try {
+    const sshPath = path.join(os.homedir(), ".ssh", "authorized_keys");
+    assert.throws(
+      () => validateOutputPath(sshPath),
+      /sensitive location/i
+    );
+  } finally {
+    restoreEnv(prev);
+  }
+});
+
+test("validateOutputPath respects ELECTRON_MCP_OUTPUT_ROOTS allowlist", () => {
+  const prev = setEnv(isWin ? "C:\\tmp\\out;C:\\tmp\\traces" : "/tmp/out|/tmp/traces");
+  try {
+    // Inside a listed root → allowed.
+    assert.ok(
+      validateOutputPath(isWin ? "C:\\tmp\\out\\a.png" : "/tmp/out/a.png")
+        .length > 0
+    );
+    // The root itself is allowed.
+    assert.ok(
+      validateOutputPath(isWin ? "C:\\tmp\\out" : "/tmp/out").length > 0
+    );
+    // Outside all roots → rejected.
+    assert.throws(
+      () => validateOutputPath(isWin ? "C:\\other\\b.png" : "/other/b.png"),
+      /outside ELECTRON_MCP_OUTPUT_ROOTS/i
+    );
+  } finally {
+    restoreEnv(prev);
+  }
+});
+
+test("validateOutputPath allowlist still blocks sensitive locations even when inside a root", () => {
+  // Defense in depth: even if a root is configured, a blocked location is refused.
+  const prev = setEnv(isWin ? "C:\\" : "/");
+  try {
+    const blocked = isWin ? "C:\\Windows\\x.png" : "/etc/x.png";
+    assert.throws(
+      () => validateOutputPath(blocked),
+      /sensitive location/i
+    );
+  } finally {
+    restoreEnv(prev);
+  }
+});
+
+test("validateOutputPath treats sibling-prefix attacks as outside the root", () => {
+  // /tmp/out-evil shares a string prefix with /tmp/out but is NOT inside it.
+  const prev = setEnv(isWin ? "C:\\tmp\\out" : "/tmp/out");
+  try {
+    const evil = isWin ? "C:\\tmp\\out-evil\\x.png" : "/tmp/out-evil/x.png";
+    assert.throws(
+      () => validateOutputPath(evil),
+      /outside ELECTRON_MCP_OUTPUT_ROOTS/i
+    );
+  } finally {
+    restoreEnv(prev);
+  }
+});
+
+test("validateOutputPath splits allowlist on both ';' and '|'", () => {
+  const prev = setEnv(isWin ? "C:\\tmp\\a;C:\\tmp\\b" : "/tmp/a;/tmp/b");
+  try {
+    assert.ok(validateOutputPath(isWin ? "C:\\tmp\\a\\1" : "/tmp/a/1").length > 0);
+    assert.ok(validateOutputPath(isWin ? "C:\\tmp\\b\\2" : "/tmp/b/2").length > 0);
+  } finally {
+    restoreEnv(prev);
   }
 });

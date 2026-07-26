@@ -854,6 +854,7 @@ find_apps / discover_apps / start_app / attach / attach_by_pid
 | `ELECTRON_PATH` | Force a specific Electron binary |
 | `ELECTRON_MCP_NO_SANDBOX=1` | Always pass `--no-sandbox` |
 | `ELECTRON_MCP_ALLOWED_ROOTS` | `;` / `\|` allowlist for `start_app` paths |
+| `ELECTRON_MCP_OUTPUT_ROOTS` | `;` / `\|` allowlist for `save_screenshot` / `stop_tracing` output paths |
 | `ELECTRON_MIRROR` | Download mirror for Electron zips |
 | `ELECTRON_SKIP_BINARY_DOWNLOAD` | Cleared by `ensure-electron` so download still runs |
 | `ELECTRON_CACHE` / `electron_config_cache` | Zip cache directory |
@@ -922,6 +923,7 @@ electron-mcp-server/
 
 - Can launch local binaries, evaluate JS in app contexts, read page content, cookies, and storage — treat as a **powerful local debugger**.
 - Use `ELECTRON_MCP_ALLOWED_ROOTS` on shared machines.
+- `save_screenshot` / `stop_tracing` reject writes to sensitive locations (`~/.ssh`, `/etc`, `/proc`, `/usr`, `C:\Windows`, `C:\Program Files`, …). Set `ELECTRON_MCP_OUTPUT_ROOTS` to further restrict output to specific directories.
 - Don’t expose stdio over an open network without auth.
 - Only `attach` / `attach_by_pid` to apps you trust (remote debugging is powerful).
 - In-memory console/network buffers and exported traces may contain secrets from the app under test.
