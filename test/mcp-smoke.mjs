@@ -4,6 +4,7 @@
  * Spawns the server over stdio, drives tools against fixtures/minimal-electron-app.
  */
 import { spawn } from "child_process";
+import net from "net";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
@@ -12,21 +13,36 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const serverEntry = path.join(root, "build", "index.js");
 const fixtureApp = path.join(root, "fixtures", "minimal-electron-app");
-const DEBUG_PORT = 9339;
-const ATTACH_PORT = 9340;
 
-async function freePort(port) {
-  try {
-    const { execFileSync } = await import("child_process");
-    execFileSync("bash", [
-      "-lc",
-      `fuser -k ${port}/tcp 2>/dev/null || true`,
-    ]);
-  } catch {
-    // best effort
-  }
-  await new Promise((r) => setTimeout(r, 300));
+/**
+ * Find a TCP port we can actually bind to. On Windows, Hyper-V/WSL/Docker
+ * reserve port ranges (netsh int ipv4 show excludedportrange) and bind()
+ * returns WSAEACCES (0x271D) inside them even when nothing is listening —
+ * which silently kills Chromium's DevTools HTTP server. Hard-coded ports
+ * (e.g. 9339) fall in those ranges, so we probe a bindable port instead.
+ * Prefers the 9555+ band, then falls back to an OS-assigned ephemeral port.
+ */
+function findFreePort(preferred = 9555) {
+  return new Promise((resolve) => {
+    const tryBind = (port, onFail) => {
+      const srv = net.createServer();
+      srv.unref();
+      srv.on("error", () => onFail());
+      srv.listen({ host: "127.0.0.1", port }, () => {
+        const assigned = srv.address().port;
+        srv.close(() => resolve(assigned));
+      });
+    };
+    tryBind(preferred, () =>
+      // Fallback: let the OS pick an ephemeral port (always bindable).
+      tryBind(0, () => resolve(0))
+    );
+  });
 }
+
+const DEBUG_PORT = await findFreePort(9555);
+const ATTACH_PORT = await findFreePort(DEBUG_PORT + 1);
+console.log(`[smoke] using ports: start_app=${DEBUG_PORT} attach=${ATTACH_PORT}`);
 
 class McpClient {
   constructor(command, args, env = {}) {
@@ -190,8 +206,6 @@ async function launchFixture(port) {
 
 async function main() {
   const pass = (name) => console.log(`PASS ${name}`);
-  await freePort(DEBUG_PORT);
-  await freePort(ATTACH_PORT);
 
   const client = new McpClient("node", [serverEntry], {
     ELECTRON_MCP_NO_SANDBOX: "1",
@@ -658,7 +672,7 @@ async function main() {
 
     const discoverResult = await client.request("tools/call", {
       name: "discover_apps",
-      arguments: { startPort: 9339, endPort: 9340 },
+      arguments: { startPort: 9555, endPort: 9556 },
     });
     const discovered = parseToolText(discoverResult);
     // Freshly attached port must be discoverable. The start_app port can race
