@@ -21,7 +21,7 @@
   <img src="https://img.shields.io/badge/MCP-stdio_JSON--RPC-0F766E?style=flat-square" alt="MCP" />
   <img src="https://img.shields.io/badge/CDP-Chrome_DevTools-47848F?style=flat-square&logo=googlechrome&logoColor=white" alt="CDP" />
   <img src="https://img.shields.io/badge/Electron-desktop_apps-2B2E3A?style=flat-square&logo=electron&logoColor=white" alt="Electron" />
-  <img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TS" />
+  <img src="https://img.shields.io/badge/TypeScript-7.x-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TS" />
   <img src="https://img.shields.io/badge/Node-%3E%3D18-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node" />
   <img src="https://img.shields.io/badge/version-1.5.0-blue?style=flat-square" alt="version" />
   <img src="https://img.shields.io/badge/tests-unit_+_e2e_smoke-8B5CF6?style=flat-square" alt="tests" />
@@ -78,7 +78,7 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 | 📦 **Surface area** | **36 tools** · **6 resources** · **3 prompts** · logging + resource list-changed |
 | 🖥️ **Platforms** | Windows · macOS · Linux (CI: Xvfb + no-sandbox) |
 | 📦 **Requires** | Node **≥ 18**, npm, one-time Electron binary download |
-| 🛡️ **Safety** | Optional `ELECTRON_MCP_ALLOWED_ROOTS`; attach sessions detach-only on stop |
+| 🛡️ **Safety** | Optional `ELECTRON_MCP_ALLOWED_ROOTS` (app paths) · `ELECTRON_MCP_OUTPUT_ROOTS` (screenshot/trace output, plus built-in blocklist of sensitive locations); attach sessions detach-only on stop |
 | ✅ **Verify** | `npm test` → unit + full MCP↔Electron smoke |
 
 ### ✅ Status
@@ -87,6 +87,7 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 - 🟢 E2E smoke: start → UI/automation → storage/cookies → tracing → find/attach-by-pid → stop
 - 🟢 Windows binary repair: `scripts/fix-electron.cmd` when npm blocks postinstall
 - 🟢 v1.5.0 — element screenshots, cookies/storage, tracing, attach-by-pid
+- 🟢 Built on TypeScript 7 (native Go compiler) — ~10x faster builds
 
 ---
 
