@@ -18,6 +18,7 @@ import {
   createProcessRecord,
   getAllProcesses,
   getAllowedRoots,
+  getElectronDebugInfo,
   getProcess,
   isConsoleLiveLoggingEnabled,
   listProcesses,
@@ -766,5 +767,161 @@ test("validateOutputPath splits allowlist on both ';' and '|'", () => {
     assert.ok(validateOutputPath(isWin ? "C:\\tmp\\b\\2" : "/tmp/b/2").length > 0);
   } finally {
     restoreEnv(prev);
+  }
+});
+
+// ===========================================================================
+// getElectronDebugInfo
+// ===========================================================================
+// Builds a debug summary (target role counts, webContents list, recent
+// console errors) from a process record. Pure once the process exists in
+// the registry -- we insert via getAllProcesses() and use a stopped/no-port
+// process so updateCDPTargets (network) is skipped.
+
+test("getElectronDebugInfo returns null for an unknown id", async () => {
+  const info = await getElectronDebugInfo("definitely-not-present");
+  assert.equal(info, null);
+});
+
+test("getElectronDebugInfo counts targets by role in targetSummary", async () => {
+  const proc = makeProc({
+    id: "info-roles",
+    status: "stopped", // no debugPort call path -> stays pure
+    debugPort: undefined,
+    targets: makeTargets([
+      { id: "p1", type: "page" },
+      { id: "p2", type: "page" },
+      { id: "sw", type: "service_worker" }, // -> worker
+      { id: "br", type: "browser" },
+      { id: "if", type: "iframe" }, // -> other
+    ]),
+  });
+  getAllProcesses().set(proc.id, proc);
+  try {
+    const info = await getElectronDebugInfo(proc.id);
+    assert.deepEqual(info.targetSummary, {
+      pages: 2,
+      workers: 1,
+      browser: 1,
+      other: 1,
+    });
+  } finally {
+    getAllProcesses().delete(proc.id);
+  }
+});
+
+test("getElectronDebugInfo maps webContents with debuggable flag from ws url", async () => {
+  const proc = makeProc({
+    id: "info-debuggable",
+    status: "stopped",
+    debugPort: undefined,
+    targets: makeTargets([
+      { id: "a", type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9/page/a" },
+      { id: "b", type: "page" }, // no ws url -> not debuggable
+    ]),
+  });
+  getAllProcesses().set(proc.id, proc);
+  try {
+    const info = await getElectronDebugInfo(proc.id);
+    assert.equal(info.webContents.length, 2);
+    assert.equal(info.webContents[0].debuggable, true);
+    assert.equal(info.webContents[1].debuggable, false);
+    // webContents ids are 1-based positional.
+    assert.deepEqual(
+      info.webContents.map((w) => w.id),
+      [1, 2]
+    );
+    assert.equal(info.webContents[0].targetId, "a");
+  } finally {
+    getAllProcesses().delete(proc.id);
+  }
+});
+
+test("getElectronDebugInfo filters recentConsoleErrors to errors/exceptions only", async () => {
+  const proc = makeProc({ id: "info-errors", status: "stopped", debugPort: undefined });
+  proc.consoleMessages.push(
+    { timestamp: "1", targetId: "t", level: "log", text: "fine", source: "log" },
+    { timestamp: "2", targetId: "t", level: "error", text: "boom", source: "console" },
+    { timestamp: "3", targetId: "t", level: "warning", text: "hmm", source: "log" },
+    { timestamp: "4", targetId: "t", level: "info", text: "oops", source: "exception" }
+  );
+  getAllProcesses().set(proc.id, proc);
+  try {
+    const info = await getElectronDebugInfo(proc.id);
+    // Only the error-level and exception-source messages survive.
+    assert.equal(info.recentConsoleErrors.length, 2);
+    assert.deepEqual(
+      info.recentConsoleErrors.map((m) => m.text),
+      ["boom", "oops"]
+    );
+  } finally {
+    getAllProcesses().delete(proc.id);
+  }
+});
+
+test("getElectronDebugInfo caps recentConsoleErrors at the last 10", async () => {
+  const proc = makeProc({ id: "info-cap", status: "stopped", debugPort: undefined });
+  for (let i = 0; i < 15; i++) {
+    proc.consoleMessages.push({
+      timestamp: String(i),
+      targetId: "t",
+      level: "error",
+      text: `err-${i}`,
+      source: "console",
+    });
+  }
+  getAllProcesses().set(proc.id, proc);
+  try {
+    const info = await getElectronDebugInfo(proc.id);
+    assert.equal(info.recentConsoleErrors.length, 10);
+    // slice(-10) keeps the most recent.
+    assert.equal(info.recentConsoleErrors[0].text, "err-5");
+    assert.equal(info.recentConsoleErrors[9].text, "err-14");
+  } finally {
+    getAllProcesses().delete(proc.id);
+  }
+});
+
+test("getElectronDebugInfo handles a process with no targets", async () => {
+  const proc = makeProc({
+    id: "info-notargets",
+    status: "stopped",
+    debugPort: undefined,
+    targets: undefined,
+  });
+  getAllProcesses().set(proc.id, proc);
+  try {
+    const info = await getElectronDebugInfo(proc.id);
+    assert.deepEqual(info.targetSummary, {
+      pages: 0,
+      workers: 0,
+      browser: 0,
+      other: 0,
+    });
+    assert.deepEqual(info.webContents, []);
+  } finally {
+    getAllProcesses().delete(proc.id);
+  }
+});
+
+test("getElectronDebugInfo echoes process identity fields", async () => {
+  const proc = makeProc({
+    id: "info-id",
+    name: "my-electron-app",
+    status: "stopped",
+    debugPort: undefined,
+    pid: 4242,
+    appPath: "/tmp/myapp",
+  });
+  getAllProcesses().set(proc.id, proc);
+  try {
+    const info = await getElectronDebugInfo(proc.id);
+    assert.equal(info.id, "info-id");
+    assert.equal(info.name, "my-electron-app");
+    assert.equal(info.status, "stopped");
+    assert.equal(info.pid, 4242);
+    assert.equal(info.appPath, "/tmp/myapp");
+  } finally {
+    getAllProcesses().delete(proc.id);
   }
 });
