@@ -130,6 +130,85 @@ export function assertAppPathAllowed(appPath: string): string {
   return resolved;
 }
 
+/**
+ * System/sensitive locations that tool output (screenshots, traces) must never
+ * be written to, even when no allowlist is configured. Paths are matched as
+ * directory prefixes (resolved + path.sep) so a block on /etc rejects /etc/foo.
+ * `~` is expanded to os.homedir() so e.g. ~/.ssh is covered.
+ */
+const OUTPUT_BLOCKED_ROOTS: string[] = (() => {
+  const home = os.homedir();
+  // ~/.ssh is blocked on every platform — SSH credentials live there.
+  const universal = [path.join(home, ".ssh")];
+  const posix = [
+    "/etc",
+    "/proc",
+    "/sys",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/boot",
+    "/dev",
+  ];
+  const win32 = [
+    "C:\\Windows",
+    "C:\\Program Files",
+    "C:\\Program Files (x86)",
+    "C:\\ProgramData",
+  ];
+  return process.platform === "win32"
+    ? [...universal, ...win32]
+    : [...universal, ...posix];
+})();
+
+/**
+ * Optional allowlist (ELECTRON_MCP_OUTPUT_ROOTS) for tool output paths. Uses
+ * the same ';' / '|' separator and resolve semantics as
+ * ELECTRON_MCP_ALLOWED_ROOTS. When set, output may only land inside a listed
+ * root. When unset, anything outside OUTPUT_BLOCKED_ROOTS is allowed.
+ */
+function getOutputRoots(): string[] {
+  const raw = process.env.ELECTRON_MCP_OUTPUT_ROOTS?.trim();
+  if (!raw) return [];
+  return raw
+    .split(/[;|]/)
+    .map((p) => path.resolve(p.trim()))
+    .filter(Boolean);
+}
+
+/**
+ * Validate a file path that a tool will write to (saveScreenshot, stopTracing).
+ * Returns the resolved path if safe; throws if it targets a blocked system
+ * location or (when ELECTRON_MCP_OUTPUT_ROOTS is set) falls outside the
+ * configured output roots.
+ */
+export function validateOutputPath(filePath: string): string {
+  const resolved = path.resolve(filePath);
+
+  const blocked = OUTPUT_BLOCKED_ROOTS.find(
+    (root) => resolved === root || resolved.startsWith(root + path.sep)
+  );
+  if (blocked) {
+    throw new Error(
+      `Refusing to write to sensitive location: ${resolved} (matches blocked root ${blocked})`
+    );
+  }
+
+  const roots = getOutputRoots();
+  if (roots.length) {
+    const ok = roots.some(
+      (root) => resolved === root || resolved.startsWith(root + path.sep)
+    );
+    if (!ok) {
+      throw new Error(
+        `Output path ${resolved} is outside ELECTRON_MCP_OUTPUT_ROOTS (${roots.join(", ")})`
+      );
+    }
+  }
+
+  return resolved;
+}
+
 function getElectronExecutablePath(): string {
   if (process.env.ELECTRON_PATH && fs.existsSync(process.env.ELECTRON_PATH)) {
     return process.env.ELECTRON_PATH;
@@ -1103,7 +1182,7 @@ export async function saveScreenshot(
     quality,
     selector
   );
-  const resolved = path.resolve(filePath);
+  const resolved = validateOutputPath(filePath);
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
   const buffer = Buffer.from(shot.data, "base64");
   fs.writeFileSync(resolved, buffer);
@@ -2116,13 +2195,12 @@ export async function stopTracing(
     client.removeListener("Tracing.dataCollected", session._onData);
   }
 
-  const resolved = path.resolve(
-    filePath ??
-      path.join(
+  const resolved = filePath
+    ? validateOutputPath(filePath)
+    : path.resolve(
         os.tmpdir(),
         `electron-mcp-trace-${electronProcess.id}-${Date.now()}.json`
-      )
-  );
+      );
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
   fs.writeFileSync(
     resolved,
