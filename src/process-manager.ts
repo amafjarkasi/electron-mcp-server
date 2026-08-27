@@ -1031,16 +1031,23 @@ export function clampClipToViewport(box: ClipBox): ClampedClip | null {
   if (right <= left || bottom <= top) {
     return null;
   }
-  const width = right - left;
-  const height = bottom - top;
   return {
     x: left,
     y: top,
-    width,
-    height,
-    // Sub-pixel rects are common; a whole pixel of slack keeps this from
-    // reporting truncation for a rounding difference.
-    truncated: width < box.width - 1 || height < box.height - 1,
+    width: right - left,
+    height: bottom - top,
+    // Compare the clamped edges against the original ones rather than the
+    // sizes with a tolerance. `Math.max`/`Math.min` return an operand
+    // UNCHANGED when they do not bite, so an untouched edge is exactly equal
+    // and this needs no epsilon — and it does not quietly swallow a real
+    // sub-pixel crop. `getBoundingClientRect` is fractional, so an element
+    // starting at x = -0.5 is genuinely cropped, and a tolerance of a whole
+    // CSS pixel would report it as complete.
+    truncated:
+      left > box.x ||
+      top > box.y ||
+      right < box.x + box.width ||
+      bottom < box.y + box.height,
   };
 }
 

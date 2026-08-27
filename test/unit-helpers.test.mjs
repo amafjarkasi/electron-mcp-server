@@ -1003,13 +1003,27 @@ test("clampClipToViewport keeps the visible part of a partly scrolled element", 
   });
 });
 
-test("clampClipToViewport does not call a sub-pixel rect truncated", () => {
-  const clip = clampClipToViewport({
-    x: 0,
-    y: 0,
-    width: 1900.4,
-    height: 999.6,
-    ...VIEWPORT,
-  });
-  assert.equal(clip.truncated, false);
+test("clampClipToViewport leaves a fractional rect inside the viewport alone", () => {
+  // Fractional geometry is the norm, not an edge case. A box that fits must
+  // come back byte-identical, with no truncation reported.
+  const box = { x: 384.7548828125, y: 58.046939849853516, width: 916.9063110351562, height: 383.994140625 };
+  const clip = clampClipToViewport({ ...box, ...VIEWPORT });
+  assert.deepEqual(clip, { ...box, truncated: false });
+});
+
+test("clampClipToViewport reports a sub-pixel crop rather than rounding it away", () => {
+  // A whole CSS pixel of tolerance would call each of these complete. They
+  // are not: part of the element is genuinely outside the capture.
+  const left = clampClipToViewport({ x: -0.5, y: 10, width: 200, height: 100, ...VIEWPORT });
+  assert.equal(left.x, 0);
+  assert.equal(left.width, 199.5);
+  assert.equal(left.truncated, true);
+
+  const right = clampClipToViewport({ x: 0, y: 0, width: 1900.4, height: 999.6, ...VIEWPORT });
+  assert.equal(right.width, 1900);
+  assert.equal(right.truncated, true);
+
+  const top = clampClipToViewport({ x: 10, y: -0.25, width: 100, height: 50, ...VIEWPORT });
+  assert.equal(top.y, 0);
+  assert.equal(top.truncated, true);
 });
