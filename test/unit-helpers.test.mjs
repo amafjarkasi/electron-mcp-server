@@ -12,6 +12,7 @@ import os from "os";
 import path from "path";
 import {
   assertAppPathAllowed,
+  clampClipToViewport,
   classifyTargetRole,
   clearProcessBuffers,
   classifyTargetRole as _classify, // re-import guard (unused, ensures module loads)
@@ -924,4 +925,91 @@ test("getElectronDebugInfo echoes process identity fields", async () => {
   } finally {
     getAllProcesses().delete(proc.id);
   }
+});
+
+// ===========================================================================
+// clampClipToViewport
+// ===========================================================================
+
+const VIEWPORT = { viewportWidth: 1900, viewportHeight: 1000 };
+
+test("clampClipToViewport passes a fully visible element through untouched", () => {
+  const clip = clampClipToViewport({
+    x: 100,
+    y: 200,
+    width: 400,
+    height: 300,
+    ...VIEWPORT,
+  });
+  assert.deepEqual(clip, {
+    x: 100,
+    y: 200,
+    width: 400,
+    height: 300,
+    truncated: false,
+  });
+});
+
+test("clampClipToViewport cuts an element wider than the window", () => {
+  // A horizontally scrolling table: the thead's box is its full scroll width.
+  // Passed through unclamped, the capture comes back as the whole window.
+  const clip = clampClipToViewport({
+    x: 385,
+    y: 94,
+    width: 3057,
+    height: 37,
+    ...VIEWPORT,
+  });
+  assert.equal(clip.x, 385);
+  assert.equal(clip.width, 1900 - 385);
+  assert.equal(clip.height, 37);
+  assert.equal(clip.truncated, true);
+});
+
+test("clampClipToViewport returns null for an element entirely off-screen", () => {
+  // The exact rect a selector capture produced in practice: the element was
+  // 1,714px above the viewport, and the capture came back as a full-window
+  // image rather than reporting that the clip could not be honoured.
+  assert.equal(
+    clampClipToViewport({
+      x: 385,
+      y: -1714,
+      width: 917,
+      height: 384,
+      ...VIEWPORT,
+    }),
+    null
+  );
+  assert.equal(
+    clampClipToViewport({ x: 2100, y: 10, width: 100, height: 100, ...VIEWPORT }),
+    null
+  );
+});
+
+test("clampClipToViewport keeps the visible part of a partly scrolled element", () => {
+  const clip = clampClipToViewport({
+    x: 10,
+    y: -50,
+    width: 200,
+    height: 300,
+    ...VIEWPORT,
+  });
+  assert.deepEqual(clip, {
+    x: 10,
+    y: 0,
+    width: 200,
+    height: 250,
+    truncated: true,
+  });
+});
+
+test("clampClipToViewport does not call a sub-pixel rect truncated", () => {
+  const clip = clampClipToViewport({
+    x: 0,
+    y: 0,
+    width: 1900.4,
+    height: 999.6,
+    ...VIEWPORT,
+  });
+  assert.equal(clip.truncated, false);
 });

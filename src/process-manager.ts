@@ -992,6 +992,58 @@ async function withTimeout<T>(
   }
 }
 
+/** An element box plus the viewport it was measured in. */
+export interface ClipBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  viewportWidth: number;
+  viewportHeight: number;
+}
+
+/** A capture rectangle, and whether it had to be cut down to fit. */
+export interface ClampedClip {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  truncated: boolean;
+}
+
+/**
+ * Intersect an element's box with the viewport.
+ *
+ * `getBoundingClientRect` will happily report a box outside the viewport: an
+ * element scrolled above the fold has a negative `y`, and a horizontally
+ * scrolling table is routinely wider than the window. `Page.captureScreenshot`
+ * does not reject such a clip — it returns something else, usually the whole
+ * window, which silently answers a different question than the caller asked.
+ *
+ * @param box The element rect and the viewport it was measured against.
+ * @returns The visible portion, or null when the element is entirely outside.
+ */
+export function clampClipToViewport(box: ClipBox): ClampedClip | null {
+  const left = Math.max(0, box.x);
+  const top = Math.max(0, box.y);
+  const right = Math.min(box.viewportWidth, box.x + box.width);
+  const bottom = Math.min(box.viewportHeight, box.y + box.height);
+  if (right <= left || bottom <= top) {
+    return null;
+  }
+  const width = right - left;
+  const height = bottom - top;
+  return {
+    x: left,
+    y: top,
+    width,
+    height,
+    // Sub-pixel rects are common; a whole pixel of slack keeps this from
+    // reporting truncation for a rounding difference.
+    truncated: width < box.width - 1 || height < box.height - 1,
+  };
+}
+
 export async function captureScreenshot(
   electronProcess: ElectronProcess,
   targetId?: string,
@@ -1002,7 +1054,23 @@ export async function captureScreenshot(
   targetId: string;
   mimeType: string;
   data: string;
-  clip?: { x: number; y: number; width: number; height: number; selector: string };
+  clip?: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        selector: string;
+        /** Set when the element did not fit the viewport and was cut down. */
+        truncated?: boolean;
+        /** Full element size, present only when `truncated`. */
+        elementWidth?: number;
+        elementHeight?: number;
+        /**
+         * False when capture fell back to a mode that cannot honour `clip`, so
+         * the image is the whole window rather than the element.
+         */
+        applied?: boolean;
+      };
 }> {
   await updateCDPTargets(electronProcess);
   const target = pickPageTarget(electronProcess, targetId);
@@ -1034,7 +1102,23 @@ export async function captureScreenshot(
     | { x: number; y: number; width: number; height: number; scale: number }
     | undefined;
   let clipMeta:
-    | { x: number; y: number; width: number; height: number; selector: string }
+    | {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        selector: string;
+        /** Set when the element did not fit the viewport and was cut down. */
+        truncated?: boolean;
+        /** Full element size, present only when `truncated`. */
+        elementWidth?: number;
+        elementHeight?: number;
+        /**
+         * False when capture fell back to a mode that cannot honour `clip`, so
+         * the image is the whole window rather than the element.
+         */
+        applied?: boolean;
+      }
     | undefined;
 
   if (selector) {
@@ -1051,6 +1135,8 @@ export async function captureScreenshot(
           y: r.y,
           width: r.width,
           height: r.height,
+          viewportWidth: window.innerWidth,
+          viewportHeight: window.innerHeight,
           scale: window.devicePixelRatio || 1
         };
       })()`
@@ -1059,6 +1145,8 @@ export async function captureScreenshot(
       y: number;
       width: number;
       height: number;
+      viewportWidth: number;
+      viewportHeight: number;
       scale: number;
     } | null;
 
@@ -1067,19 +1155,40 @@ export async function captureScreenshot(
         `No visible element matched selector for screenshot clip: ${selector}`
       );
     }
+
+    const visible = clampClipToViewport(box);
+    if (!visible) {
+      throw new Error(
+        `Element matched by ${selector} is outside the viewport ` +
+          `(rect ${Math.round(box.x)},${Math.round(box.y)} ` +
+          `${Math.round(box.width)}x${Math.round(box.height)}; viewport ` +
+          `${box.viewportWidth}x${box.viewportHeight}). ` +
+          `Scroll it into view before capturing.`
+      );
+    }
+
     clip = {
-      x: box.x,
-      y: box.y,
-      width: box.width,
-      height: box.height,
+      x: visible.x,
+      y: visible.y,
+      width: visible.width,
+      height: visible.height,
       scale: 1,
     };
     clipMeta = {
-      x: box.x,
-      y: box.y,
-      width: box.width,
-      height: box.height,
+      x: visible.x,
+      y: visible.y,
+      width: visible.width,
+      height: visible.height,
       selector,
+      // Say so when the element did not fit, rather than handing back a
+      // partial capture that looks complete.
+      ...(visible.truncated
+        ? {
+            truncated: true,
+            elementWidth: Math.round(box.width),
+            elementHeight: Math.round(box.height),
+          }
+        : {}),
     };
   }
 
@@ -1090,6 +1199,8 @@ export async function captureScreenshot(
   };
 
   let result: { data: string };
+  // Cleared when capture falls back to a mode that cannot honour the clip.
+  let clipApplied = true;
   const tryCapture = async (fromSurface: boolean) =>
     (await withTimeout(
       executeCDPCommand(electronProcess, target.id, "Page.captureScreenshot", {
@@ -1123,16 +1234,27 @@ export async function captureScreenshot(
     // reconnecting the page socket between attempts so we never retry an
     // identical-failing call.
     if (clip) {
-      // Clipping: fromSurface:false is usually more reliable, fall back to true.
+      // `fromSurface: false` silently IGNORES `clip`: it returns a full-window
+      // capture AND reports success, so a false-then-true fallback never
+      // reaches the value that actually clips. Verified against Electron 43 /
+      // Chrome 150 with a 400x200 clip:
+      //
+      //   fromSurface: true   -> 800x400   (clipped)
+      //   fromSurface: false  -> 4184x1640 (whole window, no error)
+      //
+      // So `true` has to come first. `false` stays as a fallback for
+      // environments without surface capture, but the result is then NOT
+      // clipped and is reported as such rather than passed off as a crop.
       try {
-        result = await tryCapture(false);
+        result = await tryCapture(true);
       } catch (err) {
         log.warn(
-          `[${electronProcess.id}] clipped screenshot fromSurface=false failed, retrying with true:`,
+          `[${electronProcess.id}] clipped screenshot fromSurface=true failed, retrying without (result will not be clipped):`,
           err
         );
         await resetPageSocket();
-        result = await tryCapture(true);
+        result = await tryCapture(false);
+        clipApplied = false;
       }
     } else {
       try {
@@ -1149,8 +1271,14 @@ export async function captureScreenshot(
   } catch (err) {
     log.warn(`[${electronProcess.id}] screenshot failed, one more reconnect:`, err);
     await resetPageSocket();
-    // Final attempt: try whichever mode we haven't tried last.
-    result = await tryCapture(clip ? true : false);
+    // Final attempt: try whichever mode we haven't tried last. For a clipped
+    // capture that is `false`, which cannot honour the clip.
+    result = await tryCapture(clip ? false : true);
+    if (clip) clipApplied = false;
+  }
+
+  if (clipMeta && !clipApplied) {
+    clipMeta = { ...clipMeta, applied: false };
   }
 
   return {
@@ -1173,7 +1301,23 @@ export async function saveScreenshot(
   path: string;
   bytes: number;
   mimeType: string;
-  clip?: { x: number; y: number; width: number; height: number; selector: string };
+  clip?: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        selector: string;
+        /** Set when the element did not fit the viewport and was cut down. */
+        truncated?: boolean;
+        /** Full element size, present only when `truncated`. */
+        elementWidth?: number;
+        elementHeight?: number;
+        /**
+         * False when capture fell back to a mode that cannot honour `clip`, so
+         * the image is the whole window rather than the element.
+         */
+        applied?: boolean;
+      };
 }> {
   const shot = await captureScreenshot(
     electronProcess,
