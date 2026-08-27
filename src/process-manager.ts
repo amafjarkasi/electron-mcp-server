@@ -282,7 +282,7 @@ export async function waitForDebugPort(
 }
 
 /**
- * How long a single probe waits before giving up on a port.
+ * How long a single probe waits, in total, before giving up on a port.
  *
  * A closed port is refused by the OS immediately, so this budget only ever
  * applies to a port that ACCEPTED the connection and then failed to speak
@@ -290,6 +290,11 @@ export async function waitForDebugPort(
  * `fetch` has no timeout of its own there: undici falls back to a 5-minute
  * headers timeout, which is long enough that the scan reads as a hung server
  * and the MCP client gives up on it first.
+ *
+ * This is a WHOLE-PROBE budget, not a per-request one. A probe makes two
+ * sequential requests, so giving each its own timeout would let a single port
+ * consume twice the advertised bound — and discovery awaits each batch, so
+ * that doubling lands straight on the total scan time.
  */
 export const PROBE_TIMEOUT_MS = 1000;
 
@@ -312,16 +317,20 @@ export async function probeDebugPort(
   targets?: CDPTarget[];
   error?: string;
 }> {
+  // One deadline for the whole probe, started before the first request and
+  // shared by the second. Reading and parsing the version body happens on this
+  // clock too, so the port cannot spend the budget twice.
+  const deadline = AbortSignal.timeout(timeoutMs);
   try {
     const versionRes = await fetch(`http://127.0.0.1:${port}/json/version`, {
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: deadline,
     });
     if (!versionRes.ok) {
       return { port, ok: false, error: `HTTP ${versionRes.status}` };
     }
     const version = await versionRes.json();
     const listRes = await fetch(`http://127.0.0.1:${port}/json/list`, {
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: deadline,
     });
     const targets = listRes.ok
       ? ((await listRes.json()) as CDPTarget[])

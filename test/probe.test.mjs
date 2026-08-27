@@ -110,6 +110,38 @@ test("probeDebugPort gives up on a port that accepts but never answers", async (
   }
 });
 
+test("probeDebugPort spends its budget once across both requests", async () => {
+  // A probe makes two sequential requests. Given a timeout each, a port that
+  // is slow on the first and silent on the second burns nearly two budgets —
+  // and discovery awaits each batch, so that doubling lands on the scan time.
+  const BUDGET = 1000;
+  const SLOW_VERSION_MS = 600;
+  const server = await startHttpServer((req, res) => {
+    if (req.url === "/json/version") {
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ Browser: "Electron/43.4.0" }));
+      }, SLOW_VERSION_MS);
+      return;
+    }
+    // /json/list never answers.
+  });
+  try {
+    const startedAt = Date.now();
+    await probeDebugPort(server.port, BUDGET);
+    const elapsed = Date.now() - startedAt;
+
+    // Shared deadline: ~600ms used, ~400ms left for the list request.
+    // Per-request deadlines: 600ms + a fresh 1000ms.
+    assert.ok(
+      elapsed < BUDGET * 1.3,
+      `probe should honour one whole-probe budget, took ${elapsed}ms`
+    );
+  } finally {
+    await server.close();
+  }
+});
+
 test("probeDebugPort defaults to a bounded timeout", () => {
   assert.ok(PROBE_TIMEOUT_MS > 0 && PROBE_TIMEOUT_MS <= 5000);
 });
