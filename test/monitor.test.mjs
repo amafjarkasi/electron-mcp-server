@@ -19,6 +19,7 @@ import { WebSocketServer } from "ws";
 import {
   MONITOR_STEP_TIMEOUT_MS,
   attachToDebugPort,
+  ensureMonitoring,
   stopElectronApp,
 } from "../build/process-manager.js";
 
@@ -146,6 +147,35 @@ test("attachToDebugPort still monitors the targets that do answer", async () => 
       "expected the unresponsive worker target to be skipped"
     );
     assert.equal(attached.targets.length, 2, "both targets are still reported");
+  } finally {
+    if (attached) await stopElectronApp(attached.id).catch(() => {});
+    await cdp.close();
+  }
+});
+
+test("attachToDebugPort does not re-pay the timeout on later passes", async () => {
+  // Most tools call `ensureMonitoring` to refresh before reading. A skipped
+  // target has no entry in `monitorClients`, so without a separate record of
+  // the failure it is retried — and its whole budget re-spent — on every one
+  // of those calls. That turns a hang into a tax rather than fixing it.
+  const cdp = await startFakeCdp([
+    { id: "page-ok", type: "page" },
+    { id: "worker-silent", type: "worker", silent: true },
+  ]);
+  let attached;
+  try {
+    attached = await attachToDebugPort(cdp.port, "fixture");
+    assert.ok(attached.unmonitorableTargets.has("worker-silent"));
+
+    const startedAt = Date.now();
+    await ensureMonitoring(attached);
+    await ensureMonitoring(attached);
+    const elapsed = Date.now() - startedAt;
+
+    assert.ok(
+      elapsed < MONITOR_STEP_TIMEOUT_MS,
+      `two refreshes should not re-time-out, took ${elapsed}ms`
+    );
   } finally {
     if (attached) await stopElectronApp(attached.id).catch(() => {});
     await cdp.close();

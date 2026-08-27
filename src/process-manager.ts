@@ -61,6 +61,13 @@ export interface ElectronProcess {
   cdpClient?: CDP.Client;
   cdpTargetId?: string;
   monitorClients: Map<string, CDP.Client>;
+  /**
+   * Targets that could not be monitored, so they are not retried on every
+   * pass. `monitorClients` cannot carry this: a skipped target has no client,
+   * so without a separate record `ensureMonitoring` re-attempts it — and
+   * re-pays its timeout — on every call that refreshes monitoring.
+   */
+  unmonitorableTargets: Set<string>;
   targets?: CDPTarget[];
   lastTargetUpdate?: Date;
 }
@@ -334,7 +341,7 @@ export function pushCapped<T>(arr: T[], item: T, max: number): void {
 }
 
 export function createProcessRecord(
-  partial: Omit<ElectronProcess, "consoleMessages" | "networkEntries" | "monitorClients" | "logs"> & {
+  partial: Omit<ElectronProcess, "consoleMessages" | "networkEntries" | "monitorClients" | "unmonitorableTargets" | "logs"> & {
     logs?: string[];
   }
 ): ElectronProcess {
@@ -344,6 +351,7 @@ export function createProcessRecord(
     consoleMessages: [],
     networkEntries: [],
     monitorClients: new Map(),
+    unmonitorableTargets: new Set(),
   };
 }
 
@@ -857,7 +865,10 @@ export async function ensureMonitoring(
       );
 
   for (const target of targets) {
-    if (electronProcess.monitorClients.has(target.id)) {
+    if (
+      electronProcess.monitorClients.has(target.id) ||
+      electronProcess.unmonitorableTargets.has(target.id)
+    ) {
       continue;
     }
     if (!target.webSocketDebuggerUrl) {
@@ -921,6 +932,10 @@ export async function ensureMonitoring(
         electronProcess.cdpTargetId = target.id;
       }
     } catch (err) {
+      // Remember the failure. Retrying an unresponsive target on every pass
+      // costs its full timeout each time, which turns a hang into a tax on
+      // every tool call that refreshes monitoring.
+      electronProcess.unmonitorableTargets.add(target.id);
       log.warn(
         `[${electronProcess.id}] Could not monitor target ${target.id}:`,
         err
