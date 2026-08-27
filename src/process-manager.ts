@@ -110,6 +110,27 @@ export function isDevToolsTarget(target: { url?: string }): boolean {
   return (target.url ?? "").startsWith("devtools://");
 }
 
+/**
+ * Pick the application target out of a set of equally valid candidates.
+ *
+ * Shared by every picker so the preference cannot be applied in one selection
+ * path and silently missed in another — which is exactly what happened when it
+ * lived only in {@link pickPageTarget} and `role: "page"` went through
+ * {@link pickTargetByRole} instead.
+ *
+ * Falls back to the first candidate rather than rejecting a DevTools-only
+ * list: preferring the app must not mean refusing to work when there is no
+ * app target to prefer.
+ *
+ * @param candidates Targets already filtered to the requested role.
+ * @returns The first non-DevTools candidate, else the first candidate.
+ */
+export function preferAppTarget<T extends { url?: string }>(
+  candidates: T[]
+): T | undefined {
+  return candidates.find((t) => !isDevToolsTarget(t)) ?? candidates[0];
+}
+
 export function classifyTargetRole(
   type: string
 ): "page" | "worker" | "browser" | "other" {
@@ -1399,14 +1420,14 @@ export function pickPageTarget(
   }
 
   if (preferredRole !== "any") {
-    const roleMatches = electronProcess.targets.filter(
-      (t) => classifyTargetRole(t.type) === preferredRole
-    );
     // An explicit targetId is honoured above, so preferring the application
     // here only changes which target is chosen when the caller did not say.
-    const appMatch = roleMatches.find((t) => !isDevToolsTarget(t));
-    if (appMatch) return appMatch;
-    if (roleMatches.length) return roleMatches[0];
+    const roleMatch = preferAppTarget(
+      electronProcess.targets.filter(
+        (t) => classifyTargetRole(t.type) === preferredRole
+      )
+    );
+    if (roleMatch) return roleMatch;
   }
 
   return (
@@ -1424,8 +1445,10 @@ export function pickTargetByRole(
   if (targetId) {
     return pickPageTarget(electronProcess, targetId, "any");
   }
-  const match = (electronProcess.targets ?? []).find(
-    (t) => classifyTargetRole(t.type) === role
+  const match = preferAppTarget(
+    (electronProcess.targets ?? []).filter(
+      (t) => classifyTargetRole(t.type) === role
+    )
   );
   if (!match) {
     throw new Error(`No ${role} target found for process ${electronProcess.id}`);

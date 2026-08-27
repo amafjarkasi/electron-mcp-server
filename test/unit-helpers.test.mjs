@@ -416,6 +416,47 @@ test("pickPageTarget falls back to DevTools when it is the only page", () => {
   assert.equal(pickPageTarget(proc).id, "devtools");
 });
 
+test("pickTargetByRole prefers the app page over an open DevTools window", () => {
+  // `evaluate` routes an explicitly requested role here rather than through
+  // pickPageTarget, so the preference has to live in both — a documented
+  // `role: "page"` call would otherwise still drive the debugger's own UI.
+  const proc = makeProc({
+    targets: makeTargets([
+      {
+        id: "devtools",
+        type: "page",
+        title: "DevTools",
+        url: "devtools://devtools/bundled/devtools_app.html",
+      },
+      { id: "app", type: "page", title: "App", url: "http://localhost:5174/" },
+    ]),
+  });
+  assert.equal(pickTargetByRole(proc, "page").id, "app");
+});
+
+test("pickTargetByRole falls back to DevTools when it is the only page", () => {
+  const proc = makeProc({
+    targets: makeTargets([
+      {
+        id: "devtools",
+        type: "page",
+        title: "DevTools",
+        url: "devtools://devtools/bundled/devtools_app.html",
+      },
+    ]),
+  });
+  assert.equal(pickTargetByRole(proc, "page").id, "devtools");
+});
+
+test("pickTargetByRole still throws when no target has the role", () => {
+  const proc = makeProc({
+    targets: makeTargets([
+      { id: "app", type: "page", title: "App", url: "http://localhost:5174/" },
+    ]),
+  });
+  assert.throws(() => pickTargetByRole(proc, "worker"), /No worker target/);
+});
+
 test("pickPageTarget throws when process has no targets", () => {
   const proc = makeProc({ targets: undefined });
   assert.throws(() => pickPageTarget(proc), /No CDP targets available/);
