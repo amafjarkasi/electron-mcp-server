@@ -828,6 +828,17 @@ function wireMonitorEvents(
   });
 }
 
+/**
+ * How long each step of attaching monitoring to a single target may take.
+ *
+ * Not every target answers. A worker paused at start never responds to
+ * `Runtime.enable` — the request does not fail, it simply never settles — so
+ * an unbounded await parks the loop on it forever and `attach` never returns.
+ * Monitoring is best-effort per target and already skips and logs on error, so
+ * treating "never answered" as "failed" is the behaviour already intended.
+ */
+export const MONITOR_STEP_TIMEOUT_MS = 5000;
+
 export async function ensureMonitoring(
   electronProcess: ElectronProcess,
   targetId?: string
@@ -854,27 +865,54 @@ export async function ensureMonitoring(
     }
 
     try {
-      const client = await CDP({
-        target: target.id,
-        port: electronProcess.debugPort,
-        host: "127.0.0.1",
-      });
-      wireMonitorEvents(electronProcess, target.id, client);
-      await client.send("Runtime.enable");
+      const client = await withTimeout(
+        CDP({
+          target: target.id,
+          port: electronProcess.debugPort,
+          host: "127.0.0.1",
+        }),
+        MONITOR_STEP_TIMEOUT_MS,
+        `CDP connect to target ${target.id}`
+      );
       try {
-        await client.send("Log.enable");
-      } catch {
-        // optional
-      }
-      try {
-        await client.send("Network.enable");
-      } catch {
-        // optional
-      }
-      try {
-        await client.send("Page.enable");
-      } catch {
-        // optional
+        wireMonitorEvents(electronProcess, target.id, client);
+        await withTimeout(
+          client.send("Runtime.enable"),
+          MONITOR_STEP_TIMEOUT_MS,
+          `Runtime.enable on target ${target.id}`
+        );
+        try {
+          await withTimeout(
+            client.send("Log.enable"),
+            MONITOR_STEP_TIMEOUT_MS,
+            `Log.enable on target ${target.id}`
+          );
+        } catch {
+          // optional
+        }
+        try {
+          await withTimeout(
+            client.send("Network.enable"),
+            MONITOR_STEP_TIMEOUT_MS,
+            `Network.enable on target ${target.id}`
+          );
+        } catch {
+          // optional
+        }
+        try {
+          await withTimeout(
+            client.send("Page.enable"),
+            MONITOR_STEP_TIMEOUT_MS,
+            `Page.enable on target ${target.id}`
+          );
+        } catch {
+          // optional
+        }
+      } catch (err) {
+        // Skipping this target: drop its socket rather than leaving a live
+        // client for something we never finished wiring up.
+        await closeClient(client);
+        throw err;
       }
       electronProcess.monitorClients.set(target.id, client);
       // Prefer monitor client for subsequent commands on this target
