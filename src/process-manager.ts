@@ -876,15 +876,31 @@ export async function ensureMonitoring(
     }
 
     try {
-      const client = await withTimeout(
-        CDP({
-          target: target.id,
-          port: electronProcess.debugPort,
-          host: "127.0.0.1",
-        }),
-        MONITOR_STEP_TIMEOUT_MS,
-        `CDP connect to target ${target.id}`
-      );
+      // `withTimeout` races the connection, it cannot cancel it. If the
+      // deadline wins, this promise may still resolve later with a live
+      // client that nothing owns — a WebSocket held open for the life of the
+      // process. Keep the handle so a late arrival can be closed.
+      const connection = CDP({
+        target: target.id,
+        port: electronProcess.debugPort,
+        host: "127.0.0.1",
+      });
+      let client: CDP.Client;
+      try {
+        client = await withTimeout(
+          connection,
+          MONITOR_STEP_TIMEOUT_MS,
+          `CDP connect to target ${target.id}`
+        );
+      } catch (err) {
+        void connection.then(
+          (late) => closeClient(late),
+          () => {
+            // Connection failed on its own; nothing to release.
+          }
+        );
+        throw err;
+      }
       try {
         wireMonitorEvents(electronProcess, target.id, client);
         await withTimeout(

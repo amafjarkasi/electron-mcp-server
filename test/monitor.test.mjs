@@ -27,7 +27,7 @@ import {
  * A fake CDP endpoint: `/json/version`, `/json/list`, and a WebSocket per
  * target.
  *
- * @param {Array<{id: string, type: string, silent?: boolean}>} targets
+ * @param {Array<{id: string, type: string, silent?: boolean, connectDelayMs?: number}>} targets
  * @returns {Promise<{port: number, close: () => Promise<void>}>}
  */
 async function startFakeCdp(targets) {
@@ -68,10 +68,23 @@ async function startFakeCdp(targets) {
     socket.on("close", () => sockets.delete(socket));
   });
 
-  const wss = new WebSocketServer({ server });
+  // `noServer` so the upgrade can be delayed per target: a connection that
+  // completes AFTER its deadline is the case where a client can be leaked.
+  const wss = new WebSocketServer({ noServer: true });
+  const live = new Set();
+  server.on("upgrade", (req, socket, head) => {
+    const id = (req.url ?? "").split("/").pop();
+    const target = targets.find((t) => t.id === id);
+    const finish = () =>
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+    if (target?.connectDelayMs) setTimeout(finish, target.connectDelayMs);
+    else finish();
+  });
   wss.on("connection", (ws, req) => {
     const id = (req.url ?? "").split("/").pop();
     const target = targets.find((t) => t.id === id);
+    live.add(ws);
+    ws.on("close", () => live.delete(ws));
     ws.on("message", (raw) => {
       let msg;
       try {
@@ -90,8 +103,10 @@ async function startFakeCdp(targets) {
   const port = server.address().port;
   return {
     port,
+    /** WebSockets currently open to the fixture. */
+    liveSockets: () => live.size,
     close: async () => {
-      for (const ws of wss.clients) ws.terminate();
+      for (const ws of live) ws.terminate();
       wss.close();
       for (const socket of sockets) socket.destroy();
       await new Promise((resolve) => server.close(resolve));
@@ -175,6 +190,37 @@ test("attachToDebugPort does not re-pay the timeout on later passes", async () =
     assert.ok(
       elapsed < MONITOR_STEP_TIMEOUT_MS,
       `two refreshes should not re-time-out, took ${elapsed}ms`
+    );
+  } finally {
+    if (attached) await stopElectronApp(attached.id).catch(() => {});
+    await cdp.close();
+  }
+});
+
+test("attachToDebugPort closes a connection that lands after its deadline", async () => {
+  // `withTimeout` races the connection, it cannot cancel it. A connection that
+  // resolves after the deadline hands back a live client nobody owns — a
+  // WebSocket held open for the life of the process.
+  const cdp = await startFakeCdp([
+    { id: "page-ok", type: "page" },
+    {
+      id: "worker-slow-connect",
+      type: "worker",
+      connectDelayMs: MONITOR_STEP_TIMEOUT_MS + 1500,
+    },
+  ]);
+  let attached;
+  try {
+    attached = await attachToDebugPort(cdp.port, "fixture");
+    assert.ok(attached.unmonitorableTargets.has("worker-slow-connect"));
+
+    // Let the abandoned connection complete, then be disposed of.
+    await new Promise((r) => setTimeout(r, 3500));
+
+    assert.equal(
+      cdp.liveSockets(),
+      1,
+      `expected only the healthy page to hold a socket, found ${cdp.liveSockets()}`
     );
   } finally {
     if (attached) await stopElectronApp(attached.id).catch(() => {});
