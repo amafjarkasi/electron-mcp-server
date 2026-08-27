@@ -95,6 +95,21 @@ export interface ElectronDebugInfo {
 
 const electronProcesses = new Map<string, ElectronProcess>();
 
+/**
+ * Whether a target is the DevTools front-end rather than the app under test.
+ *
+ * Opening DevTools adds a `devtools://` page to the target list, and it is
+ * frequently FIRST — so a picker that takes the first page target drives the
+ * debugger's own UI instead of the application, and monitoring it fills the
+ * console buffer with DevTools' internal warnings rather than the app's.
+ *
+ * @param target The CDP target to classify.
+ * @returns True when the target is a DevTools front-end page.
+ */
+export function isDevToolsTarget(target: { url?: string }): boolean {
+  return (target.url ?? "").startsWith("devtools://");
+}
+
 export function classifyTargetRole(
   type: string
 ): "page" | "worker" | "browser" | "other" {
@@ -842,7 +857,9 @@ export async function ensureMonitoring(
     : (electronProcess.targets ?? []).filter(
         (t) =>
           (t.type === "page" || Boolean(t.webSocketDebuggerUrl)) &&
-          t.type !== "browser"
+          t.type !== "browser" &&
+          // Its console is DevTools' own chatter, and it drowns the app's.
+          !isDevToolsTarget(t)
       );
 
   for (const target of targets) {
@@ -1382,10 +1399,14 @@ export function pickPageTarget(
   }
 
   if (preferredRole !== "any") {
-    const roleMatch = electronProcess.targets.find(
+    const roleMatches = electronProcess.targets.filter(
       (t) => classifyTargetRole(t.type) === preferredRole
     );
-    if (roleMatch) return roleMatch;
+    // An explicit targetId is honoured above, so preferring the application
+    // here only changes which target is chosen when the caller did not say.
+    const appMatch = roleMatches.find((t) => !isDevToolsTarget(t));
+    if (appMatch) return appMatch;
+    if (roleMatches.length) return roleMatches[0];
   }
 
   return (

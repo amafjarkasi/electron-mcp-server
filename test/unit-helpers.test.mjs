@@ -25,6 +25,7 @@ import {
   listTargetsByRole,
   parseDebugPortFromCommand,
   parseInspectPortFromCommand,
+  isDevToolsTarget,
   pickMainTarget,
   pickPageTarget,
   pickTargetByRole,
@@ -356,6 +357,64 @@ test("parseInspectPortFromCommand rejects port 0", () => {
 // ===========================================================================
 // pickPageTarget
 // ===========================================================================
+
+test("isDevToolsTarget identifies the DevTools front-end", () => {
+  assert.equal(
+    isDevToolsTarget({ url: "devtools://devtools/bundled/devtools_app.html" }),
+    true
+  );
+  assert.equal(isDevToolsTarget({ url: "http://localhost:5174/chat/x" }), false);
+  assert.equal(isDevToolsTarget({}), false);
+});
+
+test("pickPageTarget prefers the app page over an open DevTools window", () => {
+  // Opening DevTools adds a `devtools://` page, and Chrome frequently lists it
+  // FIRST — so taking the first page target drives the debugger's own UI
+  // instead of the application under test.
+  const proc = makeProc({
+    targets: makeTargets([
+      {
+        id: "devtools",
+        type: "page",
+        title: "DevTools",
+        url: "devtools://devtools/bundled/devtools_app.html",
+      },
+      { id: "app", type: "page", title: "App", url: "http://localhost:5174/" },
+    ]),
+  });
+  assert.equal(pickPageTarget(proc).id, "app");
+});
+
+test("pickPageTarget still honours an explicit DevTools targetId", () => {
+  const proc = makeProc({
+    targets: makeTargets([
+      { id: "app", type: "page", title: "App", url: "http://localhost:5174/" },
+      {
+        id: "devtools",
+        type: "page",
+        title: "DevTools",
+        url: "devtools://devtools/bundled/devtools_app.html",
+      },
+    ]),
+  });
+  assert.equal(pickPageTarget(proc, "devtools").id, "devtools");
+});
+
+test("pickPageTarget falls back to DevTools when it is the only page", () => {
+  // Preferring the app must not mean refusing to work when there is no app
+  // page to prefer.
+  const proc = makeProc({
+    targets: makeTargets([
+      {
+        id: "devtools",
+        type: "page",
+        title: "DevTools",
+        url: "devtools://devtools/bundled/devtools_app.html",
+      },
+    ]),
+  });
+  assert.equal(pickPageTarget(proc).id, "devtools");
+});
 
 test("pickPageTarget throws when process has no targets", () => {
   const proc = makeProc({ targets: undefined });
