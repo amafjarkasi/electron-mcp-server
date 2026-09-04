@@ -95,6 +95,42 @@ export interface ElectronDebugInfo {
 
 const electronProcesses = new Map<string, ElectronProcess>();
 
+/**
+ * Whether a target is the DevTools front-end rather than the app under test.
+ *
+ * Opening DevTools adds a `devtools://` page to the target list, and it is
+ * frequently FIRST — so a picker that takes the first page target drives the
+ * debugger's own UI instead of the application, and monitoring it fills the
+ * console buffer with DevTools' internal warnings rather than the app's.
+ *
+ * @param target The CDP target to classify.
+ * @returns True when the target is a DevTools front-end page.
+ */
+export function isDevToolsTarget(target: { url?: string }): boolean {
+  return (target.url ?? "").startsWith("devtools://");
+}
+
+/**
+ * Pick the application target out of a set of equally valid candidates.
+ *
+ * Shared by every picker so the preference cannot be applied in one selection
+ * path and silently missed in another — which is exactly what happened when it
+ * lived only in {@link pickPageTarget} and `role: "page"` went through
+ * {@link pickTargetByRole} instead.
+ *
+ * Falls back to the first candidate rather than rejecting a DevTools-only
+ * list: preferring the app must not mean refusing to work when there is no
+ * app target to prefer.
+ *
+ * @param candidates Targets already filtered to the requested role.
+ * @returns The first non-DevTools candidate, else the first candidate.
+ */
+export function preferAppTarget<T extends { url?: string }>(
+  candidates: T[]
+): T | undefined {
+  return candidates.find((t) => !isDevToolsTarget(t)) ?? candidates[0];
+}
+
 export function classifyTargetRole(
   type: string
 ): "page" | "worker" | "browser" | "other" {
@@ -842,7 +878,9 @@ export async function ensureMonitoring(
     : (electronProcess.targets ?? []).filter(
         (t) =>
           (t.type === "page" || Boolean(t.webSocketDebuggerUrl)) &&
-          t.type !== "browser"
+          t.type !== "browser" &&
+          // Its console is DevTools' own chatter, and it drowns the app's.
+          !isDevToolsTarget(t)
       );
 
   for (const target of targets) {
@@ -1382,8 +1420,12 @@ export function pickPageTarget(
   }
 
   if (preferredRole !== "any") {
-    const roleMatch = electronProcess.targets.find(
-      (t) => classifyTargetRole(t.type) === preferredRole
+    // An explicit targetId is honoured above, so preferring the application
+    // here only changes which target is chosen when the caller did not say.
+    const roleMatch = preferAppTarget(
+      electronProcess.targets.filter(
+        (t) => classifyTargetRole(t.type) === preferredRole
+      )
     );
     if (roleMatch) return roleMatch;
   }
@@ -1403,8 +1445,10 @@ export function pickTargetByRole(
   if (targetId) {
     return pickPageTarget(electronProcess, targetId, "any");
   }
-  const match = (electronProcess.targets ?? []).find(
-    (t) => classifyTargetRole(t.type) === role
+  const match = preferAppTarget(
+    (electronProcess.targets ?? []).filter(
+      (t) => classifyTargetRole(t.type) === role
+    )
   );
   if (!match) {
     throw new Error(`No ${role} target found for process ${electronProcess.id}`);
