@@ -102,6 +102,42 @@ export interface ElectronDebugInfo {
 
 const electronProcesses = new Map<string, ElectronProcess>();
 
+/**
+ * Whether a target is the DevTools front-end rather than the app under test.
+ *
+ * Opening DevTools adds a `devtools://` page to the target list, and it is
+ * frequently FIRST — so a picker that takes the first page target drives the
+ * debugger's own UI instead of the application, and monitoring it fills the
+ * console buffer with DevTools' internal warnings rather than the app's.
+ *
+ * @param target The CDP target to classify.
+ * @returns True when the target is a DevTools front-end page.
+ */
+export function isDevToolsTarget(target: { url?: string }): boolean {
+  return (target.url ?? "").startsWith("devtools://");
+}
+
+/**
+ * Pick the application target out of a set of equally valid candidates.
+ *
+ * Shared by every picker so the preference cannot be applied in one selection
+ * path and silently missed in another — which is exactly what happened when it
+ * lived only in {@link pickPageTarget} and `role: "page"` went through
+ * {@link pickTargetByRole} instead.
+ *
+ * Falls back to the first candidate rather than rejecting a DevTools-only
+ * list: preferring the app must not mean refusing to work when there is no
+ * app target to prefer.
+ *
+ * @param candidates Targets already filtered to the requested role.
+ * @returns The first non-DevTools candidate, else the first candidate.
+ */
+export function preferAppTarget<T extends { url?: string }>(
+  candidates: T[]
+): T | undefined {
+  return candidates.find((t) => !isDevToolsTarget(t)) ?? candidates[0];
+}
+
 export function classifyTargetRole(
   type: string
 ): "page" | "worker" | "browser" | "other" {
@@ -288,20 +324,57 @@ export async function waitForDebugPort(
   );
 }
 
-export async function probeDebugPort(port: number): Promise<{
+/**
+ * How long a single probe waits, in total, before giving up on a port.
+ *
+ * A closed port is refused by the OS immediately, so this budget only ever
+ * applies to a port that ACCEPTED the connection and then failed to speak
+ * HTTP — a WebSocket-only listener, say, or a dev server still starting up.
+ * `fetch` has no timeout of its own there: undici falls back to a 5-minute
+ * headers timeout, which is long enough that the scan reads as a hung server
+ * and the MCP client gives up on it first.
+ *
+ * This is a WHOLE-PROBE budget, not a per-request one. A probe makes two
+ * sequential requests, so giving each its own timeout would let a single port
+ * consume twice the advertised bound — and discovery awaits each batch, so
+ * that doubling lands straight on the total scan time.
+ */
+export const PROBE_TIMEOUT_MS = 1000;
+
+/**
+ * How many ports {@link discoverDebugPorts} probes at once.
+ *
+ * Bounded rather than unlimited so that scanning a wide range does not open
+ * hundreds of sockets simultaneously and run into the per-process descriptor
+ * limit.
+ */
+export const PROBE_CONCURRENCY = 32;
+
+export async function probeDebugPort(
+  port: number,
+  timeoutMs = PROBE_TIMEOUT_MS
+): Promise<{
   port: number;
   ok: boolean;
   version?: unknown;
   targets?: CDPTarget[];
   error?: string;
 }> {
+  // One deadline for the whole probe, started before the first request and
+  // shared by the second. Reading and parsing the version body happens on this
+  // clock too, so the port cannot spend the budget twice.
+  const deadline = AbortSignal.timeout(timeoutMs);
   try {
-    const versionRes = await fetch(`http://127.0.0.1:${port}/json/version`);
+    const versionRes = await fetch(`http://127.0.0.1:${port}/json/version`, {
+      signal: deadline,
+    });
     if (!versionRes.ok) {
       return { port, ok: false, error: `HTTP ${versionRes.status}` };
     }
     const version = await versionRes.json();
-    const listRes = await fetch(`http://127.0.0.1:${port}/json/list`);
+    const listRes = await fetch(`http://127.0.0.1:${port}/json/list`, {
+      signal: deadline,
+    });
     const targets = listRes.ok
       ? ((await listRes.json()) as CDPTarget[])
       : [];
@@ -319,15 +392,27 @@ export async function discoverDebugPorts(
   startPort = 9222,
   endPort = 9235
 ): Promise<Array<{ port: number; version?: unknown; targetCount: number }>> {
-  const found = [];
+  const ports = [];
   for (let port = startPort; port <= endPort; port++) {
-    const probe = await probeDebugPort(port);
-    if (probe.ok) {
-      found.push({
-        port,
-        version: probe.version,
-        targetCount: probe.targets?.length ?? 0,
-      });
+    ports.push(port);
+  }
+
+  // Probed in bounded batches rather than one at a time. A serial scan pays
+  // every unreachable port's timeout end to end, so one silent port in a wide
+  // range is enough to push the whole call past the caller's patience.
+  const found = [];
+  for (let i = 0; i < ports.length; i += PROBE_CONCURRENCY) {
+    const batch = await Promise.all(
+      ports.slice(i, i + PROBE_CONCURRENCY).map((port) => probeDebugPort(port))
+    );
+    for (const probe of batch) {
+      if (probe.ok) {
+        found.push({
+          port: probe.port,
+          version: probe.version,
+          targetCount: probe.targets?.length ?? 0,
+        });
+      }
     }
   }
   return found;
@@ -861,7 +946,9 @@ export async function ensureMonitoring(
     : (electronProcess.targets ?? []).filter(
         (t) =>
           (t.type === "page" || Boolean(t.webSocketDebuggerUrl)) &&
-          t.type !== "browser"
+          t.type !== "browser" &&
+          // Its console is DevTools' own chatter, and it drowns the app's.
+          !isDevToolsTarget(t)
       );
 
   for (const target of targets) {
@@ -1451,8 +1538,12 @@ export function pickPageTarget(
   }
 
   if (preferredRole !== "any") {
-    const roleMatch = electronProcess.targets.find(
-      (t) => classifyTargetRole(t.type) === preferredRole
+    // An explicit targetId is honoured above, so preferring the application
+    // here only changes which target is chosen when the caller did not say.
+    const roleMatch = preferAppTarget(
+      electronProcess.targets.filter(
+        (t) => classifyTargetRole(t.type) === preferredRole
+      )
     );
     if (roleMatch) return roleMatch;
   }
@@ -1472,8 +1563,10 @@ export function pickTargetByRole(
   if (targetId) {
     return pickPageTarget(electronProcess, targetId, "any");
   }
-  const match = (electronProcess.targets ?? []).find(
-    (t) => classifyTargetRole(t.type) === role
+  const match = preferAppTarget(
+    (electronProcess.targets ?? []).filter(
+      (t) => classifyTargetRole(t.type) === role
+    )
   );
   if (!match) {
     throw new Error(`No ${role} target found for process ${electronProcess.id}`);
