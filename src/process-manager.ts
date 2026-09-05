@@ -11,13 +11,6 @@ import { log } from "./log.js";
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 
-const RE_ELECTRON_CMD = /(?:^|[\\/\s])electron(?:\.exe)?(?:\s|$)|Electron\.app|\belectron\b/i;
-const RE_HELPER_PROC = /--type=|zygote|gpu-process|utility/i;
-const RE_LIKELY_MAIN = /main|electron/i;
-const RE_DEBUG_PORT = /--remote-debugging-port(?:=|\s+)(\d+)|remote-debugging-port[=:](\d+)/i;
-const RE_INSPECT_PORT = /--inspect(?:=|\s+)(\d+)/i;
-
-
 const MAX_LOG_CHUNKS = 2000;
 const MAX_CONSOLE = 500;
 const MAX_NETWORK = 500;
@@ -426,15 +419,10 @@ export async function discoverDebugPorts(
 }
 
 export function pushCapped<T>(arr: T[], item: T, max: number): void {
-  arr.push(item);
-  const excess = arr.length - max;
-  if (excess > 0) {
-    if (excess === 1) {
-      arr.shift();
-    } else {
-      arr.splice(0, excess);
-    }
-  }
+	arr.push(item);
+	if (arr.length > max) {
+		arr.splice(0, arr.length - max);
+	}
 }
 
 export function createProcessRecord(
@@ -758,44 +746,32 @@ export async function stopElectronApp(id: string): Promise<boolean> {
 }
 
 export async function updateCDPTargets(
-  electronProcess: ElectronProcess,
-  force = false,
-  ttlMs = 500
+	electronProcess: ElectronProcess,
 ): Promise<CDPTarget[]> {
-  if (!electronProcess.debugPort) {
-    throw new Error("No debug port available for this Electron process");
-  }
+	if (!electronProcess.debugPort) {
+		throw new Error("No debug port available for this Electron process");
+	}
 
-  const now = new Date();
-  if (
-    !force &&
-    electronProcess.targets &&
-    electronProcess.lastTargetUpdate &&
-    now.getTime() - electronProcess.lastTargetUpdate.getTime() < ttlMs
-  ) {
-    return electronProcess.targets;
-  }
+	const response = await fetch(
+		`http://127.0.0.1:${electronProcess.debugPort}/json/list`,
+	);
+	if (!response.ok) {
+		throw new Error(`Failed to get targets: ${response.statusText}`);
+	}
 
-  const response = await fetch(
-    `http://127.0.0.1:${electronProcess.debugPort}/json/list`
-  );
-  if (!response.ok) {
-    throw new Error(`Failed to get targets: ${response.statusText}`);
-  }
-
-  const targets = (await response.json()) as CDPTarget[];
-  const prev = electronProcess.targets?.map((t) => t.id).join(",") ?? "";
-  electronProcess.targets = targets;
-  electronProcess.lastTargetUpdate = new Date();
-  const next = targets.map((t) => t.id).join(",");
-  if (prev !== next) {
-    processEvents.emitEvent({
-      type: "targets_changed",
-      processId: electronProcess.id,
-      targetCount: targets.length,
-    });
-  }
-  return targets;
+	const targets = (await response.json()) as CDPTarget[];
+	const prev = electronProcess.targets?.map((t) => t.id).join(",") ?? "";
+	electronProcess.targets = targets;
+	electronProcess.lastTargetUpdate = new Date();
+	const next = targets.map((t) => t.id).join(",");
+	if (prev !== next) {
+		processEvents.emitEvent({
+			type: "targets_changed",
+			processId: electronProcess.id,
+			targetCount: targets.length,
+		});
+	}
+	return targets;
 }
 
 function wireMonitorEvents(
@@ -2316,27 +2292,31 @@ export function pickMainTarget(
 	electronProcess: ElectronProcess,
 	targetId?: string,
 ): CDPTarget {
-  if (!electronProcess.targets?.length) {
-    throw new Error(
-      `No CDP targets available for process ${electronProcess.id}`
-    );
-  }
-  if (targetId) {
-    return pickPageTarget(electronProcess, targetId, "any");
-  }
+	if (!electronProcess.targets?.length) {
+		throw new Error(
+			`No CDP targets available for process ${electronProcess.id}`,
+		);
+	}
+	if (targetId) {
+		return pickPageTarget(electronProcess, targetId, "any");
+	}
 
-  const targets = electronProcess.targets;
-  const nodeLike =
-    targets.find((t) => t.type === "node") ??
-    targets.find((t) => t.type === "service_worker" && RE_LIKELY_MAIN.test(`${t.title} ${t.url}`)) ??
-    targets.find((t) => /node/i.test(t.type));
+	const targets = electronProcess.targets;
+	const nodeLike =
+		targets.find((t) => t.type === "node") ??
+		targets.find(
+			(t) =>
+				t.type === "service_worker" &&
+				/electron|main/i.test(`${t.title} ${t.url}`),
+		) ??
+		targets.find((t) => /node/i.test(t.type));
 
-  if (!nodeLike) {
-    throw new Error(
-      `No main/node target found for ${electronProcess.id}. Start with inspectMain:true (adds --inspect) or pass targetId from list_targets.`
-    );
-  }
-  return nodeLike;
+	if (!nodeLike) {
+		throw new Error(
+			`No main/node target found for ${electronProcess.id}. Start with inspectMain:true (adds --inspect) or pass targetId from list_targets.`,
+		);
+	}
+	return nodeLike;
 }
 
 export async function evaluateMain(
@@ -2372,21 +2352,21 @@ export function listTargetsByRole(electronProcess: ElectronProcess): Array<{
 	url: string;
 	likelyMain: boolean;
 }> {
-  return (electronProcess.targets ?? []).map((t) => {
-    const role = classifyTargetRole(t.type);
-    const likelyMain =
-      t.type === "node" ||
-      t.type === "browser" ||
-      RE_LIKELY_MAIN.test(`${t.type} ${t.title} ${t.url}`);
-    return {
-      id: t.id,
-      type: t.type,
-      role,
-      title: t.title,
-      url: t.url,
-      likelyMain,
-    };
-  });
+	return (electronProcess.targets ?? []).map((t) => {
+		const role = classifyTargetRole(t.type);
+		const likelyMain =
+			t.type === "node" ||
+			t.type === "browser" ||
+			/main|electron/i.test(`${t.type} ${t.title} ${t.url}`);
+		return {
+			id: t.id,
+			type: t.type,
+			role,
+			title: t.title,
+			url: t.url,
+			likelyMain,
+		};
+	});
 }
 
 export async function getCookies(
@@ -2645,92 +2625,76 @@ export async function stopTracing(
 }
 
 export function parseDebugPortFromCommand(command: string): number | undefined {
-  const m = command.match(RE_DEBUG_PORT);
-  if (!m) return undefined;
-  const port = Number(m[1] || m[2]);
-  return Number.isFinite(port) ? port : undefined;}
+	const m =
+		command.match(/--remote-debugging-port(?:=|\s+)(\d+)/i) ??
+		command.match(/remote-debugging-port[=:](\d+)/i);
+	if (!m) return undefined;
+	const port = Number(m[1]);
+	return Number.isFinite(port) && port > 0 && port <= 65535 ? port : undefined;
+}
 
-export function parseInspectPortFromCommand(command: string): number | undefined {
-  const m = command.match(RE_INSPECT_PORT);
-  if (!m) return undefined;
-  const port = Number(m[1]);
-  return Number.isFinite(port) && port > 0 ? port : undefined;}
+export function parseInspectPortFromCommand(
+	command: string,
+): number | undefined {
+	const m = command.match(/--inspect(?:=|\s+)(\d+)/i);
+	if (!m) return undefined;
+	const port = Number(m[1]);
+	return Number.isFinite(port) && port > 0 && port <= 65535 ? port : undefined;
+}
 
 async function listOsProcesses(): Promise<
 	Array<{ pid: number; command: string }>
 > {
-  if (process.platform === "win32") {
-    try {
-      let rows: Array<{ ProcessId?: number; CommandLine?: string }> = [];
-      try {
-        const { stdout } = await execFileAsync(
-          "powershell.exe",
-          [
-            "-NoProfile",
-            "-Command",
-            "Get-CimInstance Win32_Process -Filter \"Name LIKE '%electron%' OR CommandLine LIKE '%electron%'\" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
-          ],
-          { maxBuffer: 20 * 1024 * 1024 }
-        );
-        const parsed = JSON.parse(stdout || "[]") as
-          | Array<{ ProcessId?: number; CommandLine?: string }>
-          | { ProcessId?: number; CommandLine?: string };
-        rows = Array.isArray(parsed) ? parsed : [parsed];
-      } catch {
-        // Filter query failed or produced invalid JSON; fall through to full query
-      }
+	if (process.platform === "win32") {
+		try {
+			const { stdout } = await execFileAsync(
+				"powershell.exe",
+				[
+					"-NoProfile",
+					"-Command",
+					"Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+				],
+				{ maxBuffer: 20 * 1024 * 1024 },
+			);
+			const parsed = JSON.parse(stdout || "[]") as
+				| Array<{ ProcessId?: number; CommandLine?: string }>
+				| { ProcessId?: number; CommandLine?: string };
+			const rows = Array.isArray(parsed) ? parsed : [parsed];
+			return rows
+				.filter((r) => r.ProcessId && r.CommandLine)
+				.map((r) => ({
+					pid: Number(r.ProcessId),
+					command: String(r.CommandLine),
+				}));
+		} catch (err) {
+			log.warn("Windows process listing failed:", err);
+			return [];
+		}
+	}
 
-      if (!rows.length || !rows[0]?.ProcessId) {
-        const { stdout: fullStdout } = await execFileAsync(
-          "powershell.exe",
-          [
-            "-NoProfile",
-            "-Command",
-            "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
-          ],
-          { maxBuffer: 20 * 1024 * 1024 }
-        );
-        const fullParsed = JSON.parse(fullStdout || "[]") as
-          | Array<{ ProcessId?: number; CommandLine?: string }>
-          | { ProcessId?: number; CommandLine?: string };
-        rows = Array.isArray(fullParsed) ? fullParsed : [fullParsed];
-      }
-
-      return rows
-        .filter((r) => r.ProcessId && r.CommandLine)
-        .map((r) => ({
-          pid: Number(r.ProcessId),
-          command: String(r.CommandLine),
-        }));
-    } catch (err) {
-      log.warn("Windows process listing failed:", err);
-      return [];
-    }
-  }
-
-  // Linux / macOS: prefer `ps`
-  try {
-    const { stdout } = await execFileAsync(
-      "ps",
-      process.platform === "darwin"
-        ? ["-ax", "-o", "pid=,command="]
-        : ["-eo", "pid=,args="],
-      { maxBuffer: 20 * 1024 * 1024 }
-    );
-    return stdout
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const m = line.match(/^(\d+)\s+(.*)$/);
-        if (!m) return null;
-        return { pid: Number(m[1]), command: m[2] };
-      })
-      .filter((x): x is { pid: number; command: string } => Boolean(x));
-  } catch (err) {
-    log.warn("ps process listing failed:", err);
-    return [];
-  }
+	// Linux / macOS: prefer `ps`
+	try {
+		const { stdout } = await execFileAsync(
+			"ps",
+			process.platform === "darwin"
+				? ["-ax", "-o", "pid=,command="]
+				: ["-eo", "pid=,args="],
+			{ maxBuffer: 20 * 1024 * 1024 },
+		);
+		return stdout
+			.split("\n")
+			.map((line) => line.trim())
+			.filter(Boolean)
+			.map((line) => {
+				const m = line.match(/^(\d+)\s+(.*)$/);
+				if (!m) return null;
+				return { pid: Number(m[1]), command: m[2] };
+			})
+			.filter((x): x is { pid: number; command: string } => Boolean(x));
+	} catch (err) {
+		log.warn("ps process listing failed:", err);
+		return [];
+	}
 }
 
 export type FoundElectronApp = {
@@ -2742,30 +2706,39 @@ export type FoundElectronApp = {
 };
 
 export async function findRunningElectronApps(): Promise<FoundElectronApp[]> {
-  const procs = await listOsProcesses();
-  const found: FoundElectronApp[] = [];
-  for (const p of procs) {
-    const cmd = p.command;
-    if (!RE_ELECTRON_CMD.test(cmd)) continue;
-    const isHelper = RE_HELPER_PROC.test(cmd);
-    const debugPort = parseDebugPortFromCommand(cmd);
-    const inspectPort = parseInspectPortFromCommand(cmd);
+	const procs = await listOsProcesses();
+	const found: FoundElectronApp[] = [];
+	for (const p of procs) {
+		const cmd = p.command;
+		const mentionsElectron =
+			/(?:^|[\\/\s])electron(?:\.exe)?(?:\s|$)/i.test(cmd) ||
+			/Electron\.app/i.test(cmd) ||
+			/\belectron\b/i.test(cmd);
+		if (!mentionsElectron) continue;
 
-    // Prefer main processes; still include helpers that expose a debug port.
-    if (isHelper && !debugPort) continue;
+		const isHelper =
+			/--type=/.test(cmd) ||
+			/zygote/i.test(cmd) ||
+			/gpu-process/i.test(cmd) ||
+			/utility/i.test(cmd);
+		const debugPort = parseDebugPortFromCommand(cmd);
+		const inspectPort = parseInspectPortFromCommand(cmd);
 
-    found.push({
-      pid: p.pid,
-      command: cmd.length > 400 ? `${cmd.slice(0, 400)}…` : cmd,
-      debugPort,
-      inspectPort,
-      likelyElectron: true,
-    });
-  }
+		// Prefer main processes; still include helpers that expose a debug port.
+		if (isHelper && !debugPort) continue;
 
-  const byPid = new Map<number, FoundElectronApp>();
-  for (const f of found) byPid.set(f.pid, f);
-  return Array.from(byPid.values()).sort((a, b) => a.pid - b.pid);
+		found.push({
+			pid: p.pid,
+			command: cmd.length > 400 ? `${cmd.slice(0, 400)}…` : cmd,
+			debugPort,
+			inspectPort,
+			likelyElectron: true,
+		});
+	}
+
+	const byPid = new Map<number, FoundElectronApp>();
+	for (const f of found) byPid.set(f.pid, f);
+	return Array.from(byPid.values()).sort((a, b) => a.pid - b.pid);
 }
 
 export async function resolveDebugPortForPid(
