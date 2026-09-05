@@ -1364,15 +1364,24 @@ export async function captureScreenshot(
   let result: { data: string };
   // Cleared when capture falls back to a mode that cannot honour the clip.
   let clipApplied = true;
-  const tryCapture = async (fromSurface: boolean) =>
-    (await withTimeout(
-      executeCDPCommand(electronProcess, target.id, "Page.captureScreenshot", {
-        ...paramsBase,
-        fromSurface,
-      }),
-      clip ? 10000 : 8000,
-      `Page.captureScreenshot(fromSurface=${fromSurface})`
-    )) as { data: string };
+  const tryCapture = async (fromSurface: boolean) => {
+    try {
+        return (await withTimeout(
+          executeCDPCommand(electronProcess, target.id, "Page.captureScreenshot", {
+            ...paramsBase,
+            fromSurface,
+          }),
+          clip ? 10000 : 8000,
+          `Page.captureScreenshot(fromSurface=${fromSurface})`
+        )) as { data: string };
+    } catch(err: any) {
+        if (err && err.response && err.response.code === -32603) {
+            // CDP throws internal error instead of timeout. We should treat it as timeout to retry.
+            throw new Error(`Page.captureScreenshot(fromSurface=${fromSurface}) timed out`);
+        }
+        throw err;
+    }
+  }
 
   const resetPageSocket = async () => {
     const mon = electronProcess.monitorClients.get(target.id);
