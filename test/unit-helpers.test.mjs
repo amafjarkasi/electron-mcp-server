@@ -10,6 +10,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "os";
 import path from "path";
+import http from "node:http";
+import { WebSocketServer } from "ws";
 import {
   assertAppPathAllowed,
   clampClipToViewport,
@@ -33,6 +35,8 @@ import {
   pushCapped,
   setConsoleLiveLogging,
   validateOutputPath,
+  waitForCondition,
+  navigatePage,
 } from "../build/process-manager.js";
 
 void _classify;
@@ -321,6 +325,11 @@ test("parseDebugPortFromCommand returns undefined when no port digits follow", (
   );
 });
 
+test("parseDebugPortFromCommand rejects port numbers out of 1..65535 range", () => {
+  assert.equal(parseDebugPortFromCommand("electron --remote-debugging-port=0"), undefined);
+  assert.equal(parseDebugPortFromCommand("electron --remote-debugging-port=70000"), undefined);
+});
+
 // ===========================================================================
 // parseInspectPortFromCommand
 // ===========================================================================
@@ -351,8 +360,9 @@ test("parseInspectPortFromCommand returns undefined when absent", () => {
   assert.equal(parseInspectPortFromCommand(""), undefined);
 });
 
-test("parseInspectPortFromCommand rejects port 0", () => {
+test("parseInspectPortFromCommand rejects port 0 and ports > 65535", () => {
   assert.equal(parseInspectPortFromCommand("electron --inspect=0"), undefined);
+  assert.equal(parseInspectPortFromCommand("electron --inspect=70000"), undefined);
 });
 
 // ===========================================================================
