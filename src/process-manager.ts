@@ -11,6 +11,13 @@ import { processEvents } from "./events.js";
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 
+const RE_ELECTRON_CMD = /(?:^|[\\/\s])electron(?:\.exe)?(?:\s|$)|Electron\.app|\belectron\b/i;
+const RE_HELPER_PROC = /--type=|zygote|gpu-process|utility/i;
+const RE_LIKELY_MAIN = /main|electron/i;
+const RE_DEBUG_PORT = /--remote-debugging-port(?:=|\s+)(\d+)|remote-debugging-port[=:](\d+)/i;
+const RE_INSPECT_PORT = /--inspect(?:=|\s+)(\d+)/i;
+
+
 const MAX_LOG_CHUNKS = 2000;
 const MAX_CONSOLE = 500;
 const MAX_NETWORK = 500;
@@ -2267,7 +2274,7 @@ export function pickMainTarget(
   const targets = electronProcess.targets;
   const nodeLike =
     targets.find((t) => t.type === "node") ??
-    targets.find((t) => t.type === "service_worker" && /electron|main/i.test(`${t.title} ${t.url}`)) ??
+    targets.find((t) => t.type === "service_worker" && RE_LIKELY_MAIN.test(`${t.title} ${t.url}`)) ??
     targets.find((t) => /node/i.test(t.type));
 
   if (!nodeLike) {
@@ -2316,7 +2323,7 @@ export function listTargetsByRole(electronProcess: ElectronProcess): Array<{
     const likelyMain =
       t.type === "node" ||
       t.type === "browser" ||
-      /main|electron/i.test(`${t.type} ${t.title} ${t.url}`);
+      RE_LIKELY_MAIN.test(`${t.type} ${t.title} ${t.url}`);
     return {
       id: t.id,
       type: t.type,
@@ -2571,20 +2578,16 @@ export async function stopTracing(
 }
 
 export function parseDebugPortFromCommand(command: string): number | undefined {
-  const m =
-    command.match(/--remote-debugging-port(?:=|\s+)(\d+)/i) ??
-    command.match(/remote-debugging-port[=:](\d+)/i);
+  const m = command.match(RE_DEBUG_PORT);
   if (!m) return undefined;
-  const port = Number(m[1]);
-  return Number.isFinite(port) ? port : undefined;
-}
+  const port = Number(m[1] || m[2]);
+  return Number.isFinite(port) ? port : undefined;}
 
 export function parseInspectPortFromCommand(command: string): number | undefined {
-  const m = command.match(/--inspect(?:=|\s+)(\d+)/i);
+  const m = command.match(RE_INSPECT_PORT);
   if (!m) return undefined;
   const port = Number(m[1]);
-  return Number.isFinite(port) && port > 0 ? port : undefined;
-}
+  return Number.isFinite(port) && port > 0 ? port : undefined;}
 
 async function listOsProcesses(): Promise<
   Array<{ pid: number; command: string }>
@@ -2676,17 +2679,8 @@ export async function findRunningElectronApps(): Promise<FoundElectronApp[]> {
   const found: FoundElectronApp[] = [];
   for (const p of procs) {
     const cmd = p.command;
-    const mentionsElectron =
-      /(?:^|[\\/\s])electron(?:\.exe)?(?:\s|$)/i.test(cmd) ||
-      /Electron\.app/i.test(cmd) ||
-      /\belectron\b/i.test(cmd);
-    if (!mentionsElectron) continue;
-
-    const isHelper =
-      /--type=/.test(cmd) ||
-      /zygote/i.test(cmd) ||
-      /gpu-process/i.test(cmd) ||
-      /utility/i.test(cmd);
+    if (!RE_ELECTRON_CMD.test(cmd)) continue;
+    const isHelper = RE_HELPER_PROC.test(cmd);
     const debugPort = parseDebugPortFromCommand(cmd);
     const inspectPort = parseInspectPortFromCommand(cmd);
 

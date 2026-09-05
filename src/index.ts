@@ -389,13 +389,21 @@ server.tool(
         await ensureMonitoring(proc);
       }
       let messages = proc.consoleMessages;
-      if (level) {
+      const targetLevel = level ? level.toLowerCase() : null;
+      if (tail && tail > 0) {
+        const result = [];
+        for (let i = messages.length - 1; i >= 0 && result.length < tail; i--) {
+          const msg = messages[i];
+          if (!targetLevel || msg.level.toLowerCase() === targetLevel) {
+            result.push(msg);
+          }
+        }
+        result.reverse();
+        messages = result;
+      } else if (targetLevel) {
         messages = messages.filter(
-          (m) => m.level.toLowerCase() === level.toLowerCase()
+          (m) => m.level.toLowerCase() === targetLevel
         );
-      }
-      if (tail) {
-        messages = messages.slice(-tail);
       }
       return textResult({ processId, count: messages.length, messages });
     } catch (err) {
