@@ -111,28 +111,24 @@ const server = new McpServer(
 );
 
 processEvents.onEvent((event) => {
-	void notifyResourceListChanged();
-	if (event.type === "console") {
-		const isError = event.level === "error" || event.level === "assert";
-		if (isError || isConsoleLiveLoggingEnabled()) {
-			void notifyLog(
-				isError
-					? "error"
-					: event.level === "warning" || event.level === "warn"
-						? "warning"
-						: "info",
-				`[${event.processId}/${event.targetId}] ${event.level}: ${event.text}`,
-			);
-		}
-	} else if (
-		event.type === "process_started" ||
-		event.type === "process_attached" ||
-		event.type === "process_stopped" ||
-		event.type === "process_crashed" ||
-		event.type === "targets_changed"
-	) {
-		void notifyLog("info", JSON.stringify(event));
-	}
+  if (event.type === "console") {
+    const isError = event.level === "error" || event.level === "assert";
+    if (isError || isConsoleLiveLoggingEnabled()) {
+      void notifyLog(
+        isError ? "error" : event.level === "warning" || event.level === "warn" ? "warning" : "info",
+        `[${event.processId}/${event.targetId}] ${event.level}: ${event.text}`
+      );
+    }
+  } else if (
+    event.type === "process_started" ||
+    event.type === "process_attached" ||
+    event.type === "process_stopped" ||
+    event.type === "process_crashed" ||
+    event.type === "targets_changed"
+  ) {
+    void notifyResourceListChanged();
+    void notifyLog("info", JSON.stringify(event));
+  }
 });
 
 // --- Tools ---
@@ -360,54 +356,50 @@ server.tool(
 );
 
 server.tool(
-	"get_console_messages",
-	"Get buffered page console/log/exception messages captured via CDP",
-	{
-		processId: z.string(),
-		tail: z.number().int().positive().optional(),
-		level: z
-			.string()
-			.optional()
-			.describe("Optional filter, e.g. error, warning, log"),
-	},
-	async ({ processId, tail, level }) => {
-		const proc = getProcess(processId);
-		if (!proc) {
-			return textResult(`Process not found: ${processId}`, true);
-		}
-		try {
-			if (proc.status === "running") {
-				await ensureMonitoring(proc);
-			}
-			let messages = proc.consoleMessages;
-			if (level) {
-				const targetLevel = level.toLowerCase();
-				messages = messages.filter((m) => {
-					const mLevel = m.level.toLowerCase();
-					if (mLevel === targetLevel) return true;
-					if (
-						(targetLevel === "warn" || targetLevel === "warning") &&
-						(mLevel === "warn" || mLevel === "warning")
-					) {
-						return true;
-					}
-					if (
-						targetLevel === "error" &&
-						(mLevel === "assert" || m.source === "exception")
-					) {
-						return true;
-					}
-					return false;
-				});
-			}
-			if (tail) {
-				messages = messages.slice(-tail);
-			}
-			return textResult({ processId, count: messages.length, messages });
-		} catch (err) {
-			return textResult(err instanceof Error ? err.message : String(err), true);
-		}
-	},
+  "get_console_messages",
+  "Get buffered page console/log/exception messages captured via CDP",
+  {
+    processId: z.string(),
+    tail: z.number().int().positive().optional(),
+    level: z
+      .string()
+      .optional()
+      .describe("Optional filter, e.g. error, warning, log"),
+  },
+  async ({ processId, tail, level }) => {
+    const proc = getProcess(processId);
+    if (!proc) {
+      return textResult(`Process not found: ${processId}`, true);
+    }
+    try {
+      if (proc.status === "running") {
+        await ensureMonitoring(proc);
+      }
+      let messages = proc.consoleMessages;
+      const targetLevel = level ? level.toLowerCase() : null;
+      if (tail && tail > 0) {
+        const result = [];
+        for (let i = messages.length - 1; i >= 0 && result.length < tail; i--) {
+          const msg = messages[i];
+          if (!targetLevel || msg.level.toLowerCase() === targetLevel) {
+            result.push(msg);
+          }
+        }
+        result.reverse();
+        messages = result;
+      } else if (targetLevel) {
+        messages = messages.filter(
+          (m) => m.level.toLowerCase() === targetLevel
+        );
+      }
+      return textResult({ processId, count: messages.length, messages });
+    } catch (err) {
+      return textResult(
+        err instanceof Error ? err.message : String(err),
+        true
+      );
+    }
+  }
 );
 
 server.tool(
