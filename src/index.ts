@@ -111,7 +111,6 @@ const server = new McpServer(
 );
 
 processEvents.onEvent((event) => {
-  void notifyResourceListChanged();
   if (event.type === "console") {
     const isError = event.level === "error" || event.level === "assert";
     if (isError || isConsoleLiveLoggingEnabled()) {
@@ -127,6 +126,7 @@ processEvents.onEvent((event) => {
     event.type === "process_crashed" ||
     event.type === "targets_changed"
   ) {
+    void notifyResourceListChanged();
     void notifyLog("info", JSON.stringify(event));
   }
 });

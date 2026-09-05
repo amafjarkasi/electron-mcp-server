@@ -420,8 +420,13 @@ export async function discoverDebugPorts(
 
 export function pushCapped<T>(arr: T[], item: T, max: number): void {
   arr.push(item);
-  if (arr.length > max) {
-    arr.splice(0, arr.length - max);
+  const excess = arr.length - max;
+  if (excess > 0) {
+    if (excess === 1) {
+      arr.shift();
+    } else {
+      arr.splice(0, excess);
+    }
   }
 }
 
@@ -737,10 +742,22 @@ export async function stopElectronApp(id: string): Promise<boolean> {
 }
 
 export async function updateCDPTargets(
-  electronProcess: ElectronProcess
+  electronProcess: ElectronProcess,
+  force = false,
+  ttlMs = 500
 ): Promise<CDPTarget[]> {
   if (!electronProcess.debugPort) {
     throw new Error("No debug port available for this Electron process");
+  }
+
+  const now = new Date();
+  if (
+    !force &&
+    electronProcess.targets &&
+    electronProcess.lastTargetUpdate &&
+    now.getTime() - electronProcess.lastTargetUpdate.getTime() < ttlMs
+  ) {
+    return electronProcess.targets;
   }
 
   const response = await fetch(
@@ -2574,19 +2591,41 @@ async function listOsProcesses(): Promise<
 > {
   if (process.platform === "win32") {
     try {
-      const { stdout } = await execFileAsync(
-        "powershell.exe",
-        [
-          "-NoProfile",
-          "-Command",
-          "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
-        ],
-        { maxBuffer: 20 * 1024 * 1024 }
-      );
-      const parsed = JSON.parse(stdout || "[]") as
-        | Array<{ ProcessId?: number; CommandLine?: string }>
-        | { ProcessId?: number; CommandLine?: string };
-      const rows = Array.isArray(parsed) ? parsed : [parsed];
+      let rows: Array<{ ProcessId?: number; CommandLine?: string }> = [];
+      try {
+        const { stdout } = await execFileAsync(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Process -Filter \"Name LIKE '%electron%' OR CommandLine LIKE '%electron%'\" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+          ],
+          { maxBuffer: 20 * 1024 * 1024 }
+        );
+        const parsed = JSON.parse(stdout || "[]") as
+          | Array<{ ProcessId?: number; CommandLine?: string }>
+          | { ProcessId?: number; CommandLine?: string };
+        rows = Array.isArray(parsed) ? parsed : [parsed];
+      } catch {
+        // Filter query failed or produced invalid JSON; fall through to full query
+      }
+
+      if (!rows.length || !rows[0]?.ProcessId) {
+        const { stdout: fullStdout } = await execFileAsync(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+          ],
+          { maxBuffer: 20 * 1024 * 1024 }
+        );
+        const fullParsed = JSON.parse(fullStdout || "[]") as
+          | Array<{ ProcessId?: number; CommandLine?: string }>
+          | { ProcessId?: number; CommandLine?: string };
+        rows = Array.isArray(fullParsed) ? fullParsed : [fullParsed];
+      }
+
       return rows
         .filter((r) => r.ProcessId && r.CommandLine)
         .map((r) => ({
