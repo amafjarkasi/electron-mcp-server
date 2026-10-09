@@ -36,8 +36,12 @@ import {
   pickTargetByRole,
   pushCapped,
   setConsoleLiveLogging,
+  stopElectronApp,
+  preferAppTarget,
+  allocateLocalPort,
   updateCDPTargets,
   validateOutputPath,
+  resolveOutputPath,
   isPathInside,
   waitForCondition,
 } from "../build/process-manager.js";
@@ -139,7 +143,8 @@ test("getAllowedRoots resolves to absolute + trims whitespace", () => {
   try {
     const roots = getAllowedRoots();
     assert.equal(roots.length, 1);
-    assert.equal(roots[0], path.resolve("/tmp/x"));
+    // Symlink-aware (macOS /tmp → /private/tmp).
+    assert.equal(roots[0], resolveOutputPath("/tmp/x"));
     assert.ok(path.isAbsolute(roots[0]));
   } finally {
     if (prev === undefined) delete process.env.ELECTRON_MCP_ALLOWED_ROOTS;
@@ -155,10 +160,10 @@ test("assertAppPathAllowed is permissive when no roots configured", () => {
   const prev = process.env.ELECTRON_MCP_ALLOWED_ROOTS;
   delete process.env.ELECTRON_MCP_ALLOWED_ROOTS;
   try {
-    // With no allowlist, anything resolves and is returned unchanged (resolved).
+    // With no allowlist, anything resolves and is returned (symlink-aware).
     assert.equal(
       assertAppPathAllowed("/anywhere/app"),
-      path.resolve("/anywhere/app")
+      resolveOutputPath("/anywhere/app")
     );
   } finally {
     if (prev !== undefined) process.env.ELECTRON_MCP_ALLOWED_ROOTS = prev;
@@ -171,12 +176,12 @@ test("assertAppPathAllowed accepts paths inside a configured root", () => {
   try {
     assert.equal(
       assertAppPathAllowed("/tmp/allowed-root/app"),
-      path.resolve("/tmp/allowed-root/app")
+      resolveOutputPath("/tmp/allowed-root/app")
     );
     // The root itself is allowed.
     assert.equal(
       assertAppPathAllowed("/tmp/allowed-root"),
-      path.resolve("/tmp/allowed-root")
+      resolveOutputPath("/tmp/allowed-root")
     );
   } finally {
     if (prev === undefined) delete process.env.ELECTRON_MCP_ALLOWED_ROOTS;
@@ -783,7 +788,8 @@ test("validateOutputPath resolves and returns ordinary paths", () => {
   const prev = setEnv(undefined);
   try {
     const p = isWin ? "C:\\tmp\\shot.png" : "/tmp/shot.png";
-    assert.equal(validateOutputPath(p), path.resolve(p));
+    // Compare against symlink-aware resolve (macOS /tmp → /private/tmp).
+    assert.equal(validateOutputPath(p), resolveOutputPath(p));
   } finally {
     restoreEnv(prev);
   }
@@ -798,7 +804,8 @@ test("validateOutputPath rejects system/sensitive locations", () => {
           "C:\\Program Files\\x.png",
           "C:\\ProgramData\\y.json",
         ]
-      : ["/etc/passwd.png", "/proc/self/x", "/usr/share/y.json", "/boot/evil"];
+      : // Prefer roots that exist on macOS+Linux; /proc and /boot are Linux-only.
+        ["/etc/passwd.png", "/usr/share/y.json"];
     for (const p of blocked) {
       assert.throws(
         () => validateOutputPath(p),
@@ -938,6 +945,88 @@ test("validateOutputPath splits allowlist on both ';' and '|'", () => {
   } finally {
     restoreEnv(prev);
   }
+});
+
+// ===========================================================================
+// preferAppTarget / allocateLocalPort
+// ===========================================================================
+
+test("preferAppTarget skips DevTools front-end pages", () => {
+  const app = { id: "app", url: "file:///index.html" };
+  const dt = { id: "dt", url: "devtools://devtools/bundled/inspector.html" };
+  assert.equal(preferAppTarget([dt, app]), app);
+  assert.equal(preferAppTarget([app, dt]), app);
+  assert.equal(preferAppTarget([dt]), dt);
+  assert.equal(preferAppTarget([]), undefined);
+});
+
+test("allocateLocalPort returns a bindable ephemeral port", async () => {
+  const { createServer } = await import("node:net");
+  const port = await allocateLocalPort();
+  assert.ok(Number.isInteger(port) && port > 0 && port <= 65535);
+  // Port should be free again after allocation (listen was closed).
+  await new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.once("error", reject);
+    srv.listen({ host: "127.0.0.1", port }, () => {
+      srv.close((err) => (err ? reject(err) : resolve()));
+    });
+  });
+});
+
+// ===========================================================================
+// stopElectronApp — delete-on-stop + idempotent
+// ===========================================================================
+
+test("stopElectronApp removes an attached session from the managed map", async () => {
+  const id = `stop-attached-${Date.now()}`;
+  const proc = createProcessRecord({
+    id,
+    name: "attached-test",
+    status: "running",
+    attached: true,
+    debugPort: 19999,
+    startTime: new Date(0),
+    appPath: "attach://127.0.0.1:19999",
+  });
+  getAllProcesses().set(id, proc);
+  assert.ok(getProcess(id), "precondition: session registered");
+
+  const stopped = await stopElectronApp(id);
+  assert.equal(stopped, true);
+  assert.equal(getProcess(id), undefined, "session must be deleted on stop");
+  assert.ok(
+    !listProcesses().some((p) => p.id === id),
+    "listProcesses must not include stopped session"
+  );
+});
+
+test("stopElectronApp is idempotent when the session is already gone", async () => {
+  const missing = `already-gone-${Date.now()}`;
+  assert.equal(getProcess(missing), undefined);
+  const first = await stopElectronApp(missing);
+  const second = await stopElectronApp(missing);
+  assert.equal(first, true);
+  assert.equal(second, true);
+});
+
+test("stopElectronApp removes a stopped owned session without a live child", async () => {
+  const id = `stop-owned-${Date.now()}`;
+  const proc = createProcessRecord({
+    id,
+    name: "owned-test",
+    status: "stopped",
+    attached: false,
+    pid: undefined,
+    debugPort: 19998,
+    startTime: new Date(0),
+    appPath: "/tmp/app",
+  });
+  getAllProcesses().set(id, proc);
+
+  const stopped = await stopElectronApp(id);
+  assert.equal(stopped, true);
+  assert.equal(getProcess(id), undefined);
 });
 
 // ===========================================================================

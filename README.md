@@ -23,7 +23,7 @@
   <img src="https://img.shields.io/badge/Electron-desktop_apps-2B2E3A?style=flat-square&logo=electron&logoColor=white" alt="Electron" />
   <img src="https://img.shields.io/badge/TypeScript-7.x-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TS" />
   <img src="https://img.shields.io/badge/Node-%3E%3D18-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node" />
-  <img src="https://img.shields.io/badge/version-1.5.0-blue?style=flat-square" alt="version" />
+  <img src="https://img.shields.io/badge/version-1.5.1-blue?style=flat-square" alt="version" />
   <img src="https://img.shields.io/badge/tests-unit_+_monitor_+_e2e_smoke-8B5CF6?style=flat-square" alt="tests" />
 </p>
 
@@ -77,8 +77,8 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 | 🔌 **Transport** | MCP **stdio** JSON-RPC |
 | 🧬 **Debug bridge** | Chrome DevTools Protocol (Runtime · Page · Network · Debugger · Input · Log · Tracing) |
 | 🚀 **App control** | Spawn Electron **or** attach by port / PID / process scan |
-| 📦 **Surface area** | **36 tools** · **6 resources** · **3 prompts** · logging + resource list-changed |
-| 🖥️ **Platforms** | Windows · macOS · Linux (CI: **Ubuntu + Xvfb** and **Windows**) |
+| 📦 **Surface area** | **37 tools** · **7 resources** · **4 prompts** · logging + resource list-changed |
+| 🖥️ **Platforms** | Windows · macOS · Linux (CI: **Ubuntu + Xvfb**, **Windows**, **macOS**) |
 | 📦 **Requires** | Node **≥ 18**, npm, one-time Electron binary download |
 | 🛡️ **Safety** | Optional `ELECTRON_MCP_ALLOWED_ROOTS` (app paths) · `ELECTRON_MCP_OUTPUT_ROOTS` (screenshot/trace output, plus built-in blocklist of sensitive locations); attach sessions detach-only on stop |
 | ✅ **Verify** | `npm test` → unit + full MCP↔Electron smoke |
@@ -86,12 +86,13 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 ### ✅ Status
 
 - 🟢 Ready for local agent-driven Electron debugging (stdio MCP ↔ CDP)
-- 🟢 **v1.5.0** — 36 tools · element screenshots · cookies/storage · tracing · attach-by-pid · `inspectMain` / `evaluate_main`
+- 🟢 **v1.5.1** — 37 tools · `doctor` · `inspectMain` / `evaluate_main` · session cleanup · Windows+macOS CI (see [CHANGELOG](./CHANGELOG.md))
 - 🟢 Session cleanup — stopped apps are removed from `list_apps`; CDP traces abandoned on stop/exit
 - 🟢 E2E smoke covers lifecycle, UI, resources, discover, and main-process eval (see [Testing](#-testing))
-- 🟢 CI: Ubuntu + Xvfb **and** Windows; local macOS supported
+- 🟢 CI: Ubuntu + Xvfb, Windows, and macOS (Node 22)
 - 🟢 Windows binary repair: `scripts/fix-electron.cmd` when npm blocks postinstall
 - 🟢 Built on TypeScript 7 (native Go compiler) — ~10x faster builds
+- 🟢 `electron` is optional — attach-only installs can use `npm install --omit=optional`
 
 ---
 
@@ -221,33 +222,16 @@ That reinstalls Electron, extracts `electron.exe` with system `tar`, then runs t
 
 ## 🖥️ Cursor & Claude Desktop setup
 
-### Cursor
+### Via npm (recommended)
 
-1. `npm run build`
-2. Open **Cursor → MCP settings**
-3. Add (use your absolute path):
-
-**Windows**
+After publishing / linking the package, point MCP at the `electron-debug-mcp` bin:
 
 ```json
 {
   "mcpServers": {
     "electron-debug": {
-      "command": "node",
-      "args": ["C:/Users/you/code/electron-mcp-server/build/index.js"]
-    }
-  }
-}
-```
-
-**macOS / Linux**
-
-```json
-{
-  "mcpServers": {
-    "electron-debug": {
-      "command": "node",
-      "args": ["/Users/you/code/electron-mcp-server/build/index.js"],
+      "command": "npx",
+      "args": ["-y", "electron-debug-mcp"],
       "env": {
         "ELECTRON_MCP_NO_SANDBOX": "1"
       }
@@ -256,22 +240,37 @@ That reinstalls Electron, extracts `electron.exe` with system `tar`, then runs t
 }
 ```
 
-4. Restart Cursor  
-5. Confirm tools: `start_app`, `attach`, `find_apps`, `screenshot`, `get_console_messages`, `click`, `start_tracing`, …
+📄 Template: [`examples/cursor-mcp.json`](./examples/cursor-mcp.json) · [`examples/claude-desktop-config.json`](./examples/claude-desktop-config.json)
 
-📄 Template: [`examples/cursor-mcp.json`](./examples/cursor-mcp.json)
+### From a local clone
 
-### Claude Desktop
+```bash
+npm install && npm run build
+```
 
-Same `mcpServers` block in `claude_desktop_config.json`, pointing at `build/index.js`. Edit the file at:
+```json
+{
+  "mcpServers": {
+    "electron-debug": {
+      "command": "node",
+      "args": ["/absolute/path/to/electron-mcp-server/build/index.js"],
+      "env": {
+        "ELECTRON_MCP_NO_SANDBOX": "1"
+      }
+    }
+  }
+}
+```
+
+📄 Template: [`examples/cursor-mcp.local.json`](./examples/cursor-mcp.local.json)
+
+### Claude Desktop config paths
 
 - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 - **Linux:** `~/.config/Claude/claude_desktop_config.json`
 
-📄 Template: [`examples/claude-desktop-config.json`](./examples/claude-desktop-config.json)
-
-> ⚠️ **Don’t** run `node build/index.js` in a normal terminal for daily use — it waits on stdio for an MCP client. Let Cursor/Claude spawn it.
+> ⚠️ **Don’t** run `node build/index.js` / `npx electron-debug-mcp` in a normal terminal for daily use — it waits on stdio for an MCP client. Let Cursor/Claude spawn it.
 
 ---
 
@@ -316,10 +315,11 @@ After `start_app` / `attach` / `attach_by_pid`, page targets get **Runtime / Log
 
 | Category | Tools |
 | --- | --- |
-| 🚀 Lifecycle | `start_app` · `attach` · `attach_by_pid` · `find_apps` · `discover_apps` · `stop_app` · `list_apps` · `diagnose` |
+| 🚀 Lifecycle | `start_app` · `attach` · `attach_by_pid` · `find_apps` · `discover_apps` · `stop_app` · `list_apps` · `diagnose` · `doctor` |
 | 🔍 Inspect | `screenshot` · `save_screenshot` · `get_dom` · `query_selector` · `evaluate` · `evaluate_main` · `get_cookies` · `set_cookie` · `get_storage` · `set_storage` · `get_console_messages` · `get_network_log` · `get_logs` · `list_targets` · `page_info` |
 | 🖱️ Interact | `navigate` · `wait_for` · `click` · `type_text` · `press_key` · `reload` · `pause` · `resume` · `clear_buffers` · `set_console_live` |
 | 🧰 Power | `start_tracing` · `stop_tracing` · `cdp_command` |
+| 💬 Prompts | `debug_blank_window` · `find_renderer_exception` · `ui_smoke_check` · `attach_and_screenshot` |
 
 ---
 
@@ -585,6 +585,7 @@ Escape hatch for any DevTools method not wrapped above.
 
 | URI | MIME | Description |
 | --- | --- | --- |
+| `electron://server` | JSON | Package version, uptime, Node/platform, capability counts |
 | `electron://info` | JSON | Managed processes overview |
 | `electron://targets` | JSON | All CDP targets |
 | `electron://process/{id}` | JSON | Process details + webContents + recent errors |
@@ -601,6 +602,7 @@ Escape hatch for any DevTools method not wrapped above.
 | `debug_blank_window` | `processId` | White/blank window |
 | `find_renderer_exception` | `processId` | Hunting console/exceptions |
 | `ui_smoke_check` | `processId`, `selector` | Wait → interact → verify |
+| `attach_and_screenshot` | `processId?`, `debugPort?` | Find/attach → screenshot + console errors |
 
 ---
 
@@ -922,7 +924,9 @@ $env:ELECTRON_MCP_ALLOWED_ROOTS="D:\apps;D:\GH"
 | `npm test` | ensure + build + unit + smoke |
 | `npm run test:unit` | Unit tests (`unit-helpers`, `probe`, `monitor`) |
 | `npm run test:smoke` | Full MCP e2e vs fixture app |
-| `postinstall` | Runs ensure-electron |
+| `npm run pack:check` | `npm pack --dry-run` (publish surface) |
+| `prepublishOnly` | Builds before `npm publish` |
+| `postinstall` | Runs ensure-electron (no-op if electron omitted) |
 
 **Windows helpers:** `scripts/fix-electron.cmd` · `scripts/fix-electron.ps1`
 
@@ -936,11 +940,11 @@ npm test
 
 Smoke path (v1.5+):
 
-`initialize` → tool/prompt/resource lists → `start_app` (`inspectMain`) → evaluate → console/network/DOM → UI automation → `save_screenshot` (+ **selector clip**) → storage / cookies → tracing → `find_apps` / `attach_by_pid` → `get_logs` → screenshot → diagnose → **navigate / reload / pause / resume / cdp_command / evaluate_main** → attach → **discover** (real ports) → **all 6 resources** → stop → **post-stop `list_apps` cleanup**
+`initialize` → tool/prompt/resource lists → `start_app` (`inspectMain`) → evaluate → console/network/DOM → UI automation → `save_screenshot` (+ **selector clip**) → storage / cookies → tracing → `find_apps` / `attach_by_pid` → `get_logs` → screenshot → diagnose → **navigate / reload / pause / resume / cdp_command / evaluate_main** → attach → **discover** (real ports) → **all 7 resources** → stop → **post-stop `list_apps` cleanup**
 
 Unit tests also cover CDP monitor hang-regression (`test/monitor.test.mjs`).
 
-CI: [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) — **Ubuntu + Xvfb** and **Windows** (`npm test` on both). macOS is supported for local use but not in CI yet.
+CI: [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) — **Ubuntu + Xvfb**, **Windows**, and **macOS** (`npm test` + `npm pack --dry-run`).
 
 ---
 
@@ -960,7 +964,7 @@ electron-mcp-server/
 └── README.md · LICENSE · package.json · tsconfig.json
 ```
 
-Published npm package includes `build/`, `assets/`, `README.md`, and `LICENSE` only (`files` + `.npmignore`). The `electron` dependency is required so `start_app` can spawn apps; use `attach` if you already have Electron installed separately.
+Published npm package includes `build/`, `assets/`, `README.md`, `LICENSE`, and `CHANGELOG.md` (`files` + `.npmignore`). `electron` is an **optionalDependency** so `start_app` works after a normal install; attach-only users can `npm install --omit=optional` and skip the Electron download.
 
 ---
 
