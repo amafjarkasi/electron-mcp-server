@@ -175,6 +175,7 @@ server.tool(
 				attached: proc.attached,
 				pid: proc.pid,
 				debugPort: proc.debugPort,
+				inspectPort: proc.inspectPort,
 				appPath: proc.appPath,
 				targets: proc.targets ?? [],
 			});
@@ -720,7 +721,13 @@ server.tool(
 			const targets = targetId
 				? [pickPageTarget(proc, targetId)]
 				: (proc.targets ?? []).filter(
-						(t) => t.type === "page" || Boolean(t.webSocketDebuggerUrl),
+						(t) =>
+							t.type === "page" ||
+							// Fallback only for unusual page-like targets; never reload
+							// main-process `node` inspect targets (no Page domain).
+							(Boolean(t.webSocketDebuggerUrl) &&
+								t.type !== "node" &&
+								t.type !== "browser"),
 					);
 
 			if (!targets.length) {
@@ -788,6 +795,13 @@ server.tool(
 				"Debugger.resume",
 				{},
 			);
+			// Detach the debugger so later Page.captureScreenshot / Input commands
+			// are not blocked by an open Debugger session.
+			try {
+				await executeCDPCommand(proc, target.id, "Debugger.disable", {});
+			} catch {
+				// optional
+			}
 			return textResult({ processId, targetId: target.id, result });
 		} catch (err) {
 			return textResult(err instanceof Error ? err.message : String(err), true);

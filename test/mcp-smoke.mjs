@@ -626,6 +626,37 @@ async function main() {
     );
     pass("get_logs");
 
+    // Screenshot/diagnose before navigate/pause — hidden windows can lose a
+    // capturable surface after Debugger.pause or about:blank navigations.
+    const shotResult = await client.request("tools/call", {
+      name: "screenshot",
+      arguments: { processId, format: "png" },
+    });
+    assert(
+      !shotResult.isError,
+      `screenshot error: ${shotResult.content?.[0]?.text}`
+    );
+    assert(
+      (shotResult.content ?? []).some((c) => c.type === "image" && c.data),
+      "screenshot missing image content"
+    );
+    pass("screenshot");
+
+    const diagnoseResult = await client.request("tools/call", {
+      name: "diagnose",
+      arguments: { processId },
+    });
+    assert(
+      !diagnoseResult.isError,
+      `diagnose error: ${diagnoseResult.content?.[0]?.text}`
+    );
+    const diagnosis = parseToolText(diagnoseResult);
+    assert(
+      diagnosis?.processes?.[0]?.debugPortReachable === true,
+      `diagnose port not reachable: ${JSON.stringify(diagnosis)}`
+    );
+    pass("diagnose");
+
     const pageBeforeNav = await client.request("tools/call", {
       name: "page_info",
       arguments: { processId },
@@ -730,35 +761,6 @@ async function main() {
       `evaluate_main unexpected value: ${JSON.stringify(mainVal)}`
     );
     pass("evaluate_main");
-
-    const shotResult = await client.request("tools/call", {
-      name: "screenshot",
-      arguments: { processId, format: "png" },
-    });
-    assert(
-      !shotResult.isError,
-      `screenshot error: ${shotResult.content?.[0]?.text}`
-    );
-    assert(
-      (shotResult.content ?? []).some((c) => c.type === "image" && c.data),
-      "screenshot missing image content"
-    );
-    pass("screenshot");
-
-    const diagnoseResult = await client.request("tools/call", {
-      name: "diagnose",
-      arguments: { processId },
-    });
-    assert(
-      !diagnoseResult.isError,
-      `diagnose error: ${diagnoseResult.content?.[0]?.text}`
-    );
-    const diagnosis = parseToolText(diagnoseResult);
-    assert(
-      diagnosis?.processes?.[0]?.debugPortReachable === true,
-      `diagnose port not reachable: ${JSON.stringify(diagnosis)}`
-    );
-    pass("diagnose");
 
     // Attach flow: launch external electron, attach via MCP
     external = await launchFixture(ATTACH_PORT);

@@ -2,6 +2,7 @@ import { type ChildProcess, execFile, spawn } from "child_process";
 import CDP from "chrome-remote-interface";
 import * as fs from "fs";
 import { createRequire } from "module";
+import * as net from "net";
 import * as os from "os";
 import * as path from "path";
 import { promisify } from "util";
@@ -29,6 +30,12 @@ export interface CDPTarget {
 	url: string;
 	webSocketDebuggerUrl?: string;
 	devtoolsFrontendUrl?: string;
+	/**
+	 * Host port that serves this target's CDP endpoint. Page targets use the
+	 * Chromium `--remote-debugging-port`; main-process `node` targets use the
+	 * separate `--inspect` port. Defaults to the process debugPort when unset.
+	 */
+	port?: number;
 }
 
 export interface ConsoleMessage {
@@ -60,6 +67,8 @@ export interface ElectronProcess {
 	status: "running" | "stopped" | "crashed";
 	pid?: number;
 	debugPort?: number;
+	/** Node inspector port from `--inspect` when started with inspectMain. */
+	inspectPort?: number;
 	startTime: Date;
 	logs: string[];
 	appPath: string;
@@ -79,6 +88,25 @@ export interface ElectronProcess {
 	inFlightMonitorTargets: Set<string>;
 	targets?: CDPTarget[];
 	lastTargetUpdate?: Date;
+}
+
+/** Allocate an ephemeral TCP port on 127.0.0.1 that we can bind right now. */
+export async function allocateLocalPort(): Promise<number> {
+	return new Promise((resolve, reject) => {
+		const srv = net.createServer();
+		srv.unref();
+		srv.on("error", reject);
+		srv.listen({ host: "127.0.0.1", port: 0 }, () => {
+			const addr = srv.address();
+			const port =
+				addr && typeof addr === "object" ? addr.port : 0;
+			srv.close((err) => {
+				if (err) reject(err);
+				else if (!port) reject(new Error("Failed to allocate local port"));
+				else resolve(port);
+			});
+		});
+	});
 }
 
 export interface ElectronDebugInfo {
@@ -502,6 +530,7 @@ export function listProcesses(): Array<{
 	attached: boolean;
 	pid?: number;
 	debugPort?: number;
+	inspectPort?: number;
 	startTime: Date;
 	appPath: string;
 	targetCount: number;
@@ -515,6 +544,7 @@ export function listProcesses(): Array<{
 		attached: proc.attached,
 		pid: proc.pid,
 		debugPort: proc.debugPort,
+		inspectPort: proc.inspectPort,
 		startTime: proc.startTime,
 		appPath: proc.appPath,
 		targetCount: proc.targets?.length ?? 0,
@@ -590,9 +620,13 @@ export async function startElectronApp(
 	) {
 		autoArgs.push("--no-sandbox");
 	}
+	// Main-process Node inspector is a *separate* CDP endpoint from Chromium's
+	// --remote-debugging-port. Pin a concrete port so we can merge its `node`
+	// target into the session and drive evaluate_main.
+	let inspectPort: number | undefined;
 	if (options.inspectMain) {
-		// Expose the Electron main process to the inspector (shows up as a node target).
-		autoArgs.push("--inspect=0");
+		inspectPort = await allocateLocalPort();
+		autoArgs.push(`--inspect=${inspectPort}`);
 	}
 
 	const args = [
@@ -605,7 +639,10 @@ export async function startElectronApp(
 	];
 
 	const electronPath = getElectronExecutablePath();
-	log.info(`Starting ${resolvedAppPath} via ${electronPath} on port ${port}`);
+	log.info(
+		`Starting ${resolvedAppPath} via ${electronPath} on port ${port}` +
+			(inspectPort ? ` (inspect=${inspectPort})` : ""),
+	);
 
 	const electronProc = spawn(electronPath, args, {
 		stdio: ["ignore", "pipe", "pipe"],
@@ -626,6 +663,7 @@ export async function startElectronApp(
 		status: "running",
 		pid: electronProc.pid,
 		debugPort: port,
+		inspectPort,
 		startTime: new Date(),
 		appPath: resolvedAppPath,
 	});
@@ -652,6 +690,18 @@ export async function startElectronApp(
 
 	try {
 		await Promise.race([waitForDebugPort(port), earlyExit]);
+		if (inspectPort) {
+			// Inspect comes up with the main process; don't fail start if it's slow —
+			// updateCDPTargets will retry merging node targets later.
+			try {
+				await Promise.race([waitForDebugPort(inspectPort, 5000), earlyExit]);
+			} catch (err) {
+				log.warn(
+					`[${id}] inspect port ${inspectPort} not ready yet:`,
+					err,
+				);
+			}
+		}
 		if (onEarlyExit) {
 			electronProc.off("exit", onEarlyExit);
 		}
@@ -835,7 +885,43 @@ export async function updateCDPTargets(
         throw new Error(`Failed to get targets: ${response.statusText}`);
       }
 
-      const targets = (await response.json()) as CDPTarget[];
+      const pageTargets = ((await response.json()) as CDPTarget[]).map(
+        (t) => ({
+          ...t,
+          port: t.port ?? electronProcess.debugPort,
+        }),
+      );
+
+      // Merge main-process node targets from the separate --inspect endpoint.
+      let inspectTargets: CDPTarget[] = [];
+      if (electronProcess.inspectPort) {
+        try {
+          const inspectRes = await fetch(
+            `http://127.0.0.1:${electronProcess.inspectPort}/json/list`,
+          );
+          if (inspectRes.ok) {
+            inspectTargets = ((await inspectRes.json()) as CDPTarget[]).map(
+              (t) => ({
+                ...t,
+                // Node inspector sometimes omits type; treat as node.
+                type: t.type || "node",
+                port: electronProcess.inspectPort,
+              }),
+            );
+          }
+        } catch (err) {
+          log.warn(
+            `[${electronProcess.id}] Could not list inspect targets on ${electronProcess.inspectPort}:`,
+            err,
+          );
+        }
+      }
+
+      const seen = new Set(pageTargets.map((t) => t.id));
+      const targets = [
+        ...pageTargets,
+        ...inspectTargets.filter((t) => !seen.has(t.id)),
+      ];
       const prev = electronProcess.targets?.map((t) => t.id).join(",") ?? "";
       electronProcess.targets = targets;
       electronProcess.lastTargetUpdate = new Date();
@@ -1085,6 +1171,8 @@ export async function ensureMonitoring(
 				(t) =>
 					(t.type === "page" || Boolean(t.webSocketDebuggerUrl)) &&
 					t.type !== "browser" &&
+					// Main-process node targets are for evaluate_main, not page monitoring.
+					t.type !== "node" &&
 					// Its console is DevTools' own chatter, and it drowns the app's.
 					!isDevToolsTarget(t),
 			);
@@ -1107,9 +1195,11 @@ export async function ensureMonitoring(
 			// deadline wins, this promise may still resolve later with a live
 			// client that nothing owns — a WebSocket held open for the life of the
 			// process. Keep the handle so a late arrival can be closed.
+			const targetPort =
+				target.port ?? electronProcess.debugPort!;
 			const connection = CDP({
 				target: target.id,
-				port: electronProcess.debugPort,
+				port: targetPort,
 				host: "127.0.0.1",
 			});
 			let client: CDP.Client;
@@ -1230,9 +1320,10 @@ export async function connectToCDPTarget(
 		await closeClient(electronProcess.cdpClient);
 	}
 
+	const targetPort = target.port ?? electronProcess.debugPort;
 	const client = await CDP({
 		target: targetId,
-		port: electronProcess.debugPort,
+		port: targetPort,
 		host: "127.0.0.1",
 	});
 
