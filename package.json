@@ -27,6 +27,7 @@
     "test": "npm run build && npm run test:unit && npm run test:smoke",
     "test:unit": "node --test test/unit-helpers.test.mjs test/probe.test.mjs test/monitor.test.mjs",
     "test:smoke": "node test/mcp-smoke.mjs",
+    "doctor": "npm run build && node scripts/doctor.mjs",
     "pack:check": "npm pack --dry-run"
   },
   "keywords": [

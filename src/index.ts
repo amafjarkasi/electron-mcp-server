@@ -4,10 +4,13 @@ import {
 	ResourceTemplate,
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
 import { z } from "zod";
 import { processEvents } from "./events.js";
 import { log } from "./log.js";
 import {
+	allocateLocalPort,
 	attachByPid,
 	attachToDebugPort,
 	captureScreenshot,
@@ -46,6 +49,48 @@ import {
 	updateCDPTargets,
 	waitForCondition,
 } from "./process-manager.js";
+
+const require = createRequire(import.meta.url);
+const SERVER_VERSION = (
+	require("../package.json") as { version: string }
+).version;
+const startedAt = Date.now();
+
+function resolveElectronBinary(): {
+	resolved: boolean;
+	path?: string;
+	via?: string;
+	error?: string;
+} {
+	const envPath = process.env.ELECTRON_PATH?.trim();
+	if (envPath) {
+		return {
+			resolved: existsSync(envPath),
+			path: envPath,
+			via: "ELECTRON_PATH",
+		};
+	}
+	try {
+		const fromPackage = require("electron") as string;
+		if (fromPackage && existsSync(fromPackage)) {
+			return {
+				resolved: true,
+				path: fromPackage,
+				via: "require(electron)",
+			};
+		}
+		return {
+			resolved: false,
+			path: fromPackage || undefined,
+			via: "require(electron)",
+		};
+	} catch (err) {
+		return {
+			resolved: false,
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
 
 function textResult(data: unknown, isError = false) {
 	return {
@@ -92,7 +137,7 @@ async function notifyLog(
 const server = new McpServer(
 	{
 		name: "electron-debug-mcp",
-		version: "1.5.1",
+		version: SERVER_VERSION,
 	},
 	{
 		capabilities: {
@@ -100,6 +145,7 @@ const server = new McpServer(
 		},
 		instructions: [
 			"Electron Debug MCP controls and inspects Electron apps over Chrome DevTools Protocol.",
+			"Start with doctor when the environment is unknown (Electron binary, DISPLAY, sandbox flags, free port sample).",
 			"Preferred workflow: start_app / attach / attach_by_pid / find_apps → diagnose → get_console_messages(level=error) → screenshot/save_screenshot → get_dom/evaluate.",
 			"Use wait_for (selector/hidden/enabled/count/text) before interacting with UI that may still be loading.",
 			"Use click/type_text/press_key/navigate/reload for UI automation.",
@@ -108,6 +154,7 @@ const server = new McpServer(
 			"Enable set_console_live for streaming console events as MCP log notifications.",
 			"Console and network events are buffered automatically for monitored page targets.",
 			"stop_app removes the session from list_apps (owned processes are killed; attached sessions detach only). Do not retry tools against a stopped processId — start or attach again.",
+			"Read electron://server for package version, uptime, and capability counts without calling a tool.",
 		].join(" "),
 	},
 );
@@ -324,6 +371,54 @@ server.tool(
 	async ({ processId }) => {
 		try {
 			return textResult(await diagnoseProcess(processId));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"doctor",
+	"Local environment health check: package/node/platform, Electron binary, env flags, managed process count, optional free-port sample (localhost bind only)",
+	{
+		sampleFreePort: z
+			.boolean()
+			.optional()
+			.describe(
+				"If true (default), allocate a free 127.0.0.1 port sample via bind; no remote network",
+			),
+	},
+	async ({ sampleFreePort }) => {
+		try {
+			const electronBinary = resolveElectronBinary();
+			const report: Record<string, unknown> = {
+				ok: electronBinary.resolved,
+				version: SERVER_VERSION,
+				uptimeMs: Date.now() - startedAt,
+				node: process.version,
+				platform: process.platform,
+				arch: process.arch,
+				electronBinary,
+				env: {
+					ELECTRON_MCP_NO_SANDBOX:
+						process.env.ELECTRON_MCP_NO_SANDBOX ?? null,
+					ELECTRON_MCP_ALLOWED_ROOTS: process.env
+						.ELECTRON_MCP_ALLOWED_ROOTS
+						? "(set)"
+						: null,
+					ELECTRON_MCP_OUTPUT_ROOTS: process.env.ELECTRON_MCP_OUTPUT_ROOTS
+						? "(set)"
+						: null,
+					CI: process.env.CI ?? null,
+					DISPLAY: process.env.DISPLAY ?? null,
+				},
+				managedProcessCount: listProcesses().length,
+				consoleLiveLogging: isConsoleLiveLoggingEnabled(),
+			};
+			if (sampleFreePort !== false) {
+				report.freePortSample = await allocateLocalPort();
+			}
+			return textResult(report);
 		} catch (err) {
 			return textResult(err instanceof Error ? err.message : String(err), true);
 		}
@@ -1419,7 +1514,95 @@ server.prompt(
 	}),
 );
 
+server.prompt(
+	"attach_and_screenshot",
+	"Find or attach to an Electron app, then screenshot and collect console errors",
+	{
+		processId: z
+			.string()
+			.optional()
+			.describe("Existing managed process id, if already attached"),
+		debugPort: z
+			.string()
+			.optional()
+			.describe("Known remote-debugging port to attach to, if any"),
+	},
+	async ({ processId, debugPort }) => {
+		const hints = [
+			processId ? `Known processId: ${processId}.` : null,
+			debugPort ? `Known debugPort: ${debugPort}.` : null,
+		]
+			.filter(Boolean)
+			.join(" ");
+		return {
+			messages: [
+				{
+					role: "user",
+					content: {
+						type: "text",
+						text: `Attach to a running Electron app and capture its UI + errors.${hints ? ` ${hints}` : ""}
+1. If processId is given, use list_apps / diagnose to confirm it is running; otherwise if debugPort is given, call attach with that port; else call find_apps (and discover_apps if needed) then attach or attach_by_pid.
+2. Call screenshot (or save_screenshot) on a page target.
+3. Call get_console_messages(level=error) and summarize any exceptions.
+4. Report processId, debugPort, screenshot result, and error summary.`,
+					},
+				},
+			],
+		};
+	},
+);
+
 // --- Resources ---
+
+server.resource(
+	"server",
+	"electron://server",
+	{
+		description:
+			"Server identity: package version, uptime, Node/platform, capability counts",
+		mimeType: "application/json",
+	},
+	async (uri) => ({
+		contents: [
+			{
+				uri: uri.href,
+				mimeType: "application/json",
+				text: JSON.stringify(
+					{
+						name: "electron-debug-mcp",
+						version: SERVER_VERSION,
+						uptimeMs: Date.now() - startedAt,
+						node: process.version,
+						platform: process.platform,
+						arch: process.arch,
+						managedProcessCount: listProcesses().length,
+						consoleLiveLogging: isConsoleLiveLoggingEnabled(),
+						capabilities: {
+							tools: "see tools/list (includes doctor)",
+							prompts: [
+								"debug_blank_window",
+								"find_renderer_exception",
+								"ui_smoke_check",
+								"attach_and_screenshot",
+							],
+							resources: [
+								"electron://server",
+								"electron://info",
+								"electron://targets",
+								"electron://process/{id}",
+								"electron://logs/{id}",
+								"electron://console/{id}",
+								"electron://cdp/{processId}/{targetId}",
+							],
+						},
+					},
+					null,
+					2,
+				),
+			},
+		],
+	}),
+);
 
 server.resource(
 	"info",

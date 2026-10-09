@@ -77,7 +77,7 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 | 🔌 **Transport** | MCP **stdio** JSON-RPC |
 | 🧬 **Debug bridge** | Chrome DevTools Protocol (Runtime · Page · Network · Debugger · Input · Log · Tracing) |
 | 🚀 **App control** | Spawn Electron **or** attach by port / PID / process scan |
-| 📦 **Surface area** | **36 tools** · **6 resources** · **3 prompts** · logging + resource list-changed |
+| 📦 **Surface area** | **37 tools** · **7 resources** · **4 prompts** · logging + resource list-changed |
 | 🖥️ **Platforms** | Windows · macOS · Linux (CI: **Ubuntu + Xvfb**, **Windows**, **macOS**) |
 | 📦 **Requires** | Node **≥ 18**, npm, one-time Electron binary download |
 | 🛡️ **Safety** | Optional `ELECTRON_MCP_ALLOWED_ROOTS` (app paths) · `ELECTRON_MCP_OUTPUT_ROOTS` (screenshot/trace output, plus built-in blocklist of sensitive locations); attach sessions detach-only on stop |
@@ -86,7 +86,7 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 ### ✅ Status
 
 - 🟢 Ready for local agent-driven Electron debugging (stdio MCP ↔ CDP)
-- 🟢 **v1.5.1** — 36 tools · `inspectMain` / `evaluate_main` · session cleanup · Windows+macOS CI (see [CHANGELOG](./CHANGELOG.md))
+- 🟢 **v1.5.1** — 37 tools · `doctor` · `inspectMain` / `evaluate_main` · session cleanup · Windows+macOS CI (see [CHANGELOG](./CHANGELOG.md))
 - 🟢 Session cleanup — stopped apps are removed from `list_apps`; CDP traces abandoned on stop/exit
 - 🟢 E2E smoke covers lifecycle, UI, resources, discover, and main-process eval (see [Testing](#-testing))
 - 🟢 CI: Ubuntu + Xvfb, Windows, and macOS (Node 22)
@@ -315,10 +315,11 @@ After `start_app` / `attach` / `attach_by_pid`, page targets get **Runtime / Log
 
 | Category | Tools |
 | --- | --- |
-| 🚀 Lifecycle | `start_app` · `attach` · `attach_by_pid` · `find_apps` · `discover_apps` · `stop_app` · `list_apps` · `diagnose` |
+| 🚀 Lifecycle | `start_app` · `attach` · `attach_by_pid` · `find_apps` · `discover_apps` · `stop_app` · `list_apps` · `diagnose` · `doctor` |
 | 🔍 Inspect | `screenshot` · `save_screenshot` · `get_dom` · `query_selector` · `evaluate` · `evaluate_main` · `get_cookies` · `set_cookie` · `get_storage` · `set_storage` · `get_console_messages` · `get_network_log` · `get_logs` · `list_targets` · `page_info` |
 | 🖱️ Interact | `navigate` · `wait_for` · `click` · `type_text` · `press_key` · `reload` · `pause` · `resume` · `clear_buffers` · `set_console_live` |
 | 🧰 Power | `start_tracing` · `stop_tracing` · `cdp_command` |
+| 💬 Prompts | `debug_blank_window` · `find_renderer_exception` · `ui_smoke_check` · `attach_and_screenshot` |
 
 ---
 
@@ -584,6 +585,7 @@ Escape hatch for any DevTools method not wrapped above.
 
 | URI | MIME | Description |
 | --- | --- | --- |
+| `electron://server` | JSON | Package version, uptime, Node/platform, capability counts |
 | `electron://info` | JSON | Managed processes overview |
 | `electron://targets` | JSON | All CDP targets |
 | `electron://process/{id}` | JSON | Process details + webContents + recent errors |
@@ -600,6 +602,7 @@ Escape hatch for any DevTools method not wrapped above.
 | `debug_blank_window` | `processId` | White/blank window |
 | `find_renderer_exception` | `processId` | Hunting console/exceptions |
 | `ui_smoke_check` | `processId`, `selector` | Wait → interact → verify |
+| `attach_and_screenshot` | `processId?`, `debugPort?` | Find/attach → screenshot + console errors |
 
 ---
 
@@ -937,7 +940,7 @@ npm test
 
 Smoke path (v1.5+):
 
-`initialize` → tool/prompt/resource lists → `start_app` (`inspectMain`) → evaluate → console/network/DOM → UI automation → `save_screenshot` (+ **selector clip**) → storage / cookies → tracing → `find_apps` / `attach_by_pid` → `get_logs` → screenshot → diagnose → **navigate / reload / pause / resume / cdp_command / evaluate_main** → attach → **discover** (real ports) → **all 6 resources** → stop → **post-stop `list_apps` cleanup**
+`initialize` → tool/prompt/resource lists → `start_app` (`inspectMain`) → evaluate → console/network/DOM → UI automation → `save_screenshot` (+ **selector clip**) → storage / cookies → tracing → `find_apps` / `attach_by_pid` → `get_logs` → screenshot → diagnose → **navigate / reload / pause / resume / cdp_command / evaluate_main** → attach → **discover** (real ports) → **all 7 resources** → stop → **post-stop `list_apps` cleanup**
 
 Unit tests also cover CDP monitor hang-regression (`test/monitor.test.mjs`).
 

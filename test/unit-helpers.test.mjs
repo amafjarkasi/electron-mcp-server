@@ -41,6 +41,7 @@ import {
   allocateLocalPort,
   updateCDPTargets,
   validateOutputPath,
+  resolveOutputPath,
   isPathInside,
   waitForCondition,
 } from "../build/process-manager.js";
@@ -786,7 +787,8 @@ test("validateOutputPath resolves and returns ordinary paths", () => {
   const prev = setEnv(undefined);
   try {
     const p = isWin ? "C:\\tmp\\shot.png" : "/tmp/shot.png";
-    assert.equal(validateOutputPath(p), path.resolve(p));
+    // Compare against symlink-aware resolve (macOS /tmp → /private/tmp).
+    assert.equal(validateOutputPath(p), resolveOutputPath(p));
   } finally {
     restoreEnv(prev);
   }
@@ -801,7 +803,8 @@ test("validateOutputPath rejects system/sensitive locations", () => {
           "C:\\Program Files\\x.png",
           "C:\\ProgramData\\y.json",
         ]
-      : ["/etc/passwd.png", "/proc/self/x", "/usr/share/y.json", "/boot/evil"];
+      : // Prefer roots that exist on macOS+Linux; /proc and /boot are Linux-only.
+        ["/etc/passwd.png", "/usr/share/y.json"];
     for (const p of blocked) {
       assert.throws(
         () => validateOutputPath(p),

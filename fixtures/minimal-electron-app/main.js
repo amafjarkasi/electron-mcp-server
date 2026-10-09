@@ -11,8 +11,11 @@ app.whenReady().then(() => {
   mainWindow = new BrowserWindow({
     width: 640,
     height: 480,
-    // Show in CI so Page.captureScreenshot has a real surface under Xvfb / runners.
-    show: process.env.CI === "true",
+    // Show only when a display is available (Linux Xvfb sets DISPLAY). Showing a
+    // window on headless Windows/macOS CI hangs Page.captureScreenshot.
+    show: process.env.CI === "true" && Boolean(process.env.DISPLAY),
+    // Keep painting while hidden so CDP screenshots still get a surface.
+    paintWhenInitiallyHidden: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,

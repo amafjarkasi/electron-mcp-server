@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "electron-debug": {
+      "command": "npx",
+      "args": ["-y", "electron-debug-mcp"],
+      "env": {
+        "ELECTRON_MCP_NO_SANDBOX": "1"
+      }
+    }
+  }
+}

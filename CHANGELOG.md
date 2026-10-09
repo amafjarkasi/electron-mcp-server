@@ -7,11 +7,20 @@
 - **Session cleanup** — remove stopped/crashed sessions from the managed map; abandon in-progress CDP traces on stop/exit; make `stop_app` idempotent.
 - **`reload`** — only reloads page targets (skips the Node inspect target).
 - **`resume`** — calls `Debugger.disable` after resume so screenshots/input are not blocked.
+- **Path realpath** — canonicalize output/app paths via ancestor `realpath` so macOS `/tmp`→`/private/tmp` (and `/etc`→`/private/etc`) matches allow/block lists.
+- **Headless fixture** — smoke fixture shows a window only when `CI` **and** `DISPLAY` are set; `paintWhenInitiallyHidden` keeps CDP screenshots working headless on Windows/macOS.
+
+### Features
+- **`doctor`** — local env health JSON (package version, Node, platform, Electron binary resolve, env flags, managed process count, optional free-port sample).
+- **`electron://server`** — read-only resource for package version, uptime, Node/platform, and capability counts without calling a tool.
+- Shared **`SERVER_VERSION`** from `package.json` for McpServer + `doctor`.
+- Prompt **`attach_and_screenshot`** (`processId?` / `debugPort?`) — find/attach → screenshot + console errors.
+- Surface: **37 tools · 7 resources · 4 prompts**.
 
 ### Tests & CI
-- Expanded E2E smoke: `inspectMain`, navigate/reload/pause/resume/cdp/`get_logs`, all 6 resources, real discover ports, post-stop cleanup.
-- Smoke hardens: exact 36 tools + 3 prompts, `attach_by_pid` must succeed, cookies via `http://`, `set_console_live` asserts MCP log notifications.
-- Wired `monitor.test.mjs` into `npm test`; unit tests for `preferAppTarget` / `allocateLocalPort` / delete-on-stop.
+- Expanded E2E smoke: `inspectMain`, navigate/reload/pause/resume/cdp/`get_logs`, all resources, real discover ports, post-stop cleanup.
+- Smoke hardens: ≥ required tools/prompts (incl. `doctor` + `attach_and_screenshot`), `attach_by_pid` must succeed, cookies via `http://`, `set_console_live` asserts MCP log notifications.
+- Wired `monitor.test.mjs` into `npm test`; unit tests for `preferAppTarget` / `allocateLocalPort` / delete-on-stop / realpath-aware paths.
 - CI matrix: Ubuntu + Xvfb, Windows, and macOS; Node 22; `typecheck` + `npm pack --dry-run`.
 
 ### Packaging & security
@@ -21,6 +30,7 @@
 
 ### Docs
 - README refreshed for v1.5 behavior (inspectMain, cleanup, CI platforms, troubleshooting).
+- Cheatsheet: `doctor` + `attach_and_screenshot` + `electron://server`; `npm run doctor` CLI; example checklist `examples/doctor-checklist.md`; `CONTRIBUTING.md`.
 
 ## 1.5.0
 

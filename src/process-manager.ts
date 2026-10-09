@@ -184,17 +184,42 @@ export function classifyTargetRole(
 	return "other";
 }
 
+/**
+ * Resolve a path that may not exist yet, following symlinks on every existing
+ * ancestor so a symlink escape (e.g. `outdir -> /etc`) cannot bypass the
+ * blocklist / allowlist checks. Also needed on macOS where `/tmp` → `/private/tmp`
+ * and `/etc` → `/private/etc`.
+ */
+export function resolveOutputPath(filePath: string): string {
+	const resolved = path.resolve(String(filePath));
+	const missing: string[] = [];
+	let current = resolved;
+	while (!fs.existsSync(current)) {
+		missing.unshift(path.basename(current));
+		const parent = path.dirname(current);
+		if (parent === current) {
+			return resolved;
+		}
+		current = parent;
+	}
+	try {
+		return path.join(fs.realpathSync(current), ...missing);
+	} catch {
+		return resolved;
+	}
+}
+
 export function getAllowedRoots(): string[] {
 	const raw = process.env.ELECTRON_MCP_ALLOWED_ROOTS?.trim();
 	if (!raw) return [];
 	return raw
 		.split(/[;|]/)
-		.map((p) => path.resolve(p.trim()))
+		.map((p) => resolveOutputPath(p.trim()))
 		.filter(Boolean);
 }
 
 export function assertAppPathAllowed(appPath: string): string {
-	const resolved = path.resolve(appPath);
+	const resolved = resolveOutputPath(appPath);
 	const roots = getAllowedRoots();
 	if (!roots.length) {
 		return resolved;
@@ -257,8 +282,9 @@ const OUTPUT_BLOCKED_ROOTS: string[] = (() => {
  * are rejected. Comparison is case-insensitive on Windows.
  */
 export function isPathInside(root: string, candidate: string): boolean {
-	const resolvedRoot = path.resolve(root);
-	const resolvedCandidate = path.resolve(candidate);
+	// Canonicalize so macOS /tmp→/private/tmp and /etc→/private/etc match.
+	const resolvedRoot = resolveOutputPath(root);
+	const resolvedCandidate = resolveOutputPath(candidate);
 	const a =
 		process.platform === "win32"
 			? resolvedRoot.toLowerCase()
@@ -283,7 +309,7 @@ function getOutputRoots(): string[] {
 	if (!raw) return [];
 	return raw
 		.split(/[;|]/)
-		.map((p) => path.resolve(p.trim()))
+		.map((p) => resolveOutputPath(p.trim()))
 		.filter(Boolean);
 }
 
@@ -293,30 +319,6 @@ function getOutputRoots(): string[] {
  * location or (when ELECTRON_MCP_OUTPUT_ROOTS is set) falls outside the
  * configured output roots.
  */
-/**
- * Resolve a path that may not exist yet, following symlinks on every existing
- * ancestor so a symlink escape (e.g. `outdir -> /etc`) cannot bypass the
- * blocklist / allowlist checks.
- */
-export function resolveOutputPath(filePath: string): string {
-	const resolved = path.resolve(String(filePath));
-	const missing: string[] = [];
-	let current = resolved;
-	while (!fs.existsSync(current)) {
-		missing.unshift(path.basename(current));
-		const parent = path.dirname(current);
-		if (parent === current) {
-			return resolved;
-		}
-		current = parent;
-	}
-	try {
-		return path.join(fs.realpathSync(current), ...missing);
-	} catch {
-		return resolved;
-	}
-}
-
 export function validateOutputPath(filePath: string): string {
 	if (filePath == null || String(filePath).trim() === "") {
 		throw new Error("Output path must be a non-empty string");

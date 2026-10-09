@@ -244,6 +244,7 @@ async function main() {
       "stop_app",
       "list_apps",
       "diagnose",
+      "doctor",
       "evaluate",
       "screenshot",
       "get_dom",
@@ -273,22 +274,27 @@ async function main() {
       "pause",
       "resume",
     ];
-    assert.equal?.(EXPECTED_TOOLS.length, 36);
-    assert(
-      EXPECTED_TOOLS.length === 36,
-      `EXPECTED_TOOLS length drift: ${EXPECTED_TOOLS.length}`
-    );
-
     const tools = await client.request("tools/list");
     const names = new Set((tools.tools ?? []).map((t) => t.name));
-    assert(
-      names.size === 36,
-      `expected exactly 36 tools, got ${names.size}: ${[...names].sort().join(",")}`
-    );
     for (const required of EXPECTED_TOOLS) {
       assert(names.has(required), `missing tool ${required}`);
     }
-    pass("tools/list (36)");
+    // Allow additive tools but never drop required ones.
+    assert(
+      names.size >= EXPECTED_TOOLS.length,
+      `expected at least ${EXPECTED_TOOLS.length} tools, got ${names.size}`
+    );
+    pass(`tools/list (${names.size})`);
+
+    const doctorResult = await client.request("tools/call", {
+      name: "doctor",
+      arguments: { sampleFreePort: true },
+    });
+    assert(!doctorResult.isError, `doctor error: ${doctorResult.content?.[0]?.text}`);
+    const doctor = parseToolText(doctorResult);
+    assert(doctor.version, "doctor missing version");
+    assert(typeof doctor.freePortSample === "number", "doctor missing freePortSample");
+    pass(`doctor (v${doctor.version}, port=${doctor.freePortSample})`);
 
     const prompts = await client.request("prompts/list");
     const promptNames = new Set((prompts.prompts ?? []).map((p) => p.name));
@@ -296,21 +302,30 @@ async function main() {
       "debug_blank_window",
       "find_renderer_exception",
       "ui_smoke_check",
+      "attach_and_screenshot",
     ]) {
       assert(promptNames.has(required), `missing prompt ${required}`);
     }
+    // Allow additive prompts but never drop required ones.
     assert(
-      promptNames.size === 3,
-      `expected exactly 3 prompts, got ${promptNames.size}`
+      promptNames.size >= 4,
+      `expected at least 4 prompts, got ${promptNames.size}`
     );
-    pass("prompts/list (3)");
+    pass(`prompts/list (${promptNames.size})`);
 
     const resources = await client.request("resources/list");
-    assert(
-      (resources.resources ?? []).some((r) => r.uri === "electron://info"),
-      "electron://info resource missing"
-    );
+    const resourceUris = new Set((resources.resources ?? []).map((r) => r.uri));
+    assert(resourceUris.has("electron://server"), "electron://server resource missing");
+    assert(resourceUris.has("electron://info"), "electron://info resource missing");
     pass("resources/list");
+
+    const serverRes = await client.request("resources/read", {
+      uri: "electron://server",
+    });
+    const serverJson = JSON.parse(serverRes.contents?.[0]?.text ?? "{}");
+    assert(serverJson.version, "electron://server missing version");
+    assert(serverJson.name === "electron-debug-mcp", "electron://server bad name");
+    pass("resources/read electron://server");
 
     const startResult = await client.request("tools/call", {
       name: "start_app",
