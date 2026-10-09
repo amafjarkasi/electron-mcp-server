@@ -1119,7 +1119,12 @@ flowchart TB
 
 Published npm package includes `build/`, `assets/`, `README.md`, `LICENSE`, and `CHANGELOG.md` (`files` + `.npmignore`). `electron` is an **optionalDependency** so `start_app` works after a normal install; attach-only users can `npm install --omit=optional` and skip the Electron download.
 
-**Release:** bump `package.json` → merge to `master` → tag `vX.Y.Z` matching that version. [`.github/workflows/publish.yml`](./.github/workflows/publish.yml) publishes to npm (requires repo secret `NPM_TOKEN`).
+**Release:** bump `package.json` → merge to `master` → tag `vX.Y.Z` matching that version. [`.github/workflows/publish.yml`](./.github/workflows/publish.yml) runs `npm stage publish` (repo secret `NPM_TOKEN`). A maintainer then promotes with OTP:
+
+```bash
+npm stage list
+npm stage approve <stage-id> --otp=<code>
+```
 
 ---
 
