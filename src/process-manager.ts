@@ -859,7 +859,7 @@ export async function stopElectronApp(id: string): Promise<boolean> {
 		return true;
 	}
 
-	abandonTracingSession(id);
+	runProcessCleanup(id);
 	await closeAllClients(electronProcess);
 
 	if (electronProcess.attached) {
@@ -2846,13 +2846,36 @@ function abandonTracingSession(processId: string): void {
 	traceSessions.delete(processId);
 }
 
+const processCleanupHooks: Array<(processId: string) => void> = [];
+
+/**
+ * Register a best-effort cleanup hook invoked when a managed session is
+ * forgotten or stopped (CPU profiles, etc.). Hooks must not throw.
+ */
+export function registerProcessCleanup(
+	hook: (processId: string) => void,
+): void {
+	processCleanupHooks.push(hook);
+}
+
+function runProcessCleanup(processId: string): void {
+	abandonTracingSession(processId);
+	for (const hook of processCleanupHooks) {
+		try {
+			hook(processId);
+		} catch (err) {
+			log.warn(`[${processId}] process cleanup hook failed:`, err);
+		}
+	}
+}
+
 /**
  * Finalize a session that has stopped or crashed: abandon tracing, close CDP
  * sockets, and remove it from the managed map so list_apps / resources don't
  * accumulate forever.
  */
 function forgetProcess(id: string): void {
-	abandonTracingSession(id);
+	runProcessCleanup(id);
 	const proc = electronProcesses.get(id);
 	if (proc) {
 		void closeAllClients(proc);

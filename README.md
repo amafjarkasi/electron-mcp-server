@@ -1067,6 +1067,7 @@ $env:ELECTRON_MCP_ALLOWED_ROOTS="D:\apps;D:\GH"
 | `npm test` | ensure + build + unit + smoke |
 | `npm run test:unit` | Unit tests (`unit-helpers`, `probe`, `monitor`) |
 | `npm run test:smoke` | Full MCP e2e vs fixture app |
+| `npm run doctor` | Build + stdio self-check (`doctor` tool + `electron://server`) |
 | `npm run pack:check` | `npm pack --dry-run` (publish surface) |
 | `prepublishOnly` | Builds before `npm publish` |
 | `postinstall` | Runs ensure-electron (no-op if electron omitted) |

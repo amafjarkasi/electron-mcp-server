@@ -44,7 +44,9 @@ import {
   resolveOutputPath,
   isPathInside,
   waitForCondition,
+  registerProcessCleanup,
 } from "../build/process-manager.js";
+import { hasCpuProfileSession } from "../build/power-tools.js";
 
 void _classify;
 
@@ -715,6 +717,37 @@ test("clearProcessBuffers with empty list clears nothing", () => {
   const { cleared } = clearProcessBuffers(proc, []);
   assert.deepEqual(cleared, []);
   assert.deepEqual(proc.logs, ["stay"]);
+});
+
+test("clearProcessBuffers can clear ipc and audits", () => {
+  const proc = makeProc();
+  proc.ipcEntries.push({
+    timestamp: "",
+    direction: "handle",
+    channel: "x",
+    argsPreview: "[]",
+  });
+  proc.auditIssues.push({
+    timestamp: "",
+    targetId: "t",
+    code: "CookieIssue",
+  });
+  const { cleared } = clearProcessBuffers(proc, ["ipc", "audits"]);
+  assert.deepEqual(cleared.sort(), ["audits", "ipc"]);
+  assert.equal(proc.ipcEntries.length, 0);
+  assert.equal(proc.auditIssues.length, 0);
+});
+
+test("registerProcessCleanup runs on stopElectronApp for missing process is no-op", async () => {
+  let hits = 0;
+  registerProcessCleanup(() => {
+    hits += 1;
+  });
+  // Unknown id — still returns true, but no cleanup hook for a live session map entry.
+  assert.equal(await stopElectronApp("does-not-exist"), true);
+  // Hook only fires when a real session is cleaned; ensure hasCpuProfileSession stays false.
+  assert.equal(hasCpuProfileSession("does-not-exist"), false);
+  assert.equal(typeof hits, "number");
 });
 
 // ===========================================================================

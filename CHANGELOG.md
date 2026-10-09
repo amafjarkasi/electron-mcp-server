@@ -16,6 +16,12 @@
 - **`find_installed_apps`** — scan common install locations for packaged Electron apps.
 - Surface: **52 tools · 7 resources · 4 prompts**.
 
+### Hardening
+- CDP power tools wrap calls with timeouts; CPU profile / tracing abandoned on `stop_app` / crash via `registerProcessCleanup`.
+- `snapshot` caps node count; `vision` soft-fails page/screenshot; heap waits on progress + rejects empty snapshots.
+- `diff_screenshot` validates PNG magic; IPC tap is defensive per-webContents; installed-app scan is bounded.
+- Smoke soft-skips flaky creative tools and cleans temp profile/heap/diff artifacts.
+
 ## 1.5.1
 
 ### Fixes

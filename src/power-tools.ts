@@ -1,5 +1,6 @@
 /**
  * Creative CDP / Electron power tools layered on process-manager primitives.
+ * Hardened: timeouts, session cleanup on stop/forget, bounded payloads.
  */
 import * as crypto from "crypto";
 import * as fs from "fs";
@@ -16,6 +17,7 @@ import {
 	getPageInfo,
 	pickPageTarget,
 	pushCapped,
+	registerProcessCleanup,
 	saveScreenshot,
 	updateCDPTargets,
 	validateOutputPath,
@@ -23,27 +25,67 @@ import {
 import { log } from "./log.js";
 
 const MAX_IPC = 500;
+const DEFAULT_AX_NODES = 400;
+const HEAP_TIMEOUT_MS = 60_000;
+const CDP_TIMEOUT_MS = 20_000;
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
 const cpuProfileSessions = new Map<
 	string,
 	{ targetId: string; startedAt: number }
 >();
 
-function previewArgs(args: unknown): string {
+registerProcessCleanup((processId) => {
+	cpuProfileSessions.delete(processId);
+});
+
+async function withTimeout<T>(
+	promise: Promise<T>,
+	ms: number,
+	label: string,
+): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
-		const s = JSON.stringify(args);
-		return s.length > 500 ? `${s.slice(0, 500)}…` : s;
-	} catch {
-		return String(args);
+		return await Promise.race([
+			promise,
+			new Promise<T>((_, reject) => {
+				timer = setTimeout(
+					() => reject(new Error(`${label} timed out after ${ms}ms`)),
+					ms,
+				);
+			}),
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
 	}
+}
+
+async function cdpTimed(
+	electronProcess: ElectronProcess,
+	targetId: string,
+	method: string,
+	params: Record<string, unknown> = {},
+	ms = CDP_TIMEOUT_MS,
+): Promise<unknown> {
+	return withTimeout(
+		executeCDPCommand(electronProcess, targetId, method, params),
+		ms,
+		method,
+	);
+}
+
+function isPng(buf: Buffer): boolean {
+	return buf.length >= 8 && buf.subarray(0, 8).equals(PNG_MAGIC);
 }
 
 /** Accessibility tree snapshot (roles / names / backend ids). */
 export async function getAccessibilitySnapshot(
 	electronProcess: ElectronProcess,
-	options: { depth?: number; targetId?: string } = {},
+	options: { depth?: number; targetId?: string; maxNodes?: number } = {},
 ): Promise<{
 	targetId: string;
 	nodeCount: number;
+	truncated: boolean;
 	nodes: Array<{
 		nodeId?: string;
 		role?: string;
@@ -55,8 +97,8 @@ export async function getAccessibilitySnapshot(
 }> {
 	await updateCDPTargets(electronProcess);
 	const target = pickPageTarget(electronProcess, options.targetId);
-	await executeCDPCommand(electronProcess, target.id, "Accessibility.enable", {});
-	const result = (await executeCDPCommand(
+	await cdpTimed(electronProcess, target.id, "Accessibility.enable", {});
+	const result = (await cdpTimed(
 		electronProcess,
 		target.id,
 		"Accessibility.getFullAXTree",
@@ -71,7 +113,11 @@ export async function getAccessibilitySnapshot(
 			description?: { value?: string };
 		}>;
 	};
-	const nodes = (result.nodes ?? []).map((n) => ({
+	const maxNodes = options.maxNodes ?? DEFAULT_AX_NODES;
+	const raw = result.nodes ?? [];
+	const truncated = raw.length > maxNodes;
+	const slice = truncated ? raw.slice(0, maxNodes) : raw;
+	const nodes = slice.map((n) => ({
 		nodeId: n.nodeId,
 		role: n.role?.value,
 		name: n.name?.value,
@@ -79,7 +125,12 @@ export async function getAccessibilitySnapshot(
 		backendDOMNodeId: n.backendDOMNodeId,
 		ignored: n.ignored,
 	}));
-	return { targetId: target.id, nodeCount: nodes.length, nodes };
+	return {
+		targetId: target.id,
+		nodeCount: nodes.length,
+		truncated,
+		nodes,
+	};
 }
 
 /** One-shot agent vision: screenshot + page + errors + network failures. */
@@ -90,7 +141,19 @@ export async function getAppVision(
 	await ensureMonitoring(electronProcess);
 	await updateCDPTargets(electronProcess);
 	const target = pickPageTarget(electronProcess, options.targetId);
-	const pageInfo = await getPageInfo(electronProcess, target.id);
+
+	let page: unknown;
+	let pageError: string | undefined;
+	try {
+		page = await withTimeout(
+			getPageInfo(electronProcess, target.id),
+			CDP_TIMEOUT_MS,
+			"vision/page_info",
+		);
+	} catch (err) {
+		pageError = err instanceof Error ? err.message : String(err);
+	}
+
 	const errors = electronProcess.consoleMessages
 		.filter(
 			(m) =>
@@ -109,9 +172,11 @@ export async function getAppVision(
 	const out: Record<string, unknown> = {
 		processId: electronProcess.id,
 		name: electronProcess.name,
+		status: electronProcess.status,
 		pid: electronProcess.pid,
 		debugPort: electronProcess.debugPort,
-		page: pageInfo,
+		page: page ?? null,
+		...(pageError ? { pageError } : {}),
 		windows,
 		consoleErrors: errors,
 		networkFailures: failedNetwork,
@@ -121,10 +186,10 @@ export async function getAppVision(
 
 	if (options.includeScreenshot !== false) {
 		try {
-			const shot = await captureScreenshot(
-				electronProcess,
-				target.id,
-				"png",
+			const shot = await withTimeout(
+				captureScreenshot(electronProcess, target.id, "png"),
+				CDP_TIMEOUT_MS,
+				"vision/screenshot",
 			);
 			out.screenshot = {
 				targetId: shot.targetId,
@@ -150,10 +215,13 @@ export async function getResponseBody(
 	body: string;
 	base64Encoded: boolean;
 }> {
+	if (!requestId?.trim()) {
+		throw new Error("requestId is required");
+	}
 	await updateCDPTargets(electronProcess);
 	const target = pickPageTarget(electronProcess, targetId);
-	await executeCDPCommand(electronProcess, target.id, "Network.enable", {});
-	const result = (await executeCDPCommand(
+	await cdpTimed(electronProcess, target.id, "Network.enable", {});
+	const result = (await cdpTimed(
 		electronProcess,
 		target.id,
 		"Network.getResponseBody",
@@ -172,10 +240,13 @@ export async function blockUrls(
 	urls: string[],
 	targetId?: string,
 ): Promise<{ targetId: string; urls: string[] }> {
+	if (!Array.isArray(urls)) {
+		throw new Error("urls must be an array of patterns");
+	}
 	await updateCDPTargets(electronProcess);
 	const target = pickPageTarget(electronProcess, targetId);
-	await executeCDPCommand(electronProcess, target.id, "Network.enable", {});
-	await executeCDPCommand(electronProcess, target.id, "Network.setBlockedURLs", {
+	await cdpTimed(electronProcess, target.id, "Network.enable", {});
+	await cdpTimed(electronProcess, target.id, "Network.setBlockedURLs", {
 		urls,
 	});
 	return { targetId: target.id, urls };
@@ -186,15 +257,15 @@ export async function setExtraHeaders(
 	headers: Record<string, string>,
 	targetId?: string,
 ): Promise<{ targetId: string; headers: Record<string, string> }> {
+	if (!headers || typeof headers !== "object") {
+		throw new Error("headers must be an object of string values");
+	}
 	await updateCDPTargets(electronProcess);
 	const target = pickPageTarget(electronProcess, targetId);
-	await executeCDPCommand(electronProcess, target.id, "Network.enable", {});
-	await executeCDPCommand(
-		electronProcess,
-		target.id,
-		"Network.setExtraHTTPHeaders",
-		{ headers },
-	);
+	await cdpTimed(electronProcess, target.id, "Network.enable", {});
+	await cdpTimed(electronProcess, target.id, "Network.setExtraHTTPHeaders", {
+		headers,
+	});
 	return { targetId: target.id, headers };
 }
 
@@ -204,8 +275,8 @@ export async function getPerformanceMetrics(
 ): Promise<{ targetId: string; metrics: Record<string, number> }> {
 	await updateCDPTargets(electronProcess);
 	const target = pickPageTarget(electronProcess, targetId);
-	await executeCDPCommand(electronProcess, target.id, "Performance.enable", {});
-	const result = (await executeCDPCommand(
+	await cdpTimed(electronProcess, target.id, "Performance.enable", {});
+	const result = (await cdpTimed(
 		electronProcess,
 		target.id,
 		"Performance.getMetrics",
@@ -229,8 +300,17 @@ export async function startCpuProfile(
 			`CPU profile already active for ${electronProcess.id}. Call stop_cpu_profile first.`,
 		);
 	}
-	await executeCDPCommand(electronProcess, target.id, "Profiler.enable", {});
-	await executeCDPCommand(electronProcess, target.id, "Profiler.start", {});
+	await cdpTimed(electronProcess, target.id, "Profiler.enable", {});
+	try {
+		await cdpTimed(electronProcess, target.id, "Profiler.start", {});
+	} catch (err) {
+		try {
+			await cdpTimed(electronProcess, target.id, "Profiler.disable", {});
+		} catch {
+			// ignore
+		}
+		throw err;
+	}
 	cpuProfileSessions.set(electronProcess.id, {
 		targetId: target.id,
 		startedAt: Date.now(),
@@ -252,13 +332,31 @@ export async function stopCpuProfile(
 	if (!session) {
 		throw new Error(`No active CPU profile for ${electronProcess.id}`);
 	}
-	const result = (await executeCDPCommand(
-		electronProcess,
-		session.targetId,
-		"Profiler.stop",
-		{},
-	)) as { profile?: unknown };
-	cpuProfileSessions.delete(electronProcess.id);
+
+	let result: { profile?: unknown } = {};
+	try {
+		result = (await cdpTimed(
+			electronProcess,
+			session.targetId,
+			"Profiler.stop",
+			{},
+			30_000,
+		)) as { profile?: unknown };
+	} finally {
+		cpuProfileSessions.delete(electronProcess.id);
+		try {
+			await cdpTimed(
+				electronProcess,
+				session.targetId,
+				"Profiler.disable",
+				{},
+				5_000,
+			);
+		} catch {
+			// ignore — target may be gone
+		}
+	}
+
 	const out =
 		filePath?.trim() ||
 		path.join(
@@ -278,6 +376,11 @@ export async function stopCpuProfile(
 	};
 }
 
+/** True when a CPU profile session is active for the process (tests / diagnose). */
+export function hasCpuProfileSession(processId: string): boolean {
+	return cpuProfileSessions.has(processId);
+}
+
 export async function takeHeapSnapshot(
 	electronProcess: ElectronProcess,
 	filePath?: string,
@@ -287,34 +390,64 @@ export async function takeHeapSnapshot(
 	const target = pickPageTarget(electronProcess, targetId);
 	const client = await connectToCDPTarget(electronProcess, target.id);
 
-	await executeCDPCommand(electronProcess, target.id, "HeapProfiler.enable", {});
+	await cdpTimed(electronProcess, target.id, "HeapProfiler.enable", {});
 
 	const chunks: string[] = [];
 	const onChunk = (params: unknown) => {
 		const p = params as { chunk?: string };
 		if (p.chunk) chunks.push(p.chunk);
 	};
-	client.on("HeapProfiler.addHeapSnapshotChunk", onChunk);
+	const onProgress = (params: unknown) => {
+		const p = params as { finished?: boolean };
+		if (p.finished) finished = true;
+	};
+	let finished = false;
 
-	try {
-		await executeCDPCommand(
-			electronProcess,
-			target.id,
-			"HeapProfiler.takeHeapSnapshot",
-			{ reportProgress: false },
-		);
-		// Allow final chunks to flush
-		await new Promise((r) => setTimeout(r, 50));
-	} finally {
+	client.on("HeapProfiler.addHeapSnapshotChunk", onChunk);
+	client.on("HeapProfiler.reportHeapSnapshotProgress", onProgress);
+
+	const detach = () => {
 		try {
-			(
-				client as {
-					removeListener: (event: string, fn: typeof onChunk) => void;
-				}
-			).removeListener("HeapProfiler.addHeapSnapshotChunk", onChunk);
+			const c = client as unknown as {
+				removeListener: (
+					event: string,
+					fn: (params: unknown) => void,
+				) => void;
+			};
+			c.removeListener("HeapProfiler.addHeapSnapshotChunk", onChunk);
+			c.removeListener("HeapProfiler.reportHeapSnapshotProgress", onProgress);
 		} catch {
 			// ignore
 		}
+	};
+
+	try {
+		await withTimeout(
+			(async () => {
+				await executeCDPCommand(
+					electronProcess,
+					target.id,
+					"HeapProfiler.takeHeapSnapshot",
+					{ reportProgress: true },
+				);
+				const deadline = Date.now() + 2_000;
+				while (!finished && Date.now() < deadline) {
+					await new Promise((r) => setTimeout(r, 25));
+				}
+				// Final chunk flush even if progress event was missed
+				await new Promise((r) => setTimeout(r, 50));
+			})(),
+			HEAP_TIMEOUT_MS,
+			"HeapProfiler.takeHeapSnapshot",
+		);
+	} finally {
+		detach();
+	}
+
+	if (chunks.length === 0) {
+		throw new Error(
+			"Heap snapshot produced no data (target may not support HeapProfiler)",
+		);
 	}
 
 	const out =
@@ -346,16 +479,22 @@ export async function getMainState(
 		try {
 			const electron = require('electron');
 			const { app, BrowserWindow } = electron;
-			const windows = BrowserWindow.getAllWindows().map((w) => ({
-				id: w.id,
-				title: w.getTitle(),
-				url: (() => { try { return w.webContents.getURL(); } catch { return null; } })(),
-				bounds: w.getBounds(),
-				isVisible: w.isVisible(),
-				isFocused: w.isFocused(),
-				isMinimized: w.isMinimized(),
-				isDestroyed: w.isDestroyed(),
-			}));
+			const windows = BrowserWindow.getAllWindows().map((w) => {
+				try {
+					return {
+						id: w.id,
+						title: w.getTitle(),
+						url: (() => { try { return w.webContents.getURL(); } catch { return null; } })(),
+						bounds: w.getBounds(),
+						isVisible: w.isVisible(),
+						isFocused: w.isFocused(),
+						isMinimized: w.isMinimized(),
+						isDestroyed: w.isDestroyed(),
+					};
+				} catch (err) {
+					return { error: err && err.message ? err.message : String(err) };
+				}
+			});
 			const paths = {};
 			for (const name of ['home','appData','userData','sessionData','temp','exe','desktop','documents','downloads','music','pictures','videos','recent','logs','crashDumps']) {
 				try { paths[name] = app.getPath(name); } catch { /* skip */ }
@@ -371,14 +510,18 @@ export async function getMainState(
 					isPackaged: app.isPackaged,
 				},
 				paths,
-				metrics: syn(app.getAppMetrics?.() ?? []),
+				metrics: syn(typeof app.getAppMetrics === 'function' ? app.getAppMetrics() : []),
 				windows,
 			};
 		} catch (err) {
 			return { ok: false, error: err && err.message ? err.message : String(err) };
 		}
 	})()`;
-	const result = await evaluateMain(electronProcess, expression, undefined, true);
+	const result = await withTimeout(
+		evaluateMain(electronProcess, expression, undefined, true),
+		CDP_TIMEOUT_MS,
+		"main_state",
+	);
 	const value = (result.result as { result?: { value?: unknown } })?.result
 		?.value;
 	return {
@@ -396,32 +539,36 @@ const IPC_TAP_EXPR = `(() => {
 		} catch { return String(v); }
 	};
 	try {
-		const { ipcMain, BrowserWindow } = require('electron');
+		const electron = require('electron');
+		const { ipcMain, BrowserWindow, app } = electron;
 		if (global.__electronMcpIpcTapInstalled) {
 			return { ok: true, already: true, count: (global.__electronMcpIpcLog || []).length };
 		}
 		global.__electronMcpIpcLog = global.__electronMcpIpcLog || [];
 		const push = (entry) => {
-			global.__electronMcpIpcLog.push(entry);
-			if (global.__electronMcpIpcLog.length > 500) global.__electronMcpIpcLog.shift();
+			try {
+				global.__electronMcpIpcLog.push(entry);
+				if (global.__electronMcpIpcLog.length > 500) global.__electronMcpIpcLog.shift();
+			} catch { /* ignore */ }
 		};
 		const wrapSend = (wc) => {
-			if (wc.__electronMcpIpcWrapped) return;
-			wc.__electronMcpIpcWrapped = true;
-			const orig = wc.send.bind(wc);
-			wc.send = (channel, ...args) => {
-				push({ timestamp: new Date().toISOString(), direction: 'main->renderer', channel: String(channel), argsPreview: syn(args) });
-				return orig(channel, ...args);
-			};
-			wc.on('ipc-message', (_e, channel, ...args) => {
-				push({ timestamp: new Date().toISOString(), direction: 'renderer->main', channel: String(channel), argsPreview: syn(args) });
-			});
-			wc.on('ipc-message-sync', (_e, channel, ...args) => {
-				push({ timestamp: new Date().toISOString(), direction: 'renderer->main', channel: String(channel), argsPreview: syn(args) });
-			});
+			try {
+				if (!wc || wc.__electronMcpIpcWrapped) return;
+				wc.__electronMcpIpcWrapped = true;
+				const orig = wc.send.bind(wc);
+				wc.send = (channel, ...args) => {
+					push({ timestamp: new Date().toISOString(), direction: 'main->renderer', channel: String(channel), argsPreview: syn(args) });
+					return orig(channel, ...args);
+				};
+				wc.on('ipc-message', (_e, channel, ...args) => {
+					push({ timestamp: new Date().toISOString(), direction: 'renderer->main', channel: String(channel), argsPreview: syn(args) });
+				});
+				wc.on('ipc-message-sync', (_e, channel, ...args) => {
+					push({ timestamp: new Date().toISOString(), direction: 'renderer->main', channel: String(channel), argsPreview: syn(args) });
+				});
+			} catch { /* ignore per-contents failures */ }
 		};
 		for (const w of BrowserWindow.getAllWindows()) wrapSend(w.webContents);
-		const { app } = require('electron');
 		app.on('web-contents-created', (_e, wc) => wrapSend(wc));
 		const origHandle = ipcMain.handle.bind(ipcMain);
 		ipcMain.handle = (channel, listener) => {
@@ -440,7 +587,11 @@ const IPC_TAP_EXPR = `(() => {
 export async function enableIpcTap(
 	electronProcess: ElectronProcess,
 ): Promise<Record<string, unknown>> {
-	const result = await evaluateMain(electronProcess, IPC_TAP_EXPR, undefined, true);
+	const result = await withTimeout(
+		evaluateMain(electronProcess, IPC_TAP_EXPR, undefined, true),
+		CDP_TIMEOUT_MS,
+		"ipc_tap",
+	);
 	const value = (result.result as { result?: { value?: unknown } })?.result
 		?.value as Record<string, unknown> | undefined;
 	return { processId: electronProcess.id, targetId: result.targetId, ...(value ?? {}) };
@@ -452,21 +603,27 @@ export async function getIpcLog(
 ): Promise<{ processId: string; entries: IpcEntry[] }> {
 	if (options.refreshFromMain !== false) {
 		try {
-			const drain = await evaluateMain(
-				electronProcess,
-				`(() => {
-					const log = global.__electronMcpIpcLog || [];
-					global.__electronMcpIpcLog = [];
-					return log;
-				})()`,
-				undefined,
-				true,
+			const drain = await withTimeout(
+				evaluateMain(
+					electronProcess,
+					`(() => {
+						const log = global.__electronMcpIpcLog || [];
+						global.__electronMcpIpcLog = [];
+						return Array.isArray(log) ? log : [];
+					})()`,
+					undefined,
+					true,
+				),
+				CDP_TIMEOUT_MS,
+				"get_ipc_log/drain",
 			);
 			const value = (drain.result as { result?: { value?: IpcEntry[] } })?.result
 				?.value;
 			if (Array.isArray(value)) {
 				for (const entry of value) {
-					pushCapped(electronProcess.ipcEntries, entry, MAX_IPC);
+					if (entry && typeof entry === "object") {
+						pushCapped(electronProcess.ipcEntries, entry, MAX_IPC);
+					}
 				}
 			}
 		} catch (err) {
@@ -509,6 +666,9 @@ export async function diffScreenshot(
 		throw new Error(`Baseline not found: ${baseline}`);
 	}
 	const baselineBuf = fs.readFileSync(baseline);
+	if (!isPng(baselineBuf)) {
+		throw new Error(`Baseline is not a PNG: ${baseline}`);
+	}
 
 	let currentPath = options.currentPath;
 	let captured: Awaited<ReturnType<typeof saveScreenshot>> | undefined;
@@ -517,25 +677,37 @@ export async function diffScreenshot(
 			os.tmpdir(),
 			`electron-mcp-diff-${electronProcess.id}-${Date.now()}.png`,
 		);
-		captured = await saveScreenshot(
-			electronProcess,
-			tmp,
-			options.targetId,
-			"png",
-			undefined,
-			options.selector,
+		captured = await withTimeout(
+			saveScreenshot(
+				electronProcess,
+				tmp,
+				options.targetId,
+				"png",
+				undefined,
+				options.selector,
+			),
+			CDP_TIMEOUT_MS,
+			"diff_screenshot/capture",
 		);
 		currentPath = captured.path;
 	}
 	const currentResolved = validateOutputPath(currentPath);
+	if (!fs.existsSync(currentResolved)) {
+		throw new Error(`Current screenshot not found: ${currentResolved}`);
+	}
 	const currentBuf = fs.readFileSync(currentResolved);
+	if (!isPng(currentBuf)) {
+		throw new Error(`Current file is not a PNG: ${currentResolved}`);
+	}
 	const identical = baselineBuf.equals(currentBuf);
 	return {
 		processId: electronProcess.id,
 		baselinePath: baseline,
 		currentPath: currentResolved,
 		identical,
-		similarity: identical ? 1 : Number(byteSimilarity(baselineBuf, currentBuf).toFixed(4)),
+		similarity: identical
+			? 1
+			: Number(byteSimilarity(baselineBuf, currentBuf).toFixed(4)),
 		baselineBytes: baselineBuf.length,
 		currentBytes: currentBuf.length,
 		baselineSha256: crypto.createHash("sha256").update(baselineBuf).digest("hex"),
@@ -565,6 +737,8 @@ export type InstalledElectronApp = {
 	kind: "app-bundle" | "exe" | "desktop" | "asar-dir";
 };
 
+const MAX_INSTALLED = 200;
+
 /** Best-effort scan for installed Electron apps (packaged). */
 export async function findInstalledElectronApps(): Promise<
 	InstalledElectronApp[]
@@ -572,6 +746,7 @@ export async function findInstalledElectronApps(): Promise<
 	const found: InstalledElectronApp[] = [];
 	const seen = new Set<string>();
 	const add = (app: InstalledElectronApp) => {
+		if (found.length >= MAX_INSTALLED) return;
 		const key = path.resolve(app.path);
 		if (seen.has(key)) return;
 		seen.add(key);
@@ -592,18 +767,20 @@ export async function findInstalledElectronApps(): Promise<
 		}
 	};
 
+	const safeReaddir = (root: string): string[] => {
+		try {
+			return fs.readdirSync(root);
+		} catch {
+			return [];
+		}
+	};
+
 	if (process.platform === "darwin") {
 		for (const root of [
 			"/Applications",
 			path.join(os.homedir(), "Applications"),
 		]) {
-			let entries: string[] = [];
-			try {
-				entries = fs.readdirSync(root);
-			} catch {
-				continue;
-			}
-			for (const name of entries) {
+			for (const name of safeReaddir(root)) {
 				if (!name.endsWith(".app")) continue;
 				const appPath = path.join(root, name);
 				const frameworks = path.join(
@@ -613,7 +790,11 @@ export async function findInstalledElectronApps(): Promise<
 					"Electron Framework.framework",
 				);
 				const asar = path.join(appPath, "Contents", "Resources", "app.asar");
-				if (fs.existsSync(frameworks) || fs.existsSync(asar) || looksElectronDir(path.join(appPath, "Contents", "MacOS"))) {
+				if (
+					fs.existsSync(frameworks) ||
+					fs.existsSync(asar) ||
+					looksElectronDir(path.join(appPath, "Contents", "MacOS"))
+				) {
 					add({
 						name: name.replace(/\.app$/i, ""),
 						path: appPath,
@@ -630,13 +811,7 @@ export async function findInstalledElectronApps(): Promise<
 			process.env["PROGRAMFILES(X86)"],
 		].filter(Boolean) as string[];
 		for (const root of roots) {
-			let entries: string[] = [];
-			try {
-				entries = fs.readdirSync(root);
-			} catch {
-				continue;
-			}
-			for (const name of entries) {
+			for (const name of safeReaddir(root)) {
 				const dir = path.join(root, name);
 				try {
 					if (!fs.statSync(dir).isDirectory()) continue;
@@ -645,10 +820,9 @@ export async function findInstalledElectronApps(): Promise<
 				}
 				if (looksElectronDir(dir)) {
 					const exe =
-						[
-							path.join(dir, `${name}.exe`),
-							path.join(dir, "app.exe"),
-						].find((p) => fs.existsSync(p)) ?? dir;
+						[path.join(dir, `${name}.exe`), path.join(dir, "app.exe")].find(
+							(p) => fs.existsSync(p),
+						) ?? dir;
 					add({
 						name,
 						path: exe,
@@ -659,18 +833,11 @@ export async function findInstalledElectronApps(): Promise<
 			}
 		}
 	} else {
-		// Linux: .desktop files that mention electron / asar
 		for (const root of [
 			"/usr/share/applications",
 			path.join(os.homedir(), ".local/share/applications"),
 		]) {
-			let entries: string[] = [];
-			try {
-				entries = fs.readdirSync(root);
-			} catch {
-				continue;
-			}
-			for (const name of entries) {
+			for (const name of safeReaddir(root)) {
 				if (!name.endsWith(".desktop")) continue;
 				const desktopPath = path.join(root, name);
 				let body = "";
