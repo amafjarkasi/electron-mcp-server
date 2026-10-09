@@ -143,7 +143,8 @@ test("getAllowedRoots resolves to absolute + trims whitespace", () => {
   try {
     const roots = getAllowedRoots();
     assert.equal(roots.length, 1);
-    assert.equal(roots[0], path.resolve("/tmp/x"));
+    // Symlink-aware (macOS /tmp → /private/tmp).
+    assert.equal(roots[0], resolveOutputPath("/tmp/x"));
     assert.ok(path.isAbsolute(roots[0]));
   } finally {
     if (prev === undefined) delete process.env.ELECTRON_MCP_ALLOWED_ROOTS;
@@ -159,10 +160,10 @@ test("assertAppPathAllowed is permissive when no roots configured", () => {
   const prev = process.env.ELECTRON_MCP_ALLOWED_ROOTS;
   delete process.env.ELECTRON_MCP_ALLOWED_ROOTS;
   try {
-    // With no allowlist, anything resolves and is returned unchanged (resolved).
+    // With no allowlist, anything resolves and is returned (symlink-aware).
     assert.equal(
       assertAppPathAllowed("/anywhere/app"),
-      path.resolve("/anywhere/app")
+      resolveOutputPath("/anywhere/app")
     );
   } finally {
     if (prev !== undefined) process.env.ELECTRON_MCP_ALLOWED_ROOTS = prev;
@@ -175,12 +176,12 @@ test("assertAppPathAllowed accepts paths inside a configured root", () => {
   try {
     assert.equal(
       assertAppPathAllowed("/tmp/allowed-root/app"),
-      path.resolve("/tmp/allowed-root/app")
+      resolveOutputPath("/tmp/allowed-root/app")
     );
     // The root itself is allowed.
     assert.equal(
       assertAppPathAllowed("/tmp/allowed-root"),
-      path.resolve("/tmp/allowed-root")
+      resolveOutputPath("/tmp/allowed-root")
     );
   } finally {
     if (prev === undefined) delete process.env.ELECTRON_MCP_ALLOWED_ROOTS;
