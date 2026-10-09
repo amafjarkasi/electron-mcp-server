@@ -5,7 +5,7 @@
   "type": "module",
   "main": "./build/index.js",
   "bin": {
-    "electron-debug-mcp": "./build/index.js"
+    "electron-debug-mcp": "build/index.js"
   },
   "files": [
     "build/",
