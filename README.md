@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Debug Electron apps from Cursor &amp; Claude with real DevTools superpowers.</b><br/>
-  <sub>Model Context Protocol server · Chrome DevTools Protocol · start / attach / screenshot / console / DOM / UI automation / tracing</sub>
+  <sub>Model Context Protocol server · Chrome DevTools Protocol · start / attach / screenshot / console / DOM / UI automation / main-process inspect / tracing</sub>
 </p>
 
 <p align="center">
@@ -24,7 +24,7 @@
   <img src="https://img.shields.io/badge/TypeScript-7.x-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TS" />
   <img src="https://img.shields.io/badge/Node-%3E%3D18-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node" />
   <img src="https://img.shields.io/badge/version-1.5.0-blue?style=flat-square" alt="version" />
-  <img src="https://img.shields.io/badge/tests-unit_+_e2e_smoke-8B5CF6?style=flat-square" alt="tests" />
+  <img src="https://img.shields.io/badge/tests-unit_+_monitor_+_e2e_smoke-8B5CF6?style=flat-square" alt="tests" />
 </p>
 
 ---
@@ -47,7 +47,9 @@ Instead of guessing from source alone, the agent can:
 | Run JS in **main** | `start_app({ inspectMain: true })` → `evaluate_main` |
 | Cookies & web storage | `get_cookies` / `set_cookie` · `get_storage` / `set_storage` |
 | Watch network | `get_network_log` |
-| Drive the UI | `wait_for` → `type_text` / `press_key` → `click` → `navigate` |
+| Drive the UI | `wait_for` → `type_text` / `press_key` → `click` → `navigate` / `reload` |
+| Pause / resume JS | `pause` · `resume` (Debugger; detached after resume) |
+| Read process stdout/stderr | `get_logs` |
 | Perf deep-dive | `start_tracing` → reproduce → `stop_tracing` (open in `chrome://tracing`) |
 | One-shot health check | `diagnose` |
 | Full DevTools power | `cdp_command` (`Domain.method`) |
@@ -83,10 +85,12 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 
 ### ✅ Status
 
-- 🟢 Ready for local agent-driven Electron debugging
-- 🟢 E2E smoke: start → UI/automation → storage/cookies → tracing → find/attach-by-pid → stop
+- 🟢 Ready for local agent-driven Electron debugging (stdio MCP ↔ CDP)
+- 🟢 **v1.5.0** — 36 tools · element screenshots · cookies/storage · tracing · attach-by-pid · `inspectMain` / `evaluate_main`
+- 🟢 Session cleanup — stopped apps are removed from `list_apps`; CDP traces abandoned on stop/exit
+- 🟢 E2E smoke covers lifecycle, UI, resources, discover, and main-process eval (see [Testing](#-testing))
+- 🟢 CI: Ubuntu + Xvfb **and** Windows; local macOS supported
 - 🟢 Windows binary repair: `scripts/fix-electron.cmd` when npm blocks postinstall
-- 🟢 v1.5.0 — element screenshots, cookies/storage, tracing, attach-by-pid
 - 🟢 Built on TypeScript 7 (native Go compiler) — ~10x faster builds
 
 ---
@@ -140,12 +144,12 @@ Electron bugs are often **invisible** to coding agents:
 <td width="50%" valign="top">
 
 ### 🔌 Lifecycle
-- ▶️ `start_app` — launch with remote debugging (+ optional `inspectMain`)
+- ▶️ `start_app` — launch with remote debugging (+ optional `inspectMain` → pinned `--inspect` port)
 - 🔗 `attach` — connect to an existing debug port
 - 🆔 `attach_by_pid` — resolve port from process argv
-- 🧭 `find_apps` — list Electron PIDs + debug ports
+- 🧭 `find_apps` — list Electron PIDs + debug / inspect ports
 - 🔎 `discover_apps` — scan local CDP ports
-- ⏹️ `stop_app` — kill owned / detach attached
+- ⏹️ `stop_app` — kill owned / detach attached (removes session; idempotent)
 - 📋 `list_apps` — sessions, ports, buffer counts
 - 🩺 `diagnose` — port health + recent errors
 
@@ -298,13 +302,13 @@ Same `mcpServers` block in `claude_desktop_config.json`, pointing at `build/inde
 └──────────────────────────┘
 ```
 
-After `start_app` / `attach` / `attach_by_pid`, page targets get **Runtime / Log / Network / Page** enabled so console + network events keep buffering between tool calls.
+After `start_app` / `attach` / `attach_by_pid`, page targets get **Runtime / Log / Network / Page** enabled so console + network events keep buffering between tool calls. With `inspectMain: true`, a separate Node inspector port is opened and its `node` target is merged into `list_targets` for `evaluate_main`.
 
 **Finding a running app**
 
-1. `find_apps` — OS process scan (Electron PIDs + `--remote-debugging-port` from argv)  
+1. `find_apps` — OS process scan (Electron PIDs + `--remote-debugging-port` / `--inspect` from argv)  
 2. `discover_apps` — HTTP probe of local CDP ports (`/json/version`, `/json/list`)  
-3. `attach` / `attach_by_pid` — open a managed session (detach-only on `stop_app`)
+3. `attach` / `attach_by_pid` — open a managed session (detach-only on `stop_app`; session entry is then removed)
 
 ---
 
@@ -379,18 +383,26 @@ Use this when you launched the app yourself and don’t remember the port.
 
 | Param | Type | Default |
 | --- | --- | --- |
-| `startPort` | int | `9222` |
-| `endPort` | int | `9235` |
+| `startPort` | int `1–65535` | `9222` |
+| `endPort` | int `1–65535` | `9235` |
 
-HTTP-probes each port for Chromium/Electron DevTools (`/json/version` + `/json/list`).
+HTTP-probes each port for Chromium/Electron DevTools (`/json/version` + `/json/list`), in bounded parallel batches. Prefer a tight range around known ports (or the same port twice) when you already know where the app is listening.
 
 ---
 
-#### `stop_app` — `{ processId }`  
+#### `stop_app` — `{ processId }`
+
+- **Owned** sessions (`start_app`): SIGTERM / kill the Electron process, abandon any active CDP trace, close CDP sockets, and **delete** the session from the managed map.
+- **Attached** sessions: detach bookkeeping only (does not kill the external app), then delete the session.
+- **Idempotent:** calling `stop_app` again after cleanup still returns success (already stopped).
+
 #### `list_apps` — no params  
+
+Returns managed sessions only (`id`, `name`, `status`, `pid`, `debugPort`, `inspectPort?`, buffer counts, …). Stopped sessions do **not** linger.
+
 #### `diagnose` — optional `{ processId }` (omit = all sessions)
 
-`diagnose` reports port reachability, target role counts, recent console errors, and monitoring state.
+Reports port reachability, target role counts, recent console errors, and monitoring state.
 
 ---
 
@@ -436,7 +448,9 @@ Evaluate in the Electron **main/node** CDP target.
 | `targetId` | string | auto-pick node/main |
 | `returnByValue` | bool | `true` |
 
-**Requires** a node-like target — start with `inspectMain: true`, or pass an explicit `targetId` from `list_targets`.
+**Requires** a node-like target. Prefer `start_app({ inspectMain: true })`, which allocates a pinned `--inspect=<inspectPort>` (returned on the session) and merges that target into `list_targets`. You can also pass an explicit `targetId` from `list_targets`.
+
+> Chromium’s `--remote-debugging-port` only lists page/browser targets. Main-process eval needs the separate Node inspector — that is what `inspectMain` wires up.
 
 ---
 
@@ -526,8 +540,16 @@ Provide **at least one** condition:
 Errors/asserts **always** emit MCP logs. When enabled, log/info/warn/debug also stream live.
 
 #### `reload` — `{ processId, targetId?, ignoreCache?=false }`  
+
+Reloads **page** targets only (never the main-process `node` inspect target). Omit `targetId` to reload every page-like target.
+
 #### `pause` / `resume` — `{ processId, targetId? }`  
+
+`Debugger.pause` / `Debugger.resume` on a page target. `resume` also calls `Debugger.disable` afterward so later screenshots / input are not blocked by an open debugger session.
+
 #### `clear_buffers` — `{ processId, console?=true, network?=true, logs?=false }`  
+
+Clears in-memory console / network / stdout-stderr buffers for the session. Defaults clear console + network; set `logs: true` to also clear `get_logs` capture.
 
 ---
 
@@ -802,7 +824,7 @@ Open `app-trace.json` in `chrome://tracing`.
 { "processId": "electron-1710000000000" }
 ```
 
-### 1️⃣1️⃣ Navigate + page info
+### 1️⃣1️⃣ Navigate · reload · pause / resume · page info
 
 ```json
 // navigate
@@ -814,8 +836,23 @@ Open `app-trace.json` in `chrome://tracing`.
 ```
 
 ```json
+// reload
+{ "processId": "electron-…", "ignoreCache": false }
+```
+
+```json
+// pause then resume (page JS)
+{ "processId": "electron-…" }
+```
+
+```json
 // page_info
 { "processId": "electron-…" }
+```
+
+```json
+// get_logs (Electron stdout/stderr)
+{ "processId": "electron-…", "tail": 100 }
 ```
 
 ### 1️⃣2️⃣ Raw CDP escape hatch
@@ -832,16 +869,18 @@ Open `app-trace.json` in `chrome://tracing`.
 ### 1️⃣3️⃣ Recommended agent loop
 
 ```text
-find_apps / discover_apps / start_app / attach / attach_by_pid
+find_apps / discover_apps / start_app(inspectMain?) / attach / attach_by_pid
     → diagnose
     → set_console_live(true)   # optional
-    → get_console_messages(level="error")
+    → get_console_messages(level="error") + get_logs
     → screenshot / save_screenshot(selector?)
     → wait_for (if UI)
-    → click / type_text / press_key / evaluate / get_dom
+    → click / type_text / press_key / navigate / reload / evaluate / get_dom
+    → evaluate_main            # if inspectMain / node target present
     → get_storage / get_cookies   # if state matters
     → start_tracing … stop_tracing   # if perf
-    → stop_app
+    → cdp_command              # escape hatch
+    → stop_app                 # removes session from list_apps
 ```
 
 ---
@@ -854,8 +893,8 @@ find_apps / discover_apps / start_app / attach / attach_by_pid
 | --- | --- |
 | `ELECTRON_PATH` | Force a specific Electron binary |
 | `ELECTRON_MCP_NO_SANDBOX=1` | Always pass `--no-sandbox` |
-| `ELECTRON_MCP_ALLOWED_ROOTS` | `;` / `\|` allowlist for `start_app` paths |
-| `ELECTRON_MCP_OUTPUT_ROOTS` | `;` / `\|` allowlist for `save_screenshot` / `stop_tracing` output paths |
+| `ELECTRON_MCP_ALLOWED_ROOTS` | `;` / `\|` allowlist for `start_app` paths (unset = unrestricted) |
+| `ELECTRON_MCP_OUTPUT_ROOTS` | `;` / `\|` allowlist for `save_screenshot` / `stop_tracing` paths (still subject to the built-in sensitive-path blocklist) |
 | `ELECTRON_MIRROR` | Download mirror for Electron zips |
 | `ELECTRON_SKIP_BINARY_DOWNLOAD` | Cleared by `ensure-electron` so download still runs |
 | `ELECTRON_CACHE` / `electron_config_cache` | Zip cache directory |
@@ -881,7 +920,7 @@ $env:ELECTRON_MCP_ALLOWED_ROOTS="D:\apps;D:\GH"
 | `npm run dev` | build + start |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm test` | ensure + build + unit + smoke |
-| `npm run test:unit` | Helper unit tests |
+| `npm run test:unit` | Unit tests (`unit-helpers`, `probe`, `monitor`) |
 | `npm run test:smoke` | Full MCP e2e vs fixture app |
 | `postinstall` | Runs ensure-electron |
 
@@ -950,12 +989,15 @@ Published npm package includes `build/`, `assets/`, `README.md`, and `LICENSE` o
 | Element screenshot hangs / times out | Headless/GPU quirks — server retries without `fromSurface`; ensure selector is visible |
 | `set_cookie` fails on `file://` | Pass an `http(s)` `url`/`domain` |
 | `evaluate_main` “No main/node target” | Restart with `inspectMain: true` (pinned `--inspect` port) or pass `targetId` from `list_targets` |
+| Screenshot fails after `pause` | Call `resume` (it disables Debugger); capture before pausing when possible |
 | `attach_by_pid` can’t resolve port | App must be started with `--remote-debugging-port`; check `find_apps` |
 | `start_app` path rejected | Outside `ELECTRON_MCP_ALLOWED_ROOTS` |
+| Output path “sensitive location” / outside roots | Avoid `~/.ssh`, `~/.aws`, system dirs; or set `ELECTRON_MCP_OUTPUT_ROOTS` |
 | `node build/index.js` “does nothing” | Waiting on MCP stdio — use Cursor config |
 | Port in use | Change `debugPort` or `discover_apps` / `find_apps` |
 | Linux headless | `ELECTRON_MCP_NO_SANDBOX=1` + Xvfb |
 | Tracing empty / fails | Call `start_tracing` before the slow path; only one active trace per session |
+| `list_apps` empty after stop | Expected — sessions are deleted on stop/exit |
 
 ---
 
