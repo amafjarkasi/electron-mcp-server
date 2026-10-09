@@ -293,11 +293,35 @@ function getOutputRoots(): string[] {
  * location or (when ELECTRON_MCP_OUTPUT_ROOTS is set) falls outside the
  * configured output roots.
  */
+/**
+ * Resolve a path that may not exist yet, following symlinks on every existing
+ * ancestor so a symlink escape (e.g. `outdir -> /etc`) cannot bypass the
+ * blocklist / allowlist checks.
+ */
+export function resolveOutputPath(filePath: string): string {
+	const resolved = path.resolve(String(filePath));
+	const missing: string[] = [];
+	let current = resolved;
+	while (!fs.existsSync(current)) {
+		missing.unshift(path.basename(current));
+		const parent = path.dirname(current);
+		if (parent === current) {
+			return resolved;
+		}
+		current = parent;
+	}
+	try {
+		return path.join(fs.realpathSync(current), ...missing);
+	} catch {
+		return resolved;
+	}
+}
+
 export function validateOutputPath(filePath: string): string {
 	if (filePath == null || String(filePath).trim() === "") {
 		throw new Error("Output path must be a non-empty string");
 	}
-	const resolved = path.resolve(String(filePath));
+	const resolved = resolveOutputPath(String(filePath));
 
 	const blocked = OUTPUT_BLOCKED_ROOTS.find((root) =>
 		isPathInside(root, resolved),

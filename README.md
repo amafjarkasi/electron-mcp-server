@@ -76,7 +76,7 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 | 🧬 **Debug bridge** | Chrome DevTools Protocol (Runtime · Page · Network · Debugger · Input · Log · Tracing) |
 | 🚀 **App control** | Spawn Electron **or** attach by port / PID / process scan |
 | 📦 **Surface area** | **36 tools** · **6 resources** · **3 prompts** · logging + resource list-changed |
-| 🖥️ **Platforms** | Windows · macOS · Linux (CI: Xvfb + no-sandbox) |
+| 🖥️ **Platforms** | Windows · macOS · Linux (CI: **Ubuntu + Xvfb** and **Windows**) |
 | 📦 **Requires** | Node **≥ 18**, npm, one-time Electron binary download |
 | 🛡️ **Safety** | Optional `ELECTRON_MCP_ALLOWED_ROOTS` (app paths) · `ELECTRON_MCP_OUTPUT_ROOTS` (screenshot/trace output, plus built-in blocklist of sensitive locations); attach sessions detach-only on stop |
 | ✅ **Verify** | `npm test` → unit + full MCP↔Electron smoke |
@@ -333,11 +333,11 @@ Launch Electron with remote debugging.
 | `appPath` | string | ✅ | — | App directory or main script |
 | `debugPort` | int `1024–65535` | ❌ | random `9222–9999` | CDP port |
 | `extraArgs` | string[] | ❌ | `[]` | Extra CLI flags |
-| `inspectMain` | bool | ❌ | `false` | Pass `--inspect=0` so main appears as a node target for `evaluate_main` |
+| `inspectMain` | bool | ❌ | `false` | Allocate a pinned `--inspect=<port>` and merge the main-process `node` target so `evaluate_main` works |
 
-**Auto flags:** `--remote-debugging-port`, `--enable-logging`, `--disable-gpu`, and `--no-sandbox` when `ELECTRON_MCP_NO_SANDBOX=1` / `CI=true` / no `DISPLAY`.
+**Auto flags:** `--remote-debugging-port`, `--enable-logging`, `--disable-gpu`, and `--no-sandbox` when `ELECTRON_MCP_NO_SANDBOX=1` / `CI=true` / no `DISPLAY`. With `inspectMain`, also `--inspect=<inspectPort>` (separate from the Chromium debug port).
 
-**Returns:** `id`, `pid`, `debugPort`, `targets`, `attached: false`, …
+**Returns:** `id`, `pid`, `debugPort`, `inspectPort?`, `targets`, `attached: false`, …
 
 ---
 
@@ -895,11 +895,13 @@ $env:ELECTRON_MCP_ALLOWED_ROOTS="D:\apps;D:\GH"
 npm test
 ```
 
-Smoke path (v1.5):
+Smoke path (v1.5+):
 
-`initialize` → tool/prompt/resource lists → `start_app` → evaluate → console/network/DOM → page_info / type_text / click / wait_for / press_key → `save_screenshot` (+ **selector clip**) → **storage** / **cookies** → **start/stop_tracing** → **find_apps** / **attach_by_pid** → screenshot → diagnose → attach → discover → stop
+`initialize` → tool/prompt/resource lists → `start_app` (`inspectMain`) → evaluate → console/network/DOM → UI automation → `save_screenshot` (+ **selector clip**) → storage / cookies → tracing → `find_apps` / `attach_by_pid` → `get_logs` → screenshot → diagnose → **navigate / reload / pause / resume / cdp_command / evaluate_main** → attach → **discover** (real ports) → **all 6 resources** → stop → **post-stop `list_apps` cleanup**
 
-CI: [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) (Ubuntu + Xvfb).
+Unit tests also cover CDP monitor hang-regression (`test/monitor.test.mjs`).
+
+CI: [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) — **Ubuntu + Xvfb** and **Windows** (`npm test` on both). macOS is supported for local use but not in CI yet.
 
 ---
 
@@ -913,10 +915,13 @@ electron-mcp-server/
 ├── scripts/ensure-electron.mjs · fix-electron.cmd · fix-electron.ps1
 ├── src/index.ts · process-manager.ts · events.ts · log.ts
 ├── src/types/chrome-remote-interface.d.ts
-├── test/mcp-smoke.mjs · unit-helpers.test.mjs
+├── test/mcp-smoke.mjs · unit-helpers.test.mjs · probe.test.mjs · monitor.test.mjs
 ├── .github/workflows/ci.yml
+├── .npmignore
 └── README.md · LICENSE · package.json · tsconfig.json
 ```
+
+Published npm package includes `build/`, `assets/`, `README.md`, and `LICENSE` only (`files` + `.npmignore`). The `electron` dependency is required so `start_app` can spawn apps; use `attach` if you already have Electron installed separately.
 
 ---
 
@@ -924,7 +929,8 @@ electron-mcp-server/
 
 - Can launch local binaries, evaluate JS in app contexts, read page content, cookies, and storage — treat as a **powerful local debugger**.
 - Use `ELECTRON_MCP_ALLOWED_ROOTS` on shared machines.
-- `save_screenshot` / `stop_tracing` reject writes to sensitive locations (`~/.ssh`, `/etc`, `/proc`, `/usr`, `C:\Windows`, `C:\Program Files`, …). Set `ELECTRON_MCP_OUTPUT_ROOTS` to further restrict output to specific directories.
+- `save_screenshot` / `stop_tracing` reject writes under credential/system roots (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `/etc`, `/proc`, `/usr`, `/root`, `C:\Windows`, `C:\Program Files`, …), resolve symlinks on existing ancestors, and honour `ELECTRON_MCP_OUTPUT_ROOTS` when set.
+- Stopped sessions are removed from the managed map (no stale `list_apps` entries); in-progress CDP traces are abandoned on stop/exit.
 - Don’t expose stdio over an open network without auth.
 - Only `attach` / `attach_by_pid` to apps you trust (remote debugging is powerful).
 - In-memory console/network buffers and exported traces may contain secrets from the app under test.
@@ -943,7 +949,7 @@ electron-mcp-server/
 | `wait_for` / `click` fails | Selector not ready — wait first; screenshot to verify |
 | Element screenshot hangs / times out | Headless/GPU quirks — server retries without `fromSurface`; ensure selector is visible |
 | `set_cookie` fails on `file://` | Pass an `http(s)` `url`/`domain` |
-| `evaluate_main` “No main/node target” | Restart with `inspectMain: true` or pass `targetId` |
+| `evaluate_main` “No main/node target” | Restart with `inspectMain: true` (pinned `--inspect` port) or pass `targetId` from `list_targets` |
 | `attach_by_pid` can’t resolve port | App must be started with `--remote-debugging-port`; check `find_apps` |
 | `start_app` path rejected | Outside `ELECTRON_MCP_ALLOWED_ROOTS` |
 | `node build/index.js` “does nothing” | Waiting on MCP stdio — use Cursor config |

@@ -8,6 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "fs";
 import os from "os";
 import path from "path";
 import http from "node:http";
@@ -39,7 +40,6 @@ import {
   validateOutputPath,
   isPathInside,
   waitForCondition,
-  navigatePage,
 } from "../build/process-manager.js";
 
 void _classify;
@@ -852,6 +852,32 @@ test("isPathInside rejects sibling-prefix attacks", () => {
   assert.equal(isPathInside(root, inside), true);
   assert.equal(isPathInside(root, root), true);
   assert.equal(isPathInside(root, sibling), false);
+});
+
+test("validateOutputPath follows symlink ancestors into blocked roots", () => {
+  if (isWin) return; // symlink privileges vary on Windows CI runners
+  const prev = setEnv(undefined);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-out-"));
+  const link = path.join(tmp, "escape");
+  try {
+    fs.symlinkSync("/etc", link);
+    assert.throws(
+      () => validateOutputPath(path.join(link, "passwd.png")),
+      /sensitive location/i
+    );
+  } finally {
+    try {
+      fs.unlinkSync(link);
+    } catch {
+      // ignore
+    }
+    try {
+      fs.rmdirSync(tmp);
+    } catch {
+      // ignore
+    }
+    restoreEnv(prev);
+  }
 });
 
 test("validateOutputPath respects ELECTRON_MCP_OUTPUT_ROOTS allowlist", () => {
