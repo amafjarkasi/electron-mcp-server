@@ -1,0 +1,69 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Git tag to publish (must match package.json version, e.g. v1.6.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ELECTRON_MCP_NO_SANDBOX: "1"
+      CI: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm install --foreground-scripts
+
+      - name: Ensure Electron binary
+        run: npm run ensure-electron
+
+      - name: Typecheck + pack surface
+        run: |
+          npm run typecheck
+          npm run pack:check
+
+      - name: Verify tag matches package.json version
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          EXPECTED="v${PKG_VERSION}"
+          if [[ "$TAG" != "$EXPECTED" ]]; then
+            echo "Tag '$TAG' does not match package.json version '$EXPECTED'"
+            exit 1
+          fi
+          echo "Publishing electron-debug-mcp@${PKG_VERSION} (tag ${TAG})"
+
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
