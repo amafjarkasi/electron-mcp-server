@@ -7,8 +7,12 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     env:
       ELECTRON_MCP_NO_SANDBOX: "1"
       CI: "true"
@@ -29,7 +33,13 @@ jobs:
       - name: Ensure Electron binary
         run: npm run ensure-electron
 
-      - name: Run tests under Xvfb
+      - name: Run tests (Linux / Xvfb)
+        if: runner.os == 'Linux'
         uses: coactions/setup-xvfb@v1
         with:
           run: npm test
+
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        run: npm test
+        shell: bash

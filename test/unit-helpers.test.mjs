@@ -8,6 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "fs";
 import os from "os";
 import path from "path";
 import http from "node:http";
@@ -37,8 +38,8 @@ import {
   setConsoleLiveLogging,
   updateCDPTargets,
   validateOutputPath,
+  isPathInside,
   waitForCondition,
-  navigatePage,
 } from "../build/process-manager.js";
 
 void _classify;
@@ -819,6 +820,62 @@ test("validateOutputPath blocks the home .ssh directory", () => {
       /sensitive location/i
     );
   } finally {
+    restoreEnv(prev);
+  }
+});
+
+test("validateOutputPath blocks credential stores under home", () => {
+  const prev = setEnv(undefined);
+  try {
+    const home = os.homedir();
+    for (const rel of [".aws/credentials", ".gnupg/pubring.kbx", ".kube/config", ".docker/config.json"]) {
+      assert.throws(
+        () => validateOutputPath(path.join(home, rel)),
+        /sensitive location/i,
+        `expected ${rel} to be blocked`
+      );
+    }
+  } finally {
+    restoreEnv(prev);
+  }
+});
+
+test("validateOutputPath rejects empty paths", () => {
+  assert.throws(() => validateOutputPath(""), /non-empty/i);
+  assert.throws(() => validateOutputPath("   "), /non-empty/i);
+});
+
+test("isPathInside rejects sibling-prefix attacks", () => {
+  const root = isWin ? "C:\\tmp\\out" : "/tmp/out";
+  const inside = isWin ? "C:\\tmp\\out\\a.png" : "/tmp/out/a.png";
+  const sibling = isWin ? "C:\\tmp\\out-evil\\x.png" : "/tmp/out-evil/x.png";
+  assert.equal(isPathInside(root, inside), true);
+  assert.equal(isPathInside(root, root), true);
+  assert.equal(isPathInside(root, sibling), false);
+});
+
+test("validateOutputPath follows symlink ancestors into blocked roots", () => {
+  if (isWin) return; // symlink privileges vary on Windows CI runners
+  const prev = setEnv(undefined);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-out-"));
+  const link = path.join(tmp, "escape");
+  try {
+    fs.symlinkSync("/etc", link);
+    assert.throws(
+      () => validateOutputPath(path.join(link, "passwd.png")),
+      /sensitive location/i
+    );
+  } finally {
+    try {
+      fs.unlinkSync(link);
+    } catch {
+      // ignore
+    }
+    try {
+      fs.rmdirSync(tmp);
+    } catch {
+      // ignore
+    }
     restoreEnv(prev);
   }
 });

@@ -1,0 +1,30 @@
+# Source & tooling (published package uses build/ via package.json "files")
+src/
+test/
+fixtures/
+examples/
+scripts/
+.github/
+*.ts
+!build/**
+
+# Local / generated
+node_modules/
+coverage/
+*.log
+*.tgz
+.DS_Store
+.env
+.env.*
+build/smoke-*
+build/*.png
+build/*.json
+!build/**/*.js
+!build/**/*.d.ts
+!build/**/*.js.map
+
+# Editor / agent
+.cursor/
+.vscode/
+*.swp
+*~

@@ -1,10 +1,18 @@
 {
   "name": "electron-debug-mcp",
   "version": "1.5.0",
+  "description": "MCP server for launching and debugging Electron apps via Chrome DevTools Protocol",
   "type": "module",
+  "main": "./build/index.js",
   "bin": {
     "electron-debug-mcp": "./build/index.js"
   },
+  "files": [
+    "build/",
+    "assets/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "ensure-electron": "node scripts/ensure-electron.mjs",
     "fix-electron": "node scripts/ensure-electron.mjs",
@@ -15,7 +23,7 @@
     "typecheck": "tsc --noEmit",
     "pretest": "npm run ensure-electron",
     "test": "npm run build && npm run test:unit && npm run test:smoke",
-    "test:unit": "node --test test/unit-helpers.test.mjs test/probe.test.mjs",
+    "test:unit": "node --test test/unit-helpers.test.mjs test/probe.test.mjs test/monitor.test.mjs",
     "test:smoke": "node test/mcp-smoke.mjs"
   },
   "keywords": [
@@ -23,11 +31,20 @@
     "debug",
     "mcp",
     "model-context-protocol",
-    "chrome-devtools-protocol"
+    "chrome-devtools-protocol",
+    "devtools",
+    "cursor"
   ],
-  "author": "",
+  "author": "amafjarkasi",
   "license": "ISC",
-  "description": "MCP server for launching and debugging Electron apps via Chrome DevTools Protocol",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amafjarkasi/electron-mcp-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/amafjarkasi/electron-mcp-server/issues"
+  },
+  "homepage": "https://github.com/amafjarkasi/electron-mcp-server#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.1.0",
     "chrome-remote-interface": "^0.33.0",
