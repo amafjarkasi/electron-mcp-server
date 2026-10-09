@@ -290,6 +290,20 @@ async function main() {
       "diff_screenshot",
       "get_audit_issues",
       "find_installed_apps",
+      // v1.7
+      "start_coverage",
+      "stop_coverage",
+      "set_file_input",
+      "emulate",
+      "start_screencast",
+      "stop_screencast",
+      "set_breakpoint",
+      "remove_breakpoint",
+      "resolve_stack",
+      "perf_audit",
+      "capture_mhtml",
+      "virtual_clock",
+      "webcontents_topology",
     ];
     const tools = await client.request("tools/list");
     const names = new Set((tools.tools ?? []).map((t) => t.name));
@@ -320,13 +334,14 @@ async function main() {
       "find_renderer_exception",
       "ui_smoke_check",
       "attach_and_screenshot",
+      "vision_then_act",
     ]) {
       assert(promptNames.has(required), `missing prompt ${required}`);
     }
     // Allow additive prompts but never drop required ones.
     assert(
-      promptNames.size >= 4,
-      `expected at least 4 prompts, got ${promptNames.size}`
+      promptNames.size >= 5,
+      `expected at least 5 prompts, got ${promptNames.size}`
     );
     pass(`prompts/list (${promptNames.size})`);
 
@@ -735,6 +750,86 @@ async function main() {
     );
     pass("diagnose");
 
+    // Pause/resume before creative tools — virtual_clock / screencast can leave
+    // the Debugger session in a state where pause never emits Debugger.paused.
+    const pauseResult = await client.request("tools/call", {
+      name: "pause",
+      arguments: { processId },
+    });
+    assert(!pauseResult.isError, `pause error: ${pauseResult.content?.[0]?.text}`);
+    pass("pause");
+
+    const resumeResult = await client.request("tools/call", {
+      name: "resume",
+      arguments: { processId },
+    });
+    assert(!resumeResult.isError, `resume error: ${resumeResult.content?.[0]?.text}`);
+    pass("resume");
+
+    // Navigate/reload before creative soft tools — virtual_clock can leave the
+    // renderer unable to complete a subsequent file:// navigation in CI.
+    const pageBeforeNav = await client.request("tools/call", {
+      name: "page_info",
+      arguments: { processId },
+    });
+    assert(!pageBeforeNav.isError, `page_info before navigate: ${pageBeforeNav.content?.[0]?.text}`);
+    const beforeNav = parseToolText(pageBeforeNav);
+    const originalUrl = beforeNav.url;
+    assert(originalUrl, `page_info missing url: ${JSON.stringify(beforeNav)}`);
+
+    const navAway = await client.request("tools/call", {
+      name: "navigate",
+      arguments: {
+        processId,
+        url: "about:blank",
+        waitUntilLoad: true,
+        timeoutMs: 15000,
+      },
+    });
+    assert(!navAway.isError, `navigate about:blank error: ${navAway.content?.[0]?.text}`);
+    pass("navigate (about:blank)");
+
+    const navBack = await client.request("tools/call", {
+      name: "navigate",
+      arguments: {
+        processId,
+        url: originalUrl,
+        waitUntilLoad: true,
+        timeoutMs: 15000,
+      },
+    });
+    assert(!navBack.isError, `navigate back error: ${navBack.content?.[0]?.text}`);
+    pass("navigate (restore)");
+
+    const reloadResult = await client.request("tools/call", {
+      name: "reload",
+      arguments: { processId, ignoreCache: false },
+    });
+    assert(!reloadResult.isError, `reload error: ${reloadResult.content?.[0]?.text}`);
+    const reloaded = parseToolText(reloadResult);
+    assert(
+      Array.isArray(reloaded.reloaded) && reloaded.reloaded.length > 0,
+      `reload returned no targets: ${JSON.stringify(reloaded)}`
+    );
+    pass("reload");
+
+    const cdpResultEarly = await client.request("tools/call", {
+      name: "cdp_command",
+      arguments: {
+        processId,
+        method: "Runtime.evaluate",
+        params: { expression: "1+2", returnByValue: true },
+      },
+    });
+    assert(!cdpResultEarly.isError, `cdp_command error: ${cdpResultEarly.content?.[0]?.text}`);
+    const cdpEarly = parseToolText(cdpResultEarly);
+    const cdpEarlyValue = cdpEarly?.result?.result?.value ?? cdpEarly?.result?.value;
+    assert(
+      cdpEarlyValue === 3,
+      `cdp_command unexpected value: ${JSON.stringify(cdpEarly)}`
+    );
+    pass("cdp_command");
+
     // --- v1.6 creative power tools (soft-skip heavy/optional CDP where flaky) ---
     const soft = async (label, fn) => {
       try {
@@ -915,6 +1010,145 @@ async function main() {
       }
     });
 
+    // --- v1.7 creative tools (soft) ---
+    await soft("start/stop_coverage", async () => {
+      const start = await client.request("tools/call", {
+        name: "start_coverage",
+        arguments: { processId },
+      });
+      assert(!start.isError, `start_coverage: ${start.content?.[0]?.text}`);
+      const stop = await client.request("tools/call", {
+        name: "stop_coverage",
+        arguments: { processId },
+      });
+      assert(!stop.isError, `stop_coverage: ${stop.content?.[0]?.text}`);
+      pass("start/stop_coverage");
+    });
+
+    await soft("emulate", async () => {
+      const emu = await client.request("tools/call", {
+        name: "emulate",
+        arguments: {
+          processId,
+          metrics: { width: 800, height: 600, deviceScaleFactor: 1, mobile: false },
+        },
+      });
+      assert(!emu.isError, `emulate: ${emu.content?.[0]?.text}`);
+      await client.request("tools/call", {
+        name: "emulate",
+        arguments: { processId, clear: true },
+      });
+      pass("emulate");
+    });
+
+    await soft("start/stop_screencast", async () => {
+      let started = false;
+      try {
+        const start = await client.request("tools/call", {
+          name: "start_screencast",
+          arguments: { processId, maxFrames: 2, everyNthFrame: 1 },
+        });
+        assert(!start.isError, `start_screencast: ${start.content?.[0]?.text}`);
+        started = true;
+        await new Promise((r) => setTimeout(r, 200));
+        const stop = await client.request("tools/call", {
+          name: "stop_screencast",
+          arguments: { processId },
+        });
+        started = false;
+        assert(!stop.isError, `stop_screencast: ${stop.content?.[0]?.text}`);
+        pass("start/stop_screencast");
+      } finally {
+        if (started) {
+          try {
+            await client.request(
+              "tools/call",
+              { name: "stop_screencast", arguments: { processId } },
+              15_000,
+            );
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    });
+
+    await soft("perf_audit", async () => {
+      const audit = await client.request("tools/call", {
+        name: "perf_audit",
+        arguments: { processId },
+      });
+      assert(!audit.isError, `perf_audit: ${audit.content?.[0]?.text}`);
+      const data = parseToolText(audit);
+      assert(data.metrics && typeof data.metrics === "object", "perf_audit missing metrics");
+      pass("perf_audit");
+    });
+
+    await soft("capture_mhtml", async () => {
+      let mhtmlPath;
+      try {
+        const mhtml = await client.request("tools/call", {
+          name: "capture_mhtml",
+          arguments: { processId },
+        });
+        assert(!mhtml.isError, `capture_mhtml: ${mhtml.content?.[0]?.text}`);
+        const data = parseToolText(mhtml);
+        assert(data.path && data.bytes > 0, `capture_mhtml missing file: ${JSON.stringify(data)}`);
+        mhtmlPath = data.path;
+        pass("capture_mhtml");
+      } finally {
+        if (mhtmlPath) {
+          try {
+            fs.unlinkSync(mhtmlPath);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    });
+
+    await soft("virtual_clock", async () => {
+      const clock = await client.request("tools/call", {
+        name: "virtual_clock",
+        arguments: { processId, policy: "advance", budget: 50 },
+      });
+      assert(!clock.isError, `virtual_clock: ${clock.content?.[0]?.text}`);
+      // ignoreCache reload — virtual time can otherwise stick across navigations in CI.
+      const reloadAfterClock = await client.request("tools/call", {
+        name: "reload",
+        arguments: { processId, ignoreCache: true },
+      });
+      assert(
+        !reloadAfterClock.isError,
+        `reload after virtual_clock: ${reloadAfterClock.content?.[0]?.text}`,
+      );
+      pass("virtual_clock");
+    });
+
+    await soft("webcontents_topology", async () => {
+      const topo = await client.request("tools/call", {
+        name: "webcontents_topology",
+        arguments: { processId },
+      });
+      assert(!topo.isError, `webcontents_topology: ${topo.content?.[0]?.text}`);
+      const data = parseToolText(topo);
+      assert(Array.isArray(data.cdpTargets), "webcontents_topology missing cdpTargets");
+      pass("webcontents_topology");
+    });
+
+    await soft("resolve_stack", async () => {
+      const stack = await client.request("tools/call", {
+        name: "resolve_stack",
+        arguments: {
+          processId,
+          frames: [{ url: "file:///nonexistent.js", lineNumber: 0 }],
+          contextLines: 1,
+        },
+      });
+      assert(!stack.isError, `resolve_stack: ${stack.content?.[0]?.text}`);
+      pass("resolve_stack");
+    });
+
     // Soft: get_response_body needs a finished requestId — use latest if any.
     const netForBody = await client.request("tools/call", {
       name: "get_network_log",
@@ -937,82 +1171,6 @@ async function main() {
     } else {
       pass("get_response_body soft-skip (no requestId)");
     }
-
-    const pageBeforeNav = await client.request("tools/call", {
-      name: "page_info",
-      arguments: { processId },
-    });
-    assert(!pageBeforeNav.isError, `page_info before navigate: ${pageBeforeNav.content?.[0]?.text}`);
-    const beforeNav = parseToolText(pageBeforeNav);
-    const originalUrl = beforeNav.url;
-    assert(originalUrl, `page_info missing url: ${JSON.stringify(beforeNav)}`);
-
-    const navAway = await client.request("tools/call", {
-      name: "navigate",
-      arguments: {
-        processId,
-        url: "about:blank",
-        waitUntilLoad: true,
-        timeoutMs: 10000,
-      },
-    });
-    assert(!navAway.isError, `navigate about:blank error: ${navAway.content?.[0]?.text}`);
-    pass("navigate (about:blank)");
-
-    const navBack = await client.request("tools/call", {
-      name: "navigate",
-      arguments: {
-        processId,
-        url: originalUrl,
-        waitUntilLoad: true,
-        timeoutMs: 10000,
-      },
-    });
-    assert(!navBack.isError, `navigate back error: ${navBack.content?.[0]?.text}`);
-    pass("navigate (restore)");
-
-    const reloadResult = await client.request("tools/call", {
-      name: "reload",
-      arguments: { processId, ignoreCache: false },
-    });
-    assert(!reloadResult.isError, `reload error: ${reloadResult.content?.[0]?.text}`);
-    const reloaded = parseToolText(reloadResult);
-    assert(
-      Array.isArray(reloaded.reloaded) && reloaded.reloaded.length > 0,
-      `reload returned no targets: ${JSON.stringify(reloaded)}`
-    );
-    pass("reload");
-
-    const pauseResult = await client.request("tools/call", {
-      name: "pause",
-      arguments: { processId },
-    });
-    assert(!pauseResult.isError, `pause error: ${pauseResult.content?.[0]?.text}`);
-    pass("pause");
-
-    const resumeResult = await client.request("tools/call", {
-      name: "resume",
-      arguments: { processId },
-    });
-    assert(!resumeResult.isError, `resume error: ${resumeResult.content?.[0]?.text}`);
-    pass("resume");
-
-    const cdpResult = await client.request("tools/call", {
-      name: "cdp_command",
-      arguments: {
-        processId,
-        method: "Runtime.evaluate",
-        params: { expression: "1+2", returnByValue: true },
-      },
-    });
-    assert(!cdpResult.isError, `cdp_command error: ${cdpResult.content?.[0]?.text}`);
-    const cdp = parseToolText(cdpResult);
-    const cdpValue = cdp?.result?.result?.value ?? cdp?.result?.value;
-    assert(
-      cdpValue === 3,
-      `cdp_command unexpected value: ${JSON.stringify(cdp)}`
-    );
-    pass("cdp_command");
 
     // start_app used inspectMain:true — main/node target must be evaluable.
     let mainEval;
