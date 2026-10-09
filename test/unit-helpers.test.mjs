@@ -19,6 +19,7 @@ import {
   clearProcessBuffers,
   classifyTargetRole as _classify, // re-import guard (unused, ensures module loads)
   createProcessRecord,
+  executeCDPCommand,
   getAllProcesses,
   getAllowedRoots,
   getElectronDebugInfo,
@@ -34,6 +35,7 @@ import {
   pickTargetByRole,
   pushCapped,
   setConsoleLiveLogging,
+  updateCDPTargets,
   validateOutputPath,
   waitForCondition,
   navigatePage,
@@ -1136,4 +1138,86 @@ test("clampClipToViewport reports a sub-pixel crop rather than rounding it away"
   const top = clampClipToViewport({ x: 10, y: -0.25, width: 100, height: 50, ...VIEWPORT });
   assert.equal(top.y, 0);
   assert.equal(top.truncated, true);
+});
+
+test("updateCDPTargets deduplicates concurrent in-flight requests", async () => {
+  let fetchCount = 0;
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    fetchCount++;
+    await new Promise((r) => setTimeout(r, 50));
+    return {
+      ok: true,
+      json: async () => [
+        { id: "t1", type: "page", title: "Test", url: "http://localhost" },
+      ],
+    };
+  };
+
+  try {
+    const proc = createProcessRecord({
+      id: "dedup-test",
+      attached: true,
+      name: "Dedup Test",
+      status: "running",
+      debugPort: 9222,
+      startTime: new Date(),
+      appPath: "/tmp",
+    });
+
+    const [t1, t2] = await Promise.all([
+      updateCDPTargets(proc, true),
+      updateCDPTargets(proc, true),
+    ]);
+
+    assert.equal(fetchCount, 1);
+    assert.deepEqual(t1, t2);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("executeCDPCommand closes old client on reconnect retry", async () => {
+  let closed = false;
+  const mockClient = {
+    send: async () => {
+      throw new Error("CDP socket disconnected");
+    },
+    close: async () => {
+      closed = true;
+    },
+  };
+
+  const proc = createProcessRecord({
+    id: "reconnect-test",
+    attached: true,
+    name: "Reconnect Test",
+    status: "running",
+    debugPort: 9222,
+    startTime: new Date(),
+    appPath: "/tmp",
+  });
+
+  proc.targets = [
+    {
+      id: "target-1",
+      type: "page",
+      title: "Target 1",
+      url: "http://localhost",
+    },
+  ];
+  proc.lastTargetUpdate = new Date();
+  proc.monitorClients.set("target-1", mockClient);
+
+  try {
+    await executeCDPCommand(proc, "target-1", "Runtime.evaluate", {});
+  } catch {
+    // Expected to fail on reconnect as well without a real CDP endpoint
+  }
+
+  assert.equal(
+    closed,
+    true,
+    "Expected old monitor client to be closed on reconnect error",
+  );
 });

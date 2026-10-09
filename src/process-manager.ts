@@ -75,6 +75,8 @@ export interface ElectronProcess {
 	 * re-pays its timeout — on every call that refreshes monitoring.
 	 */
 	unmonitorableTargets: Set<string>;
+	/** Targets currently being attached for monitoring (prevents parallel attach races). */
+	inFlightMonitorTargets: Set<string>;
 	targets?: CDPTarget[];
 	lastTargetUpdate?: Date;
 }
@@ -444,6 +446,7 @@ export function createProcessRecord(
 		| "networkEntries"
 		| "monitorClients"
 		| "unmonitorableTargets"
+		| "inFlightMonitorTargets"
 		| "logs"
 	> & {
 		logs?: string[];
@@ -456,6 +459,7 @@ export function createProcessRecord(
 		networkEntries: [],
 		monitorClients: new Map(),
 		unmonitorableTargets: new Set(),
+		inFlightMonitorTargets: new Set(),
 	};
 }
 
@@ -757,6 +761,8 @@ export async function stopElectronApp(id: string): Promise<boolean> {
 	return true;
 }
 
+const inFlightTargetUpdates = new Map<string, Promise<CDPTarget[]>>();
+
 export async function updateCDPTargets(
   electronProcess: ElectronProcess,
   force = false,
@@ -776,26 +782,40 @@ export async function updateCDPTargets(
     return electronProcess.targets;
   }
 
-  const response = await fetch(
-    `http://127.0.0.1:${electronProcess.debugPort}/json/list`
-  );
-  if (!response.ok) {
-    throw new Error(`Failed to get targets: ${response.statusText}`);
+  const existing = inFlightTargetUpdates.get(electronProcess.id);
+  if (existing) {
+    return existing;
   }
 
-  const targets = (await response.json()) as CDPTarget[];
-  const prev = electronProcess.targets?.map((t) => t.id).join(",") ?? "";
-  electronProcess.targets = targets;
-  electronProcess.lastTargetUpdate = new Date();
-  const next = targets.map((t) => t.id).join(",");
-  if (prev !== next) {
-    processEvents.emitEvent({
-      type: "targets_changed",
-      processId: electronProcess.id,
-      targetCount: targets.length,
-    });
-  }
-  return targets;
+  const updatePromise = (async () => {
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${electronProcess.debugPort}/json/list`
+      );
+      if (!response.ok) {
+        throw new Error(`Failed to get targets: ${response.statusText}`);
+      }
+
+      const targets = (await response.json()) as CDPTarget[];
+      const prev = electronProcess.targets?.map((t) => t.id).join(",") ?? "";
+      electronProcess.targets = targets;
+      electronProcess.lastTargetUpdate = new Date();
+      const next = targets.map((t) => t.id).join(",");
+      if (prev !== next) {
+        processEvents.emitEvent({
+          type: "targets_changed",
+          processId: electronProcess.id,
+          targetCount: targets.length,
+        });
+      }
+      return targets;
+    } finally {
+      inFlightTargetUpdates.delete(electronProcess.id);
+    }
+  })();
+
+  inFlightTargetUpdates.set(electronProcess.id, updatePromise);
+  return updatePromise;
 }
 
 function wireMonitorEvents(
@@ -804,156 +824,199 @@ function wireMonitorEvents(
 	client: CDP.Client,
 ): void {
 	client.on("Runtime.consoleAPICalled", (params) => {
-		const p = params as {
-			type?: string;
-			args?: Array<{ value?: unknown; description?: string; type?: string }>;
-		};
-		const text = (p.args ?? [])
-			.map((a) => {
-				if (a.value !== undefined) return String(a.value);
-				if (a.description) return a.description;
-				return a.type ?? "";
-			})
-			.join(" ");
-		const level = p.type ?? "log";
-		pushCapped(
-			electronProcess.consoleMessages,
-			{
-				timestamp: new Date().toISOString(),
+		try {
+			const p = (params ?? {}) as {
+				type?: string;
+				args?: Array<{ value?: unknown; description?: string; type?: string }>;
+			};
+			const text = (p.args ?? [])
+				.map((a) => {
+					if (!a) return "";
+					if (a.value !== undefined) return String(a.value);
+					if (a.description) return a.description;
+					return a.type ?? "";
+				})
+				.join(" ");
+			const level = p.type ?? "log";
+			pushCapped(
+				electronProcess.consoleMessages,
+				{
+					timestamp: new Date().toISOString(),
+					targetId,
+					level,
+					text,
+					source: "console",
+				},
+				MAX_CONSOLE,
+			);
+			processEvents.emitEvent({
+				type: "console",
+				processId: electronProcess.id,
 				targetId,
 				level,
 				text,
-				source: "console",
-			},
-			MAX_CONSOLE,
-		);
-		processEvents.emitEvent({
-			type: "console",
-			processId: electronProcess.id,
-			targetId,
-			level,
-			text,
-		});
+			});
+		} catch (err) {
+			log.warn(
+				`[${electronProcess.id}] Error handling Runtime.consoleAPICalled:`,
+				err,
+			);
+		}
 	});
 
 	client.on("Runtime.exceptionThrown", (params) => {
-		const p = params as {
-			exceptionDetails?: {
-				text?: string;
-				exception?: { description?: string };
+		try {
+			const p = (params ?? {}) as {
+				exceptionDetails?: {
+					text?: string;
+					exception?: { description?: string };
+				};
 			};
-		};
-		const text =
-			p.exceptionDetails?.exception?.description ||
-			p.exceptionDetails?.text ||
-			"exception";
-		pushCapped(
-			electronProcess.consoleMessages,
-			{
-				timestamp: new Date().toISOString(),
+			const text =
+				p.exceptionDetails?.exception?.description ||
+				p.exceptionDetails?.text ||
+				"exception";
+			pushCapped(
+				electronProcess.consoleMessages,
+				{
+					timestamp: new Date().toISOString(),
+					targetId,
+					level: "error",
+					text,
+					source: "exception",
+				},
+				MAX_CONSOLE,
+			);
+			processEvents.emitEvent({
+				type: "console",
+				processId: electronProcess.id,
 				targetId,
 				level: "error",
 				text,
-				source: "exception",
-			},
-			MAX_CONSOLE,
-		);
-		processEvents.emitEvent({
-			type: "console",
-			processId: electronProcess.id,
-			targetId,
-			level: "error",
-			text,
-		});
+			});
+		} catch (err) {
+			log.warn(
+				`[${electronProcess.id}] Error handling Runtime.exceptionThrown:`,
+				err,
+			);
+		}
 	});
 
 	client.on("Log.entryAdded", (params) => {
-		const p = params as {
-			entry?: { level?: string; text?: string };
-		};
-		const level = p.entry?.level ?? "log";
-		const text = p.entry?.text ?? "";
-		pushCapped(
-			electronProcess.consoleMessages,
-			{
-				timestamp: new Date().toISOString(),
+		try {
+			const p = (params ?? {}) as {
+				entry?: { level?: string; text?: string };
+			};
+			const level = p.entry?.level ?? "log";
+			const text = p.entry?.text ?? "";
+			pushCapped(
+				electronProcess.consoleMessages,
+				{
+					timestamp: new Date().toISOString(),
+					targetId,
+					level,
+					text,
+					source: "log",
+				},
+				MAX_CONSOLE,
+			);
+			processEvents.emitEvent({
+				type: "console",
+				processId: electronProcess.id,
 				targetId,
 				level,
 				text,
-				source: "log",
-			},
-			MAX_CONSOLE,
-		);
-		processEvents.emitEvent({
-			type: "console",
-			processId: electronProcess.id,
-			targetId,
-			level,
-			text,
-		});
+			});
+		} catch (err) {
+			log.warn(`[${electronProcess.id}] Error handling Log.entryAdded:`, err);
+		}
 	});
 
 	client.on("Network.requestWillBeSent", (params) => {
-		const p = params as {
-			requestId: string;
-			request?: { url?: string; method?: string };
-			type?: string;
-		};
-		pushCapped(
-			electronProcess.networkEntries,
-			{
-				timestamp: new Date().toISOString(),
-				targetId,
-				requestId: p.requestId,
-				method: p.request?.method,
-				url: p.request?.url,
-				type: p.type,
-				event: "request",
-			},
-			MAX_NETWORK,
-		);
+		try {
+			const p = (params ?? {}) as {
+				requestId?: string;
+				request?: { url?: string; method?: string };
+				type?: string;
+			};
+			if (!p.requestId) return;
+			pushCapped(
+				electronProcess.networkEntries,
+				{
+					timestamp: new Date().toISOString(),
+					targetId,
+					requestId: p.requestId,
+					method: p.request?.method,
+					url: p.request?.url,
+					type: p.type,
+					event: "request",
+				},
+				MAX_NETWORK,
+			);
+		} catch (err) {
+			log.warn(
+				`[${electronProcess.id}] Error handling Network.requestWillBeSent:`,
+				err,
+			);
+		}
 	});
 
 	client.on("Network.responseReceived", (params) => {
-		const p = params as {
-			requestId: string;
-			response?: { url?: string; status?: number; mimeType?: string };
-			type?: string;
-		};
-		pushCapped(
-			electronProcess.networkEntries,
-			{
-				timestamp: new Date().toISOString(),
-				targetId,
-				requestId: p.requestId,
-				url: p.response?.url,
-				status: p.response?.status,
-				mimeType: p.response?.mimeType,
-				type: p.type,
-				event: "response",
-			},
-			MAX_NETWORK,
-		);
+		try {
+			const p = (params ?? {}) as {
+				requestId?: string;
+				response?: { url?: string; status?: number; mimeType?: string };
+				type?: string;
+			};
+			if (!p.requestId) return;
+			pushCapped(
+				electronProcess.networkEntries,
+				{
+					timestamp: new Date().toISOString(),
+					targetId,
+					requestId: p.requestId,
+					url: p.response?.url,
+					status: p.response?.status,
+					mimeType: p.response?.mimeType,
+					type: p.type,
+					event: "response",
+				},
+				MAX_NETWORK,
+			);
+		} catch (err) {
+			log.warn(
+				`[${electronProcess.id}] Error handling Network.responseReceived:`,
+				err,
+			);
+		}
 	});
 
 	client.on("Network.loadingFailed", (params) => {
-		const p = params as {
-			requestId: string;
-			errorText?: string;
-			type?: string;
-		};
-		pushCapped(
-			electronProcess.networkEntries,
-			{
-				timestamp: new Date().toISOString(),
-				targetId,
-				requestId: p.requestId,
-				type: p.type,
-				event: "failed",
-				errorText: p.errorText,
-			},
-			MAX_NETWORK,
-		);
+		try {
+			const p = (params ?? {}) as {
+				requestId?: string;
+				errorText?: string;
+				type?: string;
+			};
+			if (!p.requestId) return;
+			pushCapped(
+				electronProcess.networkEntries,
+				{
+					timestamp: new Date().toISOString(),
+					targetId,
+					requestId: p.requestId,
+					type: p.type,
+					event: "failed",
+					errorText: p.errorText,
+				},
+				MAX_NETWORK,
+			);
+		} catch (err) {
+			log.warn(
+				`[${electronProcess.id}] Error handling Network.loadingFailed:`,
+				err,
+			);
+		}
 	});
 }
 
@@ -990,7 +1053,8 @@ export async function ensureMonitoring(
 	for (const target of targets) {
 		if (
 			electronProcess.monitorClients.has(target.id) ||
-			electronProcess.unmonitorableTargets.has(target.id)
+			electronProcess.unmonitorableTargets.has(target.id) ||
+			electronProcess.inFlightMonitorTargets.has(target.id)
 		) {
 			continue;
 		}
@@ -998,6 +1062,7 @@ export async function ensureMonitoring(
 			continue;
 		}
 
+		electronProcess.inFlightMonitorTargets.add(target.id);
 		try {
 			// `withTimeout` races the connection, it cannot cancel it. If the
 			// deadline wins, this promise may still resolve later with a live
@@ -1079,6 +1144,8 @@ export async function ensureMonitoring(
 				`[${electronProcess.id}] Could not monitor target ${target.id}:`,
 				err,
 			);
+		} finally {
+			electronProcess.inFlightMonitorTargets.delete(target.id);
 		}
 	}
 }
@@ -1150,8 +1217,18 @@ export async function executeCDPCommand(
 			`[${electronProcess.id}] CDP ${method} failed, reconnecting:`,
 			err,
 		);
+		const oldMonitor = electronProcess.monitorClients.get(targetId);
 		electronProcess.monitorClients.delete(targetId);
+		if (oldMonitor) {
+			void closeClient(oldMonitor);
+		}
 		if (electronProcess.cdpTargetId === targetId) {
+			if (
+				electronProcess.cdpClient &&
+				electronProcess.cdpClient !== oldMonitor
+			) {
+				void closeClient(electronProcess.cdpClient);
+			}
 			electronProcess.cdpClient = undefined;
 			electronProcess.cdpTargetId = undefined;
 		}
@@ -1412,8 +1489,9 @@ export async function captureScreenshot(
 				clip ? 10000 : 8000,
 				`Page.captureScreenshot(fromSurface=${fromSurface})`,
 			)) as { data: string };
-		} catch (err: any) {
-			if (err && err.response && err.response.code === -32603) {
+		} catch (err: unknown) {
+			const cdpErr = err as { response?: { code?: number } } | null | undefined;
+			if (cdpErr?.response?.code === -32603) {
 				// CDP throws internal error instead of timeout. We should treat it as timeout to retry.
 				throw new Error(
 					`Page.captureScreenshot(fromSurface=${fromSurface}) timed out`,
@@ -1485,7 +1563,7 @@ export async function captureScreenshot(
 		await resetPageSocket();
 		// Final attempt: try whichever mode we haven't tried last. For a clipped
 		// capture that is `false`, which cannot honour the clip.
-		result = await tryCapture(clip ? false : true);
+		result = await tryCapture(!clip);
 		if (clip) clipApplied = false;
 	}
 
@@ -2146,10 +2224,11 @@ export async function waitForCondition(
 		}
 
 		if (options.consoleIncludes) {
+			const needle = options.consoleIncludes;
 			const hit = electronProcess.consoleMessages.some((m) =>
-				m.text.includes(options.consoleIncludes!),
+				m.text.includes(needle),
 			);
-			if (hit) matches.push(`console:${options.consoleIncludes}`);
+			if (hit) matches.push(`console:${needle}`);
 		}
 
 		let expectedCount = 0;
@@ -2648,13 +2727,15 @@ export function parseDebugPortFromCommand(command: string): number | undefined {
   const m = command.match(RE_DEBUG_PORT);
   if (!m) return undefined;
   const port = Number(m[1] || m[2]);
-  return Number.isFinite(port) ? port : undefined;}
+  return Number.isFinite(port) && port >= 1 && port <= 65535 ? port : undefined;
+}
 
 export function parseInspectPortFromCommand(command: string): number | undefined {
   const m = command.match(RE_INSPECT_PORT);
   if (!m) return undefined;
   const port = Number(m[1]);
-  return Number.isFinite(port) && port > 0 ? port : undefined;}
+  return Number.isFinite(port) && port >= 1 && port <= 65535 ? port : undefined;
+}
 
 async function listOsProcesses(): Promise<
 	Array<{ pid: number; command: string }>
