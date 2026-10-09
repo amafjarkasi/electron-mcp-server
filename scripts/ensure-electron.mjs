@@ -213,9 +213,11 @@ async function downloadElectron({ clearCache }) {
 
 async function main() {
   if (!fs.existsSync(electronDir)) {
-    throw new Error(
-      "electron package is missing. Run: npm install electron --foreground-scripts"
+    // electron is an optionalDependency — attach-only installs may omit it.
+    warn(
+      "electron package is missing (optional). Skipping binary ensure. For start_app run: npm install electron --foreground-scripts"
     );
+    process.exit(0);
   }
 
   const existing = resolveBinary();

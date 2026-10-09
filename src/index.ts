@@ -92,7 +92,7 @@ async function notifyLog(
 const server = new McpServer(
 	{
 		name: "electron-debug-mcp",
-		version: "1.5.0",
+		version: "1.5.1",
 	},
 	{
 		capabilities: {
@@ -102,10 +102,12 @@ const server = new McpServer(
 			"Electron Debug MCP controls and inspects Electron apps over Chrome DevTools Protocol.",
 			"Preferred workflow: start_app / attach / attach_by_pid / find_apps → diagnose → get_console_messages(level=error) → screenshot/save_screenshot → get_dom/evaluate.",
 			"Use wait_for (selector/hidden/enabled/count/text) before interacting with UI that may still be loading.",
-			"Use click/type_text/press_key/navigate for UI automation; evaluate_main for Electron main-process targets (start with inspectMain:true).",
-			"screenshot/save_screenshot accept selector to clip an element. Use get/set_cookies and get/set_storage for web state; start_tracing/stop_tracing for perf traces.",
+			"Use click/type_text/press_key/navigate/reload for UI automation.",
+			"For main-process JS use start_app({ inspectMain: true }) then evaluate_main — inspectMain opens a pinned --inspect port and merges the node target into list_targets.",
+			"screenshot/save_screenshot accept selector to clip an element. Use get/set_cookies and get/set_storage for web state; start_tracing/stop_tracing for perf traces; get_logs for stdout/stderr.",
 			"Enable set_console_live for streaming console events as MCP log notifications.",
 			"Console and network events are buffered automatically for monitored page targets.",
+			"stop_app removes the session from list_apps (owned processes are killed; attached sessions detach only). Do not retry tools against a stopped processId — start or attach again.",
 		].join(" "),
 	},
 );

@@ -36,6 +36,7 @@ import {
   pickTargetByRole,
   pushCapped,
   setConsoleLiveLogging,
+  stopElectronApp,
   updateCDPTargets,
   validateOutputPath,
   isPathInside,
@@ -938,6 +939,61 @@ test("validateOutputPath splits allowlist on both ';' and '|'", () => {
   } finally {
     restoreEnv(prev);
   }
+});
+
+// ===========================================================================
+// stopElectronApp — delete-on-stop + idempotent
+// ===========================================================================
+
+test("stopElectronApp removes an attached session from the managed map", async () => {
+  const id = `stop-attached-${Date.now()}`;
+  const proc = createProcessRecord({
+    id,
+    name: "attached-test",
+    status: "running",
+    attached: true,
+    debugPort: 19999,
+    startTime: new Date(0),
+    appPath: "attach://127.0.0.1:19999",
+  });
+  getAllProcesses().set(id, proc);
+  assert.ok(getProcess(id), "precondition: session registered");
+
+  const stopped = await stopElectronApp(id);
+  assert.equal(stopped, true);
+  assert.equal(getProcess(id), undefined, "session must be deleted on stop");
+  assert.ok(
+    !listProcesses().some((p) => p.id === id),
+    "listProcesses must not include stopped session"
+  );
+});
+
+test("stopElectronApp is idempotent when the session is already gone", async () => {
+  const missing = `already-gone-${Date.now()}`;
+  assert.equal(getProcess(missing), undefined);
+  const first = await stopElectronApp(missing);
+  const second = await stopElectronApp(missing);
+  assert.equal(first, true);
+  assert.equal(second, true);
+});
+
+test("stopElectronApp removes a stopped owned session without a live child", async () => {
+  const id = `stop-owned-${Date.now()}`;
+  const proc = createProcessRecord({
+    id,
+    name: "owned-test",
+    status: "stopped",
+    attached: false,
+    pid: undefined,
+    debugPort: 19998,
+    startTime: new Date(0),
+    appPath: "/tmp/app",
+  });
+  getAllProcesses().set(id, proc);
+
+  const stopped = await stopElectronApp(id);
+  assert.equal(stopped, true);
+  assert.equal(getProcess(id), undefined);
 });
 
 // ===========================================================================

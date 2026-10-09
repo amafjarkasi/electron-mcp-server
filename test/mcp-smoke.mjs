@@ -5,6 +5,7 @@
  */
 import { spawn } from "child_process";
 import net from "net";
+import os from "os";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
@@ -13,6 +14,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const serverEntry = path.join(root, "build", "index.js");
 const fixtureApp = path.join(root, "fixtures", "minimal-electron-app");
+const smokeOutDir = fs.mkdtempSync(path.join(os.tmpdir(), "electron-mcp-smoke-"));
 
 /**
  * Find a TCP port we can actually bind to. On Windows, Hyper-V/WSL/Docker
@@ -458,7 +460,7 @@ async function main() {
     assert(!liveResult.isError, `set_console_live error: ${liveResult.content?.[0]?.text}`);
     pass("set_console_live");
 
-    const savePath = path.join(root, "build", "smoke-screenshot.png");
+    const savePath = path.join(smokeOutDir, "smoke-screenshot.png");
     const saveResult = await client.request("tools/call", {
       name: "save_screenshot",
       arguments: { processId, path: savePath, format: "png" },
@@ -468,7 +470,7 @@ async function main() {
     assert(saved.path && fs.existsSync(saved.path), `screenshot file missing: ${JSON.stringify(saved)}`);
     pass("save_screenshot");
 
-    const clipPath = path.join(root, "build", "smoke-clip.png");
+    const clipPath = path.join(smokeOutDir, "smoke-clip.png");
     const clipResult = await client.request("tools/call", {
       name: "save_screenshot",
       arguments: {
@@ -538,7 +540,7 @@ async function main() {
     });
     assert(!traceStart.isError, `start_tracing error: ${traceStart.content?.[0]?.text}`);
     await new Promise((r) => setTimeout(r, 400));
-    const tracePath = path.join(root, "build", "smoke-trace.json");
+    const tracePath = path.join(smokeOutDir, "smoke-trace.json");
     const traceStop = await client.request("tools/call", {
       name: "stop_tracing",
       arguments: { processId, path: tracePath },
@@ -918,6 +920,12 @@ async function main() {
 
     if (external && !external.killed) {
       external.kill("SIGKILL");
+    }
+
+    try {
+      fs.rmSync(smokeOutDir, { recursive: true, force: true });
+    } catch {
+      // ignore
     }
 
     console.log("\nAll smoke tests passed.");

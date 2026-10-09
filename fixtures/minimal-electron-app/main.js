@@ -11,7 +11,8 @@ app.whenReady().then(() => {
   mainWindow = new BrowserWindow({
     width: 640,
     height: 480,
-    show: false,
+    // Show in CI so Page.captureScreenshot has a real surface under Xvfb / runners.
+    show: process.env.CI === "true",
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,

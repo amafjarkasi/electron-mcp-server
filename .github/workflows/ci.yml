@@ -10,9 +10,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       ELECTRON_MCP_NO_SANDBOX: "1"
       CI: "true"
@@ -24,7 +24,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
 
       - name: Install dependencies
@@ -33,13 +33,16 @@ jobs:
       - name: Ensure Electron binary
         run: npm run ensure-electron
 
+      - name: Pack dry-run (publish surface)
+        run: npm run pack:check
+
       - name: Run tests (Linux / Xvfb)
         if: runner.os == 'Linux'
         uses: coactions/setup-xvfb@v1
         with:
           run: npm test
 
-      - name: Run tests (Windows)
-        if: runner.os == 'Windows'
+      - name: Run tests (Windows / macOS)
+        if: runner.os != 'Linux'
         run: npm test
         shell: bash

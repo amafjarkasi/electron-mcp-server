@@ -23,7 +23,7 @@
   <img src="https://img.shields.io/badge/Electron-desktop_apps-2B2E3A?style=flat-square&logo=electron&logoColor=white" alt="Electron" />
   <img src="https://img.shields.io/badge/TypeScript-7.x-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TS" />
   <img src="https://img.shields.io/badge/Node-%3E%3D18-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node" />
-  <img src="https://img.shields.io/badge/version-1.5.0-blue?style=flat-square" alt="version" />
+  <img src="https://img.shields.io/badge/version-1.5.1-blue?style=flat-square" alt="version" />
   <img src="https://img.shields.io/badge/tests-unit_+_monitor_+_e2e_smoke-8B5CF6?style=flat-square" alt="tests" />
 </p>
 
@@ -78,7 +78,7 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 | 🧬 **Debug bridge** | Chrome DevTools Protocol (Runtime · Page · Network · Debugger · Input · Log · Tracing) |
 | 🚀 **App control** | Spawn Electron **or** attach by port / PID / process scan |
 | 📦 **Surface area** | **36 tools** · **6 resources** · **3 prompts** · logging + resource list-changed |
-| 🖥️ **Platforms** | Windows · macOS · Linux (CI: **Ubuntu + Xvfb** and **Windows**) |
+| 🖥️ **Platforms** | Windows · macOS · Linux (CI: **Ubuntu + Xvfb**, **Windows**, **macOS**) |
 | 📦 **Requires** | Node **≥ 18**, npm, one-time Electron binary download |
 | 🛡️ **Safety** | Optional `ELECTRON_MCP_ALLOWED_ROOTS` (app paths) · `ELECTRON_MCP_OUTPUT_ROOTS` (screenshot/trace output, plus built-in blocklist of sensitive locations); attach sessions detach-only on stop |
 | ✅ **Verify** | `npm test` → unit + full MCP↔Electron smoke |
@@ -86,12 +86,13 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 ### ✅ Status
 
 - 🟢 Ready for local agent-driven Electron debugging (stdio MCP ↔ CDP)
-- 🟢 **v1.5.0** — 36 tools · element screenshots · cookies/storage · tracing · attach-by-pid · `inspectMain` / `evaluate_main`
+- 🟢 **v1.5.1** — 36 tools · `inspectMain` / `evaluate_main` · session cleanup · Windows+macOS CI (see [CHANGELOG](./CHANGELOG.md))
 - 🟢 Session cleanup — stopped apps are removed from `list_apps`; CDP traces abandoned on stop/exit
 - 🟢 E2E smoke covers lifecycle, UI, resources, discover, and main-process eval (see [Testing](#-testing))
-- 🟢 CI: Ubuntu + Xvfb **and** Windows; local macOS supported
+- 🟢 CI: Ubuntu + Xvfb, Windows, and macOS (Node 22)
 - 🟢 Windows binary repair: `scripts/fix-electron.cmd` when npm blocks postinstall
 - 🟢 Built on TypeScript 7 (native Go compiler) — ~10x faster builds
+- 🟢 `electron` is optional — attach-only installs can use `npm install --omit=optional`
 
 ---
 
@@ -922,7 +923,9 @@ $env:ELECTRON_MCP_ALLOWED_ROOTS="D:\apps;D:\GH"
 | `npm test` | ensure + build + unit + smoke |
 | `npm run test:unit` | Unit tests (`unit-helpers`, `probe`, `monitor`) |
 | `npm run test:smoke` | Full MCP e2e vs fixture app |
-| `postinstall` | Runs ensure-electron |
+| `npm run pack:check` | `npm pack --dry-run` (publish surface) |
+| `prepublishOnly` | Builds before `npm publish` |
+| `postinstall` | Runs ensure-electron (no-op if electron omitted) |
 
 **Windows helpers:** `scripts/fix-electron.cmd` · `scripts/fix-electron.ps1`
 
@@ -940,7 +943,7 @@ Smoke path (v1.5+):
 
 Unit tests also cover CDP monitor hang-regression (`test/monitor.test.mjs`).
 
-CI: [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) — **Ubuntu + Xvfb** and **Windows** (`npm test` on both). macOS is supported for local use but not in CI yet.
+CI: [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) — **Ubuntu + Xvfb**, **Windows**, and **macOS** (`npm test` + `npm pack --dry-run`).
 
 ---
 
@@ -960,7 +963,7 @@ electron-mcp-server/
 └── README.md · LICENSE · package.json · tsconfig.json
 ```
 
-Published npm package includes `build/`, `assets/`, `README.md`, and `LICENSE` only (`files` + `.npmignore`). The `electron` dependency is required so `start_app` can spawn apps; use `attach` if you already have Electron installed separately.
+Published npm package includes `build/`, `assets/`, `README.md`, `LICENSE`, and `CHANGELOG.md` (`files` + `.npmignore`). `electron` is an **optionalDependency** so `start_app` works after a normal install; attach-only users can `npm install --omit=optional` and skip the Electron download.
 
 ---
 

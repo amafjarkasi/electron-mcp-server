@@ -1,6 +1,6 @@
 {
   "name": "electron-debug-mcp",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "MCP server for launching and debugging Electron apps via Chrome DevTools Protocol",
   "type": "module",
   "main": "./build/index.js",
@@ -11,12 +11,14 @@
     "build/",
     "assets/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "ensure-electron": "node scripts/ensure-electron.mjs",
     "fix-electron": "node scripts/ensure-electron.mjs",
     "postinstall": "node scripts/ensure-electron.mjs",
+    "prepublishOnly": "npm run build",
     "build": "tsc && node --input-type=module -e \"import fs from 'fs'; fs.chmodSync('build/index.js', 0o755)\"",
     "start": "node build/index.js",
     "dev": "tsc && node build/index.js",
@@ -24,7 +26,8 @@
     "pretest": "npm run ensure-electron",
     "test": "npm run build && npm run test:unit && npm run test:smoke",
     "test:unit": "node --test test/unit-helpers.test.mjs test/probe.test.mjs test/monitor.test.mjs",
-    "test:smoke": "node test/mcp-smoke.mjs"
+    "test:smoke": "node test/mcp-smoke.mjs",
+    "pack:check": "npm pack --dry-run"
   },
   "keywords": [
     "electron",
@@ -48,8 +51,10 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.1.0",
     "chrome-remote-interface": "^0.33.0",
-    "electron": "^29.1.0",
     "zod": "^3.24.2"
+  },
+  "optionalDependencies": {
+    "electron": "^29.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",

@@ -2,3 +2,10 @@
 /node_modules
 /coverage
 /.zcode
+
+# Smoke / local artifacts (never publish)
+build/smoke-*
+*.tgz
+.DS_Store
+.env
+.env.*
