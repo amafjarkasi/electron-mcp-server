@@ -37,6 +37,7 @@ import {
   setConsoleLiveLogging,
   updateCDPTargets,
   validateOutputPath,
+  isPathInside,
   waitForCondition,
   navigatePage,
 } from "../build/process-manager.js";
@@ -821,6 +822,36 @@ test("validateOutputPath blocks the home .ssh directory", () => {
   } finally {
     restoreEnv(prev);
   }
+});
+
+test("validateOutputPath blocks credential stores under home", () => {
+  const prev = setEnv(undefined);
+  try {
+    const home = os.homedir();
+    for (const rel of [".aws/credentials", ".gnupg/pubring.kbx", ".kube/config", ".docker/config.json"]) {
+      assert.throws(
+        () => validateOutputPath(path.join(home, rel)),
+        /sensitive location/i,
+        `expected ${rel} to be blocked`
+      );
+    }
+  } finally {
+    restoreEnv(prev);
+  }
+});
+
+test("validateOutputPath rejects empty paths", () => {
+  assert.throws(() => validateOutputPath(""), /non-empty/i);
+  assert.throws(() => validateOutputPath("   "), /non-empty/i);
+});
+
+test("isPathInside rejects sibling-prefix attacks", () => {
+  const root = isWin ? "C:\\tmp\\out" : "/tmp/out";
+  const inside = isWin ? "C:\\tmp\\out\\a.png" : "/tmp/out/a.png";
+  const sibling = isWin ? "C:\\tmp\\out-evil\\x.png" : "/tmp/out-evil/x.png";
+  assert.equal(isPathInside(root, inside), true);
+  assert.equal(isPathInside(root, root), true);
+  assert.equal(isPathInside(root, sibling), false);
 });
 
 test("validateOutputPath respects ELECTRON_MCP_OUTPUT_ROOTS allowlist", () => {

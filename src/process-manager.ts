@@ -171,9 +171,7 @@ export function assertAppPathAllowed(appPath: string): string {
 	if (!roots.length) {
 		return resolved;
 	}
-	const ok = roots.some(
-		(root) => resolved === root || resolved.startsWith(root + path.sep),
-	);
+	const ok = roots.some((root) => isPathInside(root, resolved));
 	if (!ok) {
 		throw new Error(
 			`App path ${resolved} is outside ELECTRON_MCP_ALLOWED_ROOTS (${roots.join(", ")})`,
@@ -184,14 +182,21 @@ export function assertAppPathAllowed(appPath: string): string {
 
 /**
  * System/sensitive locations that tool output (screenshots, traces) must never
- * be written to, even when no allowlist is configured. Paths are matched as
- * directory prefixes (resolved + path.sep) so a block on /etc rejects /etc/foo.
- * `~` is expanded to os.homedir() so e.g. ~/.ssh is covered.
+ * be written to, even when no allowlist is configured. Paths are matched via
+ * {@link isPathInside} (resolved prefix, case-insensitive on Windows).
  */
 const OUTPUT_BLOCKED_ROOTS: string[] = (() => {
 	const home = os.homedir();
-	// ~/.ssh is blocked on every platform — SSH credentials live there.
-	const universal = [path.join(home, ".ssh")];
+	// Credential / secret stores blocked on every platform.
+	const universal = [
+		path.join(home, ".ssh"),
+		path.join(home, ".gnupg"),
+		path.join(home, ".aws"),
+		path.join(home, ".kube"),
+		path.join(home, ".docker"),
+		path.join(home, ".config", "gcloud"),
+		path.join(home, ".azure"),
+	];
 	const posix = [
 		"/etc",
 		"/proc",
@@ -201,17 +206,43 @@ const OUTPUT_BLOCKED_ROOTS: string[] = (() => {
 		"/sbin",
 		"/boot",
 		"/dev",
+		"/root",
+		"/var/run",
+		"/var/lib",
 	];
 	const win32 = [
 		"C:\\Windows",
 		"C:\\Program Files",
 		"C:\\Program Files (x86)",
 		"C:\\ProgramData",
+		path.join(home, "AppData", "Roaming", "gnupg"),
+		path.join(home, "AppData", "Roaming", "gcloud"),
 	];
 	return process.platform === "win32"
 		? [...universal, ...win32]
 		: [...universal, ...posix];
 })();
+
+/**
+ * True when `candidate` is exactly `root` or a path under it.
+ * Uses path.relative so sibling-prefix attacks (`/tmp/out` vs `/tmp/out-evil`)
+ * are rejected. Comparison is case-insensitive on Windows.
+ */
+export function isPathInside(root: string, candidate: string): boolean {
+	const resolvedRoot = path.resolve(root);
+	const resolvedCandidate = path.resolve(candidate);
+	const a =
+		process.platform === "win32"
+			? resolvedRoot.toLowerCase()
+			: resolvedRoot;
+	const b =
+		process.platform === "win32"
+			? resolvedCandidate.toLowerCase()
+			: resolvedCandidate;
+	if (a === b) return true;
+	const rel = path.relative(a, b);
+	return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
 
 /**
  * Optional allowlist (ELECTRON_MCP_OUTPUT_ROOTS) for tool output paths. Uses
@@ -235,10 +266,13 @@ function getOutputRoots(): string[] {
  * configured output roots.
  */
 export function validateOutputPath(filePath: string): string {
-	const resolved = path.resolve(filePath);
+	if (filePath == null || String(filePath).trim() === "") {
+		throw new Error("Output path must be a non-empty string");
+	}
+	const resolved = path.resolve(String(filePath));
 
-	const blocked = OUTPUT_BLOCKED_ROOTS.find(
-		(root) => resolved === root || resolved.startsWith(root + path.sep),
+	const blocked = OUTPUT_BLOCKED_ROOTS.find((root) =>
+		isPathInside(root, resolved),
 	);
 	if (blocked) {
 		throw new Error(
@@ -248,9 +282,7 @@ export function validateOutputPath(filePath: string): string {
 
 	const roots = getOutputRoots();
 	if (roots.length) {
-		const ok = roots.some(
-			(root) => resolved === root || resolved.startsWith(root + path.sep),
-		);
+		const ok = roots.some((root) => isPathInside(root, resolved));
 		if (!ok) {
 			throw new Error(
 				`Output path ${resolved} is outside ELECTRON_MCP_OUTPUT_ROOTS (${roots.join(", ")})`,
@@ -520,17 +552,18 @@ function wireChildProcess(
 			processId: electronProcess.id,
 			detail: err.message,
 		});
+		forgetProcess(electronProcess.id);
 	});
 
 	child.on("exit", (code) => {
 		electronProcess.status = code === 0 ? "stopped" : "crashed";
 		log.info(`[${electronProcess.id}] Process exited with code ${code}`);
-		void closeAllClients(electronProcess);
 		processEvents.emitEvent({
 			type: code === 0 ? "process_stopped" : "process_crashed",
 			processId: electronProcess.id,
 			detail: `exit code ${code}`,
 		});
+		forgetProcess(electronProcess.id);
 	});
 }
 
@@ -726,9 +759,11 @@ async function killProcessTree(pid: number): Promise<void> {
 export async function stopElectronApp(id: string): Promise<boolean> {
 	const electronProcess = electronProcesses.get(id);
 	if (!electronProcess) {
-		return false;
+		// Already removed by exit/error cleanup (forgetProcess) — treat as stopped.
+		return true;
 	}
 
+	abandonTracingSession(id);
 	await closeAllClients(electronProcess);
 
 	if (electronProcess.attached) {
@@ -739,6 +774,7 @@ export async function stopElectronApp(id: string): Promise<boolean> {
 			processId: id,
 			detail: "detached",
 		});
+		electronProcesses.delete(id);
 		return true;
 	}
 
@@ -758,6 +794,9 @@ export async function stopElectronApp(id: string): Promise<boolean> {
 
 	electronProcess.status = "stopped";
 	processEvents.emitEvent({ type: "process_stopped", processId: id });
+	// Child "exit" also calls forgetProcess; delete here so stop_app is
+	// idempotent even if the process was already dead / never wired.
+	electronProcesses.delete(id);
 	return true;
 }
 
@@ -2580,6 +2619,45 @@ type TraceSession = {
 };
 
 const traceSessions = new Map<string, TraceSession>();
+
+/** Drop any in-progress CDP tracing session for a process (best-effort). */
+function abandonTracingSession(processId: string): void {
+	const session = traceSessions.get(processId) as
+		| (TraceSession & {
+				_onData?: (p: unknown) => void;
+				_client?: CDP.Client;
+		  })
+		| undefined;
+	if (!session) return;
+	try {
+		if (session._client && session._onData) {
+			session._client.removeListener(
+				"Tracing.dataCollected",
+				session._onData,
+			);
+		}
+		void session._client?.send?.("Tracing.end").catch(() => {
+			// ignore — process may already be gone
+		});
+	} catch {
+		// ignore
+	}
+	traceSessions.delete(processId);
+}
+
+/**
+ * Finalize a session that has stopped or crashed: abandon tracing, close CDP
+ * sockets, and remove it from the managed map so list_apps / resources don't
+ * accumulate forever.
+ */
+function forgetProcess(id: string): void {
+	abandonTracingSession(id);
+	const proc = electronProcesses.get(id);
+	if (proc) {
+		void closeAllClients(proc);
+	}
+	electronProcesses.delete(id);
+}
 
 const DEFAULT_TRACE_CATEGORIES = [
 	"devtools.timeline",

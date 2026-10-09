@@ -262,6 +262,10 @@ async function main() {
       "stop_tracing",
       "evaluate_main",
       "clear_buffers",
+      "get_logs",
+      "reload",
+      "pause",
+      "resume",
     ]) {
       assert(names.has(required), `missing tool ${required}`);
     }
@@ -287,6 +291,7 @@ async function main() {
         appPath: fixtureApp,
         debugPort: DEBUG_PORT,
         extraArgs: ["--no-sandbox"],
+        inspectMain: true,
       },
     });
     assert(
@@ -609,22 +614,122 @@ async function main() {
     assert(!clearResult.isError, `clear_buffers error: ${clearResult.content?.[0]?.text}`);
     pass("clear_buffers");
 
-    // evaluate_main may fail without inspectMain; still exercise the tool path
-    const mainEval = await client.request("tools/call", {
-      name: "evaluate_main",
-      arguments: { processId, expression: "1+1" },
+    const logsResult = await client.request("tools/call", {
+      name: "get_logs",
+      arguments: { processId, tail: 50 },
     });
-    // Accept either success or a clear "No main/node target" style error
-    if (!mainEval.isError) {
-      pass("evaluate_main");
-    } else {
-      const msg = mainEval.content?.[0]?.text || "";
-      assert(
-        /main|node|target|inspectMain/i.test(msg),
-        `unexpected evaluate_main error: ${msg}`
-      );
-      pass("evaluate_main (no main target — expected without inspectMain)");
+    assert(!logsResult.isError, `get_logs error: ${logsResult.content?.[0]?.text}`);
+    const logsData = parseToolText(logsResult);
+    assert(
+      typeof logsData.logs === "string",
+      `get_logs missing logs string: ${JSON.stringify(logsData)}`
+    );
+    pass("get_logs");
+
+    const pageBeforeNav = await client.request("tools/call", {
+      name: "page_info",
+      arguments: { processId },
+    });
+    assert(!pageBeforeNav.isError, `page_info before navigate: ${pageBeforeNav.content?.[0]?.text}`);
+    const beforeNav = parseToolText(pageBeforeNav);
+    const originalUrl = beforeNav.url;
+    assert(originalUrl, `page_info missing url: ${JSON.stringify(beforeNav)}`);
+
+    const navAway = await client.request("tools/call", {
+      name: "navigate",
+      arguments: {
+        processId,
+        url: "about:blank",
+        waitUntilLoad: true,
+        timeoutMs: 10000,
+      },
+    });
+    assert(!navAway.isError, `navigate about:blank error: ${navAway.content?.[0]?.text}`);
+    pass("navigate (about:blank)");
+
+    const navBack = await client.request("tools/call", {
+      name: "navigate",
+      arguments: {
+        processId,
+        url: originalUrl,
+        waitUntilLoad: true,
+        timeoutMs: 10000,
+      },
+    });
+    assert(!navBack.isError, `navigate back error: ${navBack.content?.[0]?.text}`);
+    pass("navigate (restore)");
+
+    const reloadResult = await client.request("tools/call", {
+      name: "reload",
+      arguments: { processId, ignoreCache: false },
+    });
+    assert(!reloadResult.isError, `reload error: ${reloadResult.content?.[0]?.text}`);
+    const reloaded = parseToolText(reloadResult);
+    assert(
+      Array.isArray(reloaded.reloaded) && reloaded.reloaded.length > 0,
+      `reload returned no targets: ${JSON.stringify(reloaded)}`
+    );
+    pass("reload");
+
+    const pauseResult = await client.request("tools/call", {
+      name: "pause",
+      arguments: { processId },
+    });
+    assert(!pauseResult.isError, `pause error: ${pauseResult.content?.[0]?.text}`);
+    pass("pause");
+
+    const resumeResult = await client.request("tools/call", {
+      name: "resume",
+      arguments: { processId },
+    });
+    assert(!resumeResult.isError, `resume error: ${resumeResult.content?.[0]?.text}`);
+    pass("resume");
+
+    const cdpResult = await client.request("tools/call", {
+      name: "cdp_command",
+      arguments: {
+        processId,
+        method: "Runtime.evaluate",
+        params: { expression: "1+2", returnByValue: true },
+      },
+    });
+    assert(!cdpResult.isError, `cdp_command error: ${cdpResult.content?.[0]?.text}`);
+    const cdp = parseToolText(cdpResult);
+    const cdpValue = cdp?.result?.result?.value ?? cdp?.result?.value;
+    assert(
+      cdpValue === 3,
+      `cdp_command unexpected value: ${JSON.stringify(cdp)}`
+    );
+    pass("cdp_command");
+
+    // start_app used inspectMain:true — main/node target must be evaluable.
+    let mainEval;
+    let mainOk = false;
+    let lastMainMsg = "";
+    for (let attempt = 0; attempt < 8; attempt++) {
+      mainEval = await client.request("tools/call", {
+        name: "evaluate_main",
+        arguments: { processId, expression: "1+1" },
+      });
+      if (!mainEval.isError) {
+        mainOk = true;
+        break;
+      }
+      lastMainMsg = mainEval.content?.[0]?.text || "";
+      await new Promise((r) => setTimeout(r, 400));
     }
+    assert(
+      mainOk,
+      `evaluate_main failed with inspectMain:true: ${lastMainMsg}`
+    );
+    const mainVal = parseToolText(mainEval);
+    const mainValue =
+      mainVal?.result?.result?.value ?? mainVal?.result?.value ?? mainVal?.value;
+    assert(
+      mainValue === 2,
+      `evaluate_main unexpected value: ${JSON.stringify(mainVal)}`
+    );
+    pass("evaluate_main");
 
     const shotResult = await client.request("tools/call", {
       name: "screenshot",
@@ -670,23 +775,29 @@ async function main() {
     assert(attached.attached === true, "expected attached=true");
     pass(`attach (${attachedId})`);
 
-    const discoverResult = await client.request("tools/call", {
-      name: "discover_apps",
-      arguments: { startPort: 9555, endPort: 9556 },
-    });
-    const discovered = parseToolText(discoverResult);
-    // Freshly attached port must be discoverable. The start_app port can race
-    // if Chromium's DevTools HTTP server failed to bind earlier in the run.
-    assert(
-      (discovered.found ?? []).some((f) => f.port === ATTACH_PORT),
-      `discover missed attach port ${ATTACH_PORT}: ${JSON.stringify(discovered)}`
-    );
-    if (!(discovered.found ?? []).some((f) => f.port === DEBUG_PORT)) {
-      console.warn(
-        `WARN discover_apps: start_app port ${DEBUG_PORT} not listed (CDP bind race?)`
+    // Probe the actual live ports (may be far apart if ephemeral fallback kicked in).
+    const foundPorts = new Set();
+    for (const port of [DEBUG_PORT, ATTACH_PORT]) {
+      const discoverResult = await client.request("tools/call", {
+        name: "discover_apps",
+        arguments: { startPort: port, endPort: port },
+      });
+      assert(
+        !discoverResult.isError,
+        `discover_apps(${port}) error: ${discoverResult.content?.[0]?.text}`
       );
+      const discovered = parseToolText(discoverResult);
+      for (const f of discovered.found ?? []) foundPorts.add(f.port);
     }
-    pass("discover_apps");
+    assert(
+      foundPorts.has(ATTACH_PORT),
+      `discover missed attach port ${ATTACH_PORT}: found=${[...foundPorts]}`
+    );
+    assert(
+      foundPorts.has(DEBUG_PORT),
+      `discover missed start_app port ${DEBUG_PORT}: found=${[...foundPorts]}`
+    );
+    pass(`discover_apps (ports ${DEBUG_PORT}, ${ATTACH_PORT})`);
 
     const listResult = await client.request("tools/call", {
       name: "list_apps",
@@ -709,6 +820,57 @@ async function main() {
     );
     pass("resources/read electron://info");
 
+    const targetsRes = await client.request("resources/read", {
+      uri: "electron://targets",
+    });
+    assert(
+      targetsRes?.contents?.[0]?.text?.includes(processId),
+      "targets resource missing process"
+    );
+    pass("resources/read electron://targets");
+
+    const processRes = await client.request("resources/read", {
+      uri: `electron://process/${processId}`,
+    });
+    assert(
+      processRes?.contents?.[0]?.text?.includes(processId),
+      "process resource missing id"
+    );
+    pass("resources/read electron://process/{id}");
+
+    const logsRes = await client.request("resources/read", {
+      uri: `electron://logs/${processId}`,
+    });
+    assert(
+      typeof logsRes?.contents?.[0]?.text === "string",
+      "logs resource missing text"
+    );
+    pass("resources/read electron://logs/{id}");
+
+    const consoleRes = await client.request("resources/read", {
+      uri: `electron://console/${processId}`,
+    });
+    assert(
+      consoleRes?.contents?.[0]?.text != null,
+      "console resource missing text"
+    );
+    pass("resources/read electron://console/{id}");
+
+    const listedResources = await client.request("resources/list");
+    const cdpUri = (listedResources.resources ?? []).find((r) =>
+      String(r.uri).startsWith(`electron://cdp/${processId}/`)
+    )?.uri;
+    assert(cdpUri, `no electron://cdp/${processId}/… resource listed`);
+    const cdpRes = await client.request("resources/read", { uri: cdpUri });
+    assert(
+      cdpRes?.contents?.[0]?.text?.includes(processId),
+      `cdp resource missing process: ${cdpUri}`
+    );
+    pass("resources/read electron://cdp/{processId}/{targetId}");
+
+    const stoppedAttachedId = attachedId;
+    const stoppedProcessId = processId;
+
     const stopAttached = await client.request("tools/call", {
       name: "stop_app",
       arguments: { processId: attachedId },
@@ -724,6 +886,33 @@ async function main() {
     assert(!stopResult.isError, `stop_app error: ${stopResult.content?.[0]?.text}`);
     pass("stop_app");
     processId = undefined;
+
+    // Delete-on-stop: stopped sessions must not linger in list_apps.
+    const afterStop = await client.request("tools/call", {
+      name: "list_apps",
+      arguments: {},
+    });
+    assert(!afterStop.isError, `list_apps after stop: ${afterStop.content?.[0]?.text}`);
+    const remaining = parseToolText(afterStop);
+    const leftover = (remaining.processes ?? []).filter(
+      (p) => p.id === stoppedProcessId || p.id === stoppedAttachedId
+    );
+    assert(
+      leftover.length === 0,
+      `stopped sessions still listed: ${JSON.stringify(leftover)}`
+    );
+    pass("list_apps post-stop cleanup");
+
+    // Idempotent stop on already-removed session.
+    const stopAgain = await client.request("tools/call", {
+      name: "stop_app",
+      arguments: { processId: stoppedProcessId },
+    });
+    assert(
+      !stopAgain.isError,
+      `idempotent stop_app error: ${stopAgain.content?.[0]?.text}`
+    );
+    pass("stop_app idempotent");
 
     if (external && !external.killed) {
       external.kill("SIGKILL");
