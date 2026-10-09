@@ -1530,76 +1530,93 @@ export async function resolveStack(
 	const target = pickPageTarget(electronProcess, options.targetId);
 	await cdpTimed(electronProcess, target.id, "Debugger.enable", {});
 
-	const sourceCache = new Map<string, string>();
-	const loadSource = async (frame: {
-		url?: string;
-		scriptId?: string;
-	}): Promise<string | undefined> => {
-		const key = frame.scriptId
-			? `id:${frame.scriptId}`
-			: frame.url
-				? `url:${frame.url}`
-				: "";
-		if (!key) return undefined;
-		if (sourceCache.has(key)) return sourceCache.get(key);
-		if (frame.scriptId) {
-			try {
-				const res = (await cdpTimed(
-					electronProcess,
-					target.id,
-					"Debugger.getScriptSource",
-					{ scriptId: frame.scriptId },
-				)) as { scriptSource?: string };
-				if (res.scriptSource != null) {
-					sourceCache.set(key, res.scriptSource);
-					return res.scriptSource;
+	try {
+		const sourceCache = new Map<string, string>();
+		const loadSource = async (frame: {
+			url?: string;
+			scriptId?: string;
+		}): Promise<string | undefined> => {
+			const key = frame.scriptId
+				? `id:${frame.scriptId}`
+				: frame.url
+					? `url:${frame.url}`
+					: "";
+			if (!key) return undefined;
+			if (sourceCache.has(key)) return sourceCache.get(key);
+			if (frame.scriptId) {
+				try {
+					const res = (await cdpTimed(
+						electronProcess,
+						target.id,
+						"Debugger.getScriptSource",
+						{ scriptId: frame.scriptId },
+					)) as { scriptSource?: string };
+					if (res.scriptSource != null) {
+						sourceCache.set(key, res.scriptSource);
+						return res.scriptSource;
+					}
+				} catch {
+					/* fall through */
 				}
-			} catch {
-				/* fall through */
 			}
-		}
-		if (frame.url?.startsWith("file://")) {
-			try {
-				const filePath = decodeURIComponent(frame.url.replace(/^file:\/\//, ""));
-				if (fs.existsSync(filePath)) {
-					const body = fs.readFileSync(filePath, "utf8");
-					sourceCache.set(key, body);
-					return body;
+			if (frame.url?.startsWith("file://")) {
+				try {
+					const filePath = decodeURIComponent(
+						frame.url.replace(/^file:\/\//, ""),
+					);
+					if (fs.existsSync(filePath)) {
+						const body = fs.readFileSync(filePath, "utf8");
+						sourceCache.set(key, body);
+						return body;
+					}
+				} catch {
+					/* ignore */
 				}
-			} catch {
-				/* ignore */
 			}
-		}
-		return undefined;
-	};
+			return undefined;
+		};
 
-	const out: Array<Record<string, unknown>> = [];
-	for (const frame of options.frames.slice(0, 50)) {
-		const source = await loadSource(frame);
-		let snippet: string | undefined;
-		let resolved = false;
-		if (source) {
-			const lines = source.split(/\r?\n/);
-			const line = frame.lineNumber; // 0-based in CDP stacks often; accept as given
-			const start = Math.max(0, line - contextLines);
-			const end = Math.min(lines.length, line + contextLines + 1);
-			snippet = lines
-				.slice(start, end)
-				.map((text, i) => {
-					const n = start + i;
-					const mark = n === line ? ">" : " ";
-					return `${mark} ${n}: ${text}`;
-				})
-				.join("\n");
-			resolved = true;
+		const out: Array<Record<string, unknown>> = [];
+		for (const frame of options.frames.slice(0, 50)) {
+			const source = await loadSource(frame);
+			let snippet: string | undefined;
+			let resolved = false;
+			if (source) {
+				const lines = source.split(/\r?\n/);
+				const line = frame.lineNumber; // 0-based in CDP stacks often; accept as given
+				const start = Math.max(0, line - contextLines);
+				const end = Math.min(lines.length, line + contextLines + 1);
+				snippet = lines
+					.slice(start, end)
+					.map((text, i) => {
+						const n = start + i;
+						const mark = n === line ? ">" : " ";
+						return `${mark} ${n}: ${text}`;
+					})
+					.join("\n");
+				resolved = true;
+			}
+			out.push({
+				...frame,
+				resolved,
+				snippet,
+			});
 		}
-		out.push({
-			...frame,
-			resolved,
-			snippet,
-		});
+		return { targetId: target.id, frames: out };
+	} finally {
+		// Don't leave Debugger attached — it interferes with pause/resume smoke.
+		try {
+			await cdpTimed(
+				electronProcess,
+				target.id,
+				"Debugger.disable",
+				{},
+				5_000,
+			);
+		} catch {
+			/* ignore */
+		}
 	}
-	return { targetId: target.id, frames: out };
 }
 
 export async function runPerfAudit(
@@ -1727,6 +1744,20 @@ export async function setVirtualClock(
 			const deadline = Date.now() + Math.min((options.budget ?? 0) + 5_000, 30_000);
 			while (!expired && Date.now() < deadline) {
 				await new Promise((r) => setTimeout(r, 25));
+			}
+			// Budget expiry leaves virtual time paused — grant a large advance so
+			// subsequent navigations / timers are not frozen for the rest of the session.
+			try {
+				await withTimeout(
+					client.send("Emulation.setVirtualTimePolicy", {
+						policy: "advance",
+						budget: 24 * 60 * 60 * 1000,
+					}),
+					5_000,
+					"Emulation.setVirtualTimePolicy(unstick)",
+				);
+			} catch {
+				/* ignore */
 			}
 			return { targetId: target.id, policy: options.policy, expired };
 		} finally {

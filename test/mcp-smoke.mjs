@@ -750,6 +750,22 @@ async function main() {
     );
     pass("diagnose");
 
+    // Pause/resume before creative tools — virtual_clock / screencast can leave
+    // the Debugger session in a state where pause never emits Debugger.paused.
+    const pauseResult = await client.request("tools/call", {
+      name: "pause",
+      arguments: { processId },
+    });
+    assert(!pauseResult.isError, `pause error: ${pauseResult.content?.[0]?.text}`);
+    pass("pause");
+
+    const resumeResult = await client.request("tools/call", {
+      name: "resume",
+      arguments: { processId },
+    });
+    assert(!resumeResult.isError, `resume error: ${resumeResult.content?.[0]?.text}`);
+    pass("resume");
+
     // --- v1.6 creative power tools (soft-skip heavy/optional CDP where flaky) ---
     const soft = async (label, fn) => {
       try {
@@ -1033,6 +1049,11 @@ async function main() {
         arguments: { processId, policy: "advance", budget: 50 },
       });
       assert(!pause.isError, `virtual_clock: ${pause.content?.[0]?.text}`);
+      // Reload in case virtual time left the renderer sticky.
+      await client.request("tools/call", {
+        name: "reload",
+        arguments: { processId },
+      });
       pass("virtual_clock");
     });
 
@@ -1127,20 +1148,6 @@ async function main() {
       `reload returned no targets: ${JSON.stringify(reloaded)}`
     );
     pass("reload");
-
-    const pauseResult = await client.request("tools/call", {
-      name: "pause",
-      arguments: { processId },
-    });
-    assert(!pauseResult.isError, `pause error: ${pauseResult.content?.[0]?.text}`);
-    pass("pause");
-
-    const resumeResult = await client.request("tools/call", {
-      name: "resume",
-      arguments: { processId },
-    });
-    assert(!resumeResult.isError, `resume error: ${resumeResult.content?.[0]?.text}`);
-    pass("resume");
 
     const cdpResult = await client.request("tools/call", {
       name: "cdp_command",

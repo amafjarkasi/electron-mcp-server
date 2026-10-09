@@ -48,6 +48,7 @@ import {
 	typeText,
 	updateCDPTargets,
 	waitForCondition,
+	withTimeout,
 } from "./process-manager.js";
 import {
 	blockUrls,
@@ -888,15 +889,46 @@ server.tool(
 			const proc = requireRunningProcess(processId);
 			await updateCDPTargets(proc);
 			const target = pickPageTarget(proc, targetId);
-			await connectToCDPTarget(proc, target.id);
-			await executeCDPCommand(proc, target.id, "Debugger.enable", {});
-			const result = await executeCDPCommand(
-				proc,
-				target.id,
-				"Debugger.pause",
-				{},
+			const client = await connectToCDPTarget(proc, target.id);
+			await withTimeout(
+				client.send("Debugger.enable", {}),
+				20_000,
+				"Debugger.enable",
 			);
-			return textResult({ processId, targetId: target.id, result });
+			const paused = new Promise<unknown>((resolve) => {
+				const onPaused = (params: unknown) => {
+					try {
+						client.removeListener("Debugger.paused", onPaused);
+					} catch {
+						/* ignore */
+					}
+					resolve(params);
+				};
+				client.on("Debugger.paused", onPaused);
+			});
+			await withTimeout(
+				client.send("Debugger.pause", {}),
+				20_000,
+				"Debugger.pause",
+			);
+			// Idle pages never hit a JS statement — kick the event loop so pause lands.
+			void client
+				.send("Runtime.evaluate", {
+					expression: "void 0",
+					returnByValue: true,
+				})
+				.catch(() => undefined);
+			const pauseEvent = await withTimeout(
+				paused,
+				10_000,
+				"Debugger.paused event",
+			);
+			return textResult({
+				processId,
+				targetId: target.id,
+				paused: true,
+				pauseEvent,
+			});
 		} catch (err) {
 			return textResult(err instanceof Error ? err.message : String(err), true);
 		}
