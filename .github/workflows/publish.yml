@@ -28,10 +28,11 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
+      # npm stage requires npm 11+/12+ (Node ^22.22 or 24+)
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           registry-url: https://registry.npmjs.org
 
@@ -61,14 +62,49 @@ jobs:
             echo "Tag '$TAG' does not match package.json version '$EXPECTED'"
             exit 1
           fi
-          echo "Publishing electron-debug-mcp@${PKG_VERSION} (tag ${TAG})"
+          echo "Staging electron-debug-mcp@${PKG_VERSION} (tag ${TAG})"
+          echo "PKG_VERSION=${PKG_VERSION}" >> "$GITHUB_ENV"
 
       - name: Confirm npm auth
-        run: npm whoami
+        run: |
+          npm --version
+          npm whoami
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish to npm
-        run: npm publish --access public
+      # Stage-only / no-bypass-2FA tokens: upload for maintainer OTP approve.
+      # Approve locally: npm stage list && npm stage approve <id> --otp=<code>
+      - name: Stage package for npm publish
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          OUTPUT="$(npm stage publish --access public 2>&1)"
+          STATUS=$?
+          set -e
+          echo "$OUTPUT"
+          if [[ $STATUS -ne 0 ]]; then
+            exit $STATUS
+          fi
+          # Best-effort capture of a stage id from CLI output.
+          STAGE_ID="$(printf '%s\n' "$OUTPUT" | grep -Eo '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1 || true)"
+          if [[ -n "$STAGE_ID" ]]; then
+            echo "stage_id=$STAGE_ID" >> "$GITHUB_OUTPUT"
+            echo "Staged id: $STAGE_ID"
+          fi
+          echo "Listing pending stages:"
+          npm stage list || npm stage list "electron-debug-mcp" || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Approve instructions
+        if: success()
+        run: |
+          echo "::notice title=npm stage ready::Package staged. On your machine (logged into npm as amafjarkasi):"
+          echo "  npm stage list"
+          if [[ -n "${{ steps.stage.outputs.stage_id }}" ]]; then
+            echo "  npm stage approve ${{ steps.stage.outputs.stage_id }} --otp=<authenticator-code>"
+          else
+            echo "  npm stage approve <stage-id> --otp=<authenticator-code>"
+          fi
