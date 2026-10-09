@@ -512,15 +512,15 @@ export async function discoverDebugPorts(
 }
 
 export function pushCapped<T>(arr: T[], item: T, max: number): void {
-  arr.push(item);
-  const excess = arr.length - max;
-  if (excess > 0) {
-    if (excess === 1) {
-      arr.shift();
-    } else {
-      arr.splice(0, excess);
-    }
-  }
+	arr.push(item);
+	const excess = arr.length - max;
+	if (excess > 0) {
+		if (excess === 1) {
+			arr.shift();
+		} else {
+			arr.splice(0, excess);
+		}
+	}
 }
 
 export function createProcessRecord(
@@ -877,94 +877,94 @@ export async function stopElectronApp(id: string): Promise<boolean> {
 const inFlightTargetUpdates = new Map<string, Promise<CDPTarget[]>>();
 
 export async function updateCDPTargets(
-  electronProcess: ElectronProcess,
-  force = false,
-  ttlMs = 500
+	electronProcess: ElectronProcess,
+	force = false,
+	ttlMs = 500
 ): Promise<CDPTarget[]> {
-  if (!electronProcess.debugPort) {
-    throw new Error("No debug port available for this Electron process");
-  }
+	if (!electronProcess.debugPort) {
+		throw new Error("No debug port available for this Electron process");
+	}
 
-  const now = new Date();
-  if (
-    !force &&
-    electronProcess.targets &&
-    electronProcess.lastTargetUpdate &&
-    now.getTime() - electronProcess.lastTargetUpdate.getTime() < ttlMs
-  ) {
-    return electronProcess.targets;
-  }
+	const now = new Date();
+	if (
+		!force &&
+		electronProcess.targets &&
+		electronProcess.lastTargetUpdate &&
+		now.getTime() - electronProcess.lastTargetUpdate.getTime() < ttlMs
+	) {
+		return electronProcess.targets;
+	}
 
-  const existing = inFlightTargetUpdates.get(electronProcess.id);
-  if (existing) {
-    return existing;
-  }
+	const existing = inFlightTargetUpdates.get(electronProcess.id);
+	if (existing) {
+		return existing;
+	}
 
-  const updatePromise = (async () => {
-    try {
-      const response = await fetch(
-        `http://127.0.0.1:${electronProcess.debugPort}/json/list`
-      );
-      if (!response.ok) {
-        throw new Error(`Failed to get targets: ${response.statusText}`);
-      }
+	const updatePromise = (async () => {
+		try {
+			const response = await fetch(
+				`http://127.0.0.1:${electronProcess.debugPort}/json/list`
+			);
+			if (!response.ok) {
+				throw new Error(`Failed to get targets: ${response.statusText}`);
+			}
 
-      const pageTargets = ((await response.json()) as CDPTarget[]).map(
-        (t) => ({
-          ...t,
-          port: t.port ?? electronProcess.debugPort,
-        }),
-      );
+			const pageTargets = ((await response.json()) as CDPTarget[]).map(
+				(t) => ({
+					...t,
+					port: t.port ?? electronProcess.debugPort,
+				}),
+			);
 
-      // Merge main-process node targets from the separate --inspect endpoint.
-      let inspectTargets: CDPTarget[] = [];
-      if (electronProcess.inspectPort) {
-        try {
-          const inspectRes = await fetch(
-            `http://127.0.0.1:${electronProcess.inspectPort}/json/list`,
-          );
-          if (inspectRes.ok) {
-            inspectTargets = ((await inspectRes.json()) as CDPTarget[]).map(
-              (t) => ({
-                ...t,
-                // Node inspector sometimes omits type; treat as node.
-                type: t.type || "node",
-                port: electronProcess.inspectPort,
-              }),
-            );
-          }
-        } catch (err) {
-          log.warn(
-            `[${electronProcess.id}] Could not list inspect targets on ${electronProcess.inspectPort}:`,
-            err,
-          );
-        }
-      }
+			// Merge main-process node targets from the separate --inspect endpoint.
+			let inspectTargets: CDPTarget[] = [];
+			if (electronProcess.inspectPort) {
+				try {
+					const inspectRes = await fetch(
+						`http://127.0.0.1:${electronProcess.inspectPort}/json/list`,
+					);
+					if (inspectRes.ok) {
+						inspectTargets = ((await inspectRes.json()) as CDPTarget[]).map(
+							(t) => ({
+								...t,
+								// Node inspector sometimes omits type; treat as node.
+								type: t.type || "node",
+								port: electronProcess.inspectPort,
+							}),
+						);
+					}
+				} catch (err) {
+					log.warn(
+						`[${electronProcess.id}] Could not list inspect targets on ${electronProcess.inspectPort}:`,
+						err,
+					);
+				}
+			}
 
-      const seen = new Set(pageTargets.map((t) => t.id));
-      const targets = [
-        ...pageTargets,
-        ...inspectTargets.filter((t) => !seen.has(t.id)),
-      ];
-      const prev = electronProcess.targets?.map((t) => t.id).join(",") ?? "";
-      electronProcess.targets = targets;
-      electronProcess.lastTargetUpdate = new Date();
-      const next = targets.map((t) => t.id).join(",");
-      if (prev !== next) {
-        processEvents.emitEvent({
-          type: "targets_changed",
-          processId: electronProcess.id,
-          targetCount: targets.length,
-        });
-      }
-      return targets;
-    } finally {
-      inFlightTargetUpdates.delete(electronProcess.id);
-    }
-  })();
+			const seen = new Set(pageTargets.map((t) => t.id));
+			const targets = [
+				...pageTargets,
+				...inspectTargets.filter((t) => !seen.has(t.id)),
+			];
+			const prev = electronProcess.targets?.map((t) => t.id).join(",") ?? "";
+			electronProcess.targets = targets;
+			electronProcess.lastTargetUpdate = new Date();
+			const next = targets.map((t) => t.id).join(",");
+			if (prev !== next) {
+				processEvents.emitEvent({
+					type: "targets_changed",
+					processId: electronProcess.id,
+					targetCount: targets.length,
+				});
+			}
+			return targets;
+		} finally {
+			inFlightTargetUpdates.delete(electronProcess.id);
+		}
+	})();
 
-  inFlightTargetUpdates.set(electronProcess.id, updatePromise);
-  return updatePromise;
+	inFlightTargetUpdates.set(electronProcess.id, updatePromise);
+	return updatePromise;
 }
 
 function wireMonitorEvents(
@@ -1553,20 +1553,20 @@ export async function captureScreenshot(
 			electronProcess,
 			target.id,
 			`(() => {
-        const el = document.querySelector(${JSON.stringify(selector)});
-        if (!el) return null;
-        const r = el.getBoundingClientRect();
-        if (r.width <= 0 || r.height <= 0) return null;
-        return {
-          x: r.x,
-          y: r.y,
-          width: r.width,
-          height: r.height,
-          viewportWidth: window.innerWidth,
-          viewportHeight: window.innerHeight,
-          scale: window.devicePixelRatio || 1
-        };
-      })()`,
+				const el = document.querySelector(${JSON.stringify(selector)});
+				if (!el) return null;
+				const r = el.getBoundingClientRect();
+				if (r.width <= 0 || r.height <= 0) return null;
+				return {
+					x: r.x,
+					y: r.y,
+					width: r.width,
+					height: r.height,
+					viewportWidth: window.innerWidth,
+					viewportHeight: window.innerHeight,
+					scale: window.devicePixelRatio || 1
+				};
+			})()`,
 		)) as {
 			x: number;
 			y: number;
@@ -2067,11 +2067,11 @@ export async function getPageInfo(
 		electronProcess,
 		target.id,
 		`({
-      url: location.href,
-      title: document.title,
-      readyState: document.readyState,
-      userAgent: navigator.userAgent
-    })`,
+			url: location.href,
+			title: document.title,
+			readyState: document.readyState,
+			userAgent: navigator.userAgent
+		})`,
 	)) as {
 		url: string;
 		title: string;
@@ -2128,15 +2128,15 @@ async function elementCenter(
 		electronProcess,
 		targetId,
 		`(() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      if (!el) return null;
-      if (typeof el.scrollIntoView === "function") {
-        el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-      }
-      const r = el.getBoundingClientRect();
-      if (r.width <= 0 || r.height <= 0) return null;
-      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-    })()`,
+			const el = document.querySelector(${JSON.stringify(selector)});
+			if (!el) return null;
+			if (typeof el.scrollIntoView === "function") {
+				el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+			}
+			const r = el.getBoundingClientRect();
+			if (r.width <= 0 || r.height <= 0) return null;
+			return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+		})()`,
 	)) as { x: number; y: number } | null;
 
 	if (!box) {
@@ -2205,13 +2205,13 @@ export async function typeText(
 				electronProcess,
 				target.id,
 				`(() => {
-          const el = document.querySelector(${JSON.stringify(options.selector)});
-          if (!el) return false;
-          if ('value' in el) el.value = '';
-          el.textContent = '';
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          return true;
-        })()`,
+					const el = document.querySelector(${JSON.stringify(options.selector)});
+					if (!el) return false;
+					if ('value' in el) el.value = '';
+					el.textContent = '';
+					el.dispatchEvent(new Event('input', { bubbles: true }));
+					return true;
+				})()`,
 			);
 		}
 	}
@@ -2308,16 +2308,16 @@ export async function waitForCondition(
 				electronProcess,
 				target.id,
 				`(() => {
-          const el = document.querySelector(${JSON.stringify(options.hidden)});
-          if (!el) return true;
-          const style = window.getComputedStyle(el);
-          const hidden =
-            style.display === none ||
-            style.visibility === hidden ||
-            style.opacity === 0 ||
-            el.getClientRects().length === 0;
-          return hidden;
-        })()`,
+					const el = document.querySelector(${JSON.stringify(options.hidden)});
+					if (!el) return true;
+					const style = window.getComputedStyle(el);
+					const hidden =
+						style.display === none ||
+						style.visibility === hidden ||
+						style.opacity === 0 ||
+						el.getClientRects().length === 0;
+					return hidden;
+				})()`,
 			);
 			if (gone) matches.push(`hidden:${options.hidden}`);
 		}
@@ -2327,15 +2327,15 @@ export async function waitForCondition(
 				electronProcess,
 				target.id,
 				`(() => {
-          const el = document.querySelector(${JSON.stringify(options.enabled)});
-          if (!el) return false;
-          const isDisabled =
-            el.hasAttribute("disabled") ||
-            el.getAttribute("aria-disabled") === "true" ||
-            (el instanceof HTMLButtonElement && el.disabled) ||
-            (el instanceof HTMLInputElement && el.disabled);
-          return !isDisabled;
-        })()`,
+					const el = document.querySelector(${JSON.stringify(options.enabled)});
+					if (!el) return false;
+					const isDisabled =
+						el.hasAttribute("disabled") ||
+						el.getAttribute("aria-disabled") === "true" ||
+						(el instanceof HTMLButtonElement && el.disabled) ||
+						(el instanceof HTMLInputElement && el.disabled);
+					return !isDisabled;
+				})()`,
 			);
 			if (ok) matches.push(`enabled:${options.enabled}`);
 		}
@@ -2549,27 +2549,27 @@ export function pickMainTarget(
 	electronProcess: ElectronProcess,
 	targetId?: string,
 ): CDPTarget {
-  if (!electronProcess.targets?.length) {
-    throw new Error(
-      `No CDP targets available for process ${electronProcess.id}`
-    );
-  }
-  if (targetId) {
-    return pickPageTarget(electronProcess, targetId, "any");
-  }
+	if (!electronProcess.targets?.length) {
+		throw new Error(
+			`No CDP targets available for process ${electronProcess.id}`
+		);
+	}
+	if (targetId) {
+		return pickPageTarget(electronProcess, targetId, "any");
+	}
 
-  const targets = electronProcess.targets;
-  const nodeLike =
-    targets.find((t) => t.type === "node") ??
-    targets.find((t) => t.type === "service_worker" && RE_LIKELY_MAIN.test(`${t.title} ${t.url}`)) ??
-    targets.find((t) => /node/i.test(t.type));
+	const targets = electronProcess.targets;
+	const nodeLike =
+		targets.find((t) => t.type === "node") ??
+		targets.find((t) => t.type === "service_worker" && RE_LIKELY_MAIN.test(`${t.title} ${t.url}`)) ??
+		targets.find((t) => /node/i.test(t.type));
 
-  if (!nodeLike) {
-    throw new Error(
-      `No main/node target found for ${electronProcess.id}. Start with inspectMain:true (adds --inspect) or pass targetId from list_targets.`
-    );
-  }
-  return nodeLike;
+	if (!nodeLike) {
+		throw new Error(
+			`No main/node target found for ${electronProcess.id}. Start with inspectMain:true (adds --inspect) or pass targetId from list_targets.`
+		);
+	}
+	return nodeLike;
 }
 
 export async function evaluateMain(
@@ -2605,21 +2605,21 @@ export function listTargetsByRole(electronProcess: ElectronProcess): Array<{
 	url: string;
 	likelyMain: boolean;
 }> {
-  return (electronProcess.targets ?? []).map((t) => {
-    const role = classifyTargetRole(t.type);
-    const likelyMain =
-      t.type === "node" ||
-      t.type === "browser" ||
-      RE_LIKELY_MAIN.test(`${t.type} ${t.title} ${t.url}`);
-    return {
-      id: t.id,
-      type: t.type,
-      role,
-      title: t.title,
-      url: t.url,
-      likelyMain,
-    };
-  });
+	return (electronProcess.targets ?? []).map((t) => {
+		const role = classifyTargetRole(t.type);
+		const likelyMain =
+			t.type === "node" ||
+			t.type === "browser" ||
+			RE_LIKELY_MAIN.test(`${t.type} ${t.title} ${t.url}`);
+		return {
+			id: t.id,
+			type: t.type,
+			role,
+			title: t.title,
+			url: t.url,
+			likelyMain,
+		};
+	});
 }
 
 export async function getCookies(
@@ -2689,15 +2689,15 @@ export async function getStorage(
 		electronProcess,
 		target.id,
 		`(() => {
-      const store = window[${JSON.stringify(kind)}];
-      if (!store) return {};
-      const out = {};
-      for (let i = 0; i < store.length; i++) {
-        const key = store.key(i);
-        if (key != null) out[key] = store.getItem(key);
-      }
-      return out;
-    })()`,
+			const store = window[${JSON.stringify(kind)}];
+			if (!store) return {};
+			const out = {};
+			for (let i = 0; i < store.length; i++) {
+				const key = store.key(i);
+				if (key != null) out[key] = store.getItem(key);
+			}
+			return out;
+		})()`,
 	)) as Record<string, string>;
 	return { targetId: target.id, kind, entries: entries ?? {} };
 }
@@ -2715,13 +2715,13 @@ export async function setStorage(
 		electronProcess,
 		target.id,
 		`(() => {
-      const store = window[${JSON.stringify(kind)}];
-      if (!store) throw new Error(${JSON.stringify(kind)} + ' unavailable');
-      if (${options.clear ? "true" : "false"}) store.clear();
-      const entries = ${JSON.stringify(entries)};
-      for (const [k, v] of Object.entries(entries)) store.setItem(k, String(v));
-      return true;
-    })()`,
+			const store = window[${JSON.stringify(kind)}];
+			if (!store) throw new Error(${JSON.stringify(kind)} + ' unavailable');
+			if (${options.clear ? "true" : "false"}) store.clear();
+			const entries = ${JSON.stringify(entries)};
+			for (const [k, v] of Object.entries(entries)) store.setItem(k, String(v));
+			return true;
+		})()`,
 	);
 	return { targetId: target.id, kind, keys };
 }
@@ -2917,94 +2917,94 @@ export async function stopTracing(
 }
 
 export function parseDebugPortFromCommand(command: string): number | undefined {
-  const m = command.match(RE_DEBUG_PORT);
-  if (!m) return undefined;
-  const port = Number(m[1] || m[2]);
-  return Number.isFinite(port) && port >= 1 && port <= 65535 ? port : undefined;
+	const m = command.match(RE_DEBUG_PORT);
+	if (!m) return undefined;
+	const port = Number(m[1] || m[2]);
+	return Number.isFinite(port) && port >= 1 && port <= 65535 ? port : undefined;
 }
 
 export function parseInspectPortFromCommand(command: string): number | undefined {
-  const m = command.match(RE_INSPECT_PORT);
-  if (!m) return undefined;
-  const port = Number(m[1]);
-  return Number.isFinite(port) && port >= 1 && port <= 65535 ? port : undefined;
+	const m = command.match(RE_INSPECT_PORT);
+	if (!m) return undefined;
+	const port = Number(m[1]);
+	return Number.isFinite(port) && port >= 1 && port <= 65535 ? port : undefined;
 }
 
 async function listOsProcesses(): Promise<
 	Array<{ pid: number; command: string }>
 > {
-  if (process.platform === "win32") {
-    try {
-      let rows: Array<{ ProcessId?: number; CommandLine?: string }> = [];
-      try {
-        const { stdout } = await execFileAsync(
-          "powershell.exe",
-          [
-            "-NoProfile",
-            "-Command",
-            "Get-CimInstance Win32_Process -Filter \"Name LIKE '%electron%' OR CommandLine LIKE '%electron%'\" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
-          ],
-          { maxBuffer: 20 * 1024 * 1024 }
-        );
-        const parsed = JSON.parse(stdout || "[]") as
-          | Array<{ ProcessId?: number; CommandLine?: string }>
-          | { ProcessId?: number; CommandLine?: string };
-        rows = Array.isArray(parsed) ? parsed : [parsed];
-      } catch {
-        // Filter query failed or produced invalid JSON; fall through to full query
-      }
+	if (process.platform === "win32") {
+		try {
+			let rows: Array<{ ProcessId?: number; CommandLine?: string }> = [];
+			try {
+				const { stdout } = await execFileAsync(
+					"powershell.exe",
+					[
+						"-NoProfile",
+						"-Command",
+						"Get-CimInstance Win32_Process -Filter \"Name LIKE '%electron%' OR CommandLine LIKE '%electron%'\" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+					],
+					{ maxBuffer: 20 * 1024 * 1024 }
+				);
+				const parsed = JSON.parse(stdout || "[]") as
+					| Array<{ ProcessId?: number; CommandLine?: string }>
+					| { ProcessId?: number; CommandLine?: string };
+				rows = Array.isArray(parsed) ? parsed : [parsed];
+			} catch {
+				// Filter query failed or produced invalid JSON; fall through to full query
+			}
 
-      if (!rows.length || !rows[0]?.ProcessId) {
-        const { stdout: fullStdout } = await execFileAsync(
-          "powershell.exe",
-          [
-            "-NoProfile",
-            "-Command",
-            "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
-          ],
-          { maxBuffer: 20 * 1024 * 1024 }
-        );
-        const fullParsed = JSON.parse(fullStdout || "[]") as
-          | Array<{ ProcessId?: number; CommandLine?: string }>
-          | { ProcessId?: number; CommandLine?: string };
-        rows = Array.isArray(fullParsed) ? fullParsed : [fullParsed];
-      }
+			if (!rows.length || !rows[0]?.ProcessId) {
+				const { stdout: fullStdout } = await execFileAsync(
+					"powershell.exe",
+					[
+						"-NoProfile",
+						"-Command",
+						"Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+					],
+					{ maxBuffer: 20 * 1024 * 1024 }
+				);
+				const fullParsed = JSON.parse(fullStdout || "[]") as
+					| Array<{ ProcessId?: number; CommandLine?: string }>
+					| { ProcessId?: number; CommandLine?: string };
+				rows = Array.isArray(fullParsed) ? fullParsed : [fullParsed];
+			}
 
-      return rows
-        .filter((r) => r.ProcessId && r.CommandLine)
-        .map((r) => ({
-          pid: Number(r.ProcessId),
-          command: String(r.CommandLine),
-        }));
-    } catch (err) {
-      log.warn("Windows process listing failed:", err);
-      return [];
-    }
-  }
+			return rows
+				.filter((r) => r.ProcessId && r.CommandLine)
+				.map((r) => ({
+					pid: Number(r.ProcessId),
+					command: String(r.CommandLine),
+				}));
+		} catch (err) {
+			log.warn("Windows process listing failed:", err);
+			return [];
+		}
+	}
 
-  // Linux / macOS: prefer `ps`
-  try {
-    const { stdout } = await execFileAsync(
-      "ps",
-      process.platform === "darwin"
-        ? ["-ax", "-o", "pid=,command="]
-        : ["-eo", "pid=,args="],
-      { maxBuffer: 20 * 1024 * 1024 }
-    );
-    return stdout
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const m = line.match(/^(\d+)\s+(.*)$/);
-        if (!m) return null;
-        return { pid: Number(m[1]), command: m[2] };
-      })
-      .filter((x): x is { pid: number; command: string } => Boolean(x));
-  } catch (err) {
-    log.warn("ps process listing failed:", err);
-    return [];
-  }
+	// Linux / macOS: prefer `ps`
+	try {
+		const { stdout } = await execFileAsync(
+			"ps",
+			process.platform === "darwin"
+				? ["-ax", "-o", "pid=,command="]
+				: ["-eo", "pid=,args="],
+			{ maxBuffer: 20 * 1024 * 1024 }
+		);
+		return stdout
+			.split("\n")
+			.map((line) => line.trim())
+			.filter(Boolean)
+			.map((line) => {
+				const m = line.match(/^(\d+)\s+(.*)$/);
+				if (!m) return null;
+				return { pid: Number(m[1]), command: m[2] };
+			})
+			.filter((x): x is { pid: number; command: string } => Boolean(x));
+	} catch (err) {
+		log.warn("ps process listing failed:", err);
+		return [];
+	}
 }
 
 export type FoundElectronApp = {
@@ -3016,30 +3016,30 @@ export type FoundElectronApp = {
 };
 
 export async function findRunningElectronApps(): Promise<FoundElectronApp[]> {
-  const procs = await listOsProcesses();
-  const found: FoundElectronApp[] = [];
-  for (const p of procs) {
-    const cmd = p.command;
-    if (!RE_ELECTRON_CMD.test(cmd)) continue;
-    const isHelper = RE_HELPER_PROC.test(cmd);
-    const debugPort = parseDebugPortFromCommand(cmd);
-    const inspectPort = parseInspectPortFromCommand(cmd);
+	const procs = await listOsProcesses();
+	const found: FoundElectronApp[] = [];
+	for (const p of procs) {
+		const cmd = p.command;
+		if (!RE_ELECTRON_CMD.test(cmd)) continue;
+		const isHelper = RE_HELPER_PROC.test(cmd);
+		const debugPort = parseDebugPortFromCommand(cmd);
+		const inspectPort = parseInspectPortFromCommand(cmd);
 
-    // Prefer main processes; still include helpers that expose a debug port.
-    if (isHelper && !debugPort) continue;
+		// Prefer main processes; still include helpers that expose a debug port.
+		if (isHelper && !debugPort) continue;
 
-    found.push({
-      pid: p.pid,
-      command: cmd.length > 400 ? `${cmd.slice(0, 400)}…` : cmd,
-      debugPort,
-      inspectPort,
-      likelyElectron: true,
-    });
-  }
+		found.push({
+			pid: p.pid,
+			command: cmd.length > 400 ? `${cmd.slice(0, 400)}…` : cmd,
+			debugPort,
+			inspectPort,
+			likelyElectron: true,
+		});
+	}
 
-  const byPid = new Map<number, FoundElectronApp>();
-  for (const f of found) byPid.set(f.pid, f);
-  return Array.from(byPid.values()).sort((a, b) => a.pid - b.pid);
+	const byPid = new Map<number, FoundElectronApp>();
+	for (const f of found) byPid.set(f.pid, f);
+	return Array.from(byPid.values()).sort((a, b) => a.pid - b.pid);
 }
 
 export async function resolveDebugPortForPid(
