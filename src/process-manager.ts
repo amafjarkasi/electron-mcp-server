@@ -59,6 +59,20 @@ export interface NetworkEntry {
 	errorText?: string;
 }
 
+export interface IpcEntry {
+	timestamp: string;
+	direction: "renderer->main" | "main->renderer" | "handle" | "unknown";
+	channel: string;
+	argsPreview: string;
+}
+
+export interface AuditIssue {
+	timestamp: string;
+	targetId: string;
+	code: string;
+	details?: unknown;
+}
+
 export interface ElectronProcess {
 	id: string;
 	process?: ChildProcess;
@@ -74,6 +88,8 @@ export interface ElectronProcess {
 	appPath: string;
 	consoleMessages: ConsoleMessage[];
 	networkEntries: NetworkEntry[];
+	ipcEntries: IpcEntry[];
+	auditIssues: AuditIssue[];
 	cdpClient?: CDP.Client;
 	cdpTargetId?: string;
 	monitorClients: Map<string, CDP.Client>;
@@ -530,6 +546,8 @@ export function createProcessRecord(
 		ElectronProcess,
 		| "consoleMessages"
 		| "networkEntries"
+		| "ipcEntries"
+		| "auditIssues"
 		| "monitorClients"
 		| "unmonitorableTargets"
 		| "inFlightMonitorTargets"
@@ -543,6 +561,8 @@ export function createProcessRecord(
 		logs: partial.logs ?? [],
 		consoleMessages: [],
 		networkEntries: [],
+		ipcEntries: [],
+		auditIssues: [],
 		monitorClients: new Map(),
 		unmonitorableTargets: new Set(),
 		inFlightMonitorTargets: new Set(),
@@ -1169,6 +1189,49 @@ function wireMonitorEvents(
 			);
 		}
 	});
+
+	client.on("Network.loadingFinished", (params) => {
+		try {
+			const p = (params ?? {}) as { requestId?: string; type?: string };
+			if (!p.requestId) return;
+			pushCapped(
+				electronProcess.networkEntries,
+				{
+					timestamp: new Date().toISOString(),
+					targetId,
+					requestId: p.requestId,
+					type: p.type,
+					event: "finished",
+				},
+				MAX_NETWORK,
+			);
+		} catch (err) {
+			log.warn(
+				`[${electronProcess.id}] Error handling Network.loadingFinished:`,
+				err,
+			);
+		}
+	});
+
+	client.on("Audits.issueAdded", (params) => {
+		try {
+			const issue = (params as { issue?: { code?: string; details?: unknown } })
+				?.issue;
+			if (!issue?.code) return;
+			pushCapped(
+				electronProcess.auditIssues,
+				{
+					timestamp: new Date().toISOString(),
+					targetId,
+					code: String(issue.code),
+					details: issue.details,
+				},
+				MAX_CONSOLE,
+			);
+		} catch (err) {
+			log.warn(`[${electronProcess.id}] Error handling Audits.issueAdded:`, err);
+		}
+	});
 }
 
 /**
@@ -1268,6 +1331,15 @@ export async function ensureMonitoring(
 					);
 				} catch {
 					// optional
+				}
+				try {
+					await withTimeout(
+						client.send("Audits.enable"),
+						MONITOR_STEP_TIMEOUT_MS,
+						`Audits.enable on target ${target.id}`,
+					);
+				} catch {
+					// optional — older Chromium may lack Audits
 				}
 				try {
 					await withTimeout(
@@ -2012,7 +2084,11 @@ export function pickTargetByRole(
 
 export function clearProcessBuffers(
 	electronProcess: ElectronProcess,
-	what: Array<"console" | "network" | "logs"> = ["console", "network", "logs"],
+	what: Array<"console" | "network" | "logs" | "ipc" | "audits"> = [
+		"console",
+		"network",
+		"logs",
+	],
 ): { cleared: string[] } {
 	const cleared: string[] = [];
 	if (what.includes("console")) {
@@ -2026,6 +2102,14 @@ export function clearProcessBuffers(
 	if (what.includes("logs")) {
 		electronProcess.logs = [];
 		cleared.push("logs");
+	}
+	if (what.includes("ipc")) {
+		electronProcess.ipcEntries = [];
+		cleared.push("ipc");
+	}
+	if (what.includes("audits")) {
+		electronProcess.auditIssues = [];
+		cleared.push("audits");
 	}
 	return { cleared };
 }

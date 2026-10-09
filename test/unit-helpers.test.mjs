@@ -265,6 +265,8 @@ test("createProcessRecord seeds empty buffers and a monitorClients map", () => {
   const proc = makeProc();
   assert.deepEqual(proc.consoleMessages, []);
   assert.deepEqual(proc.networkEntries, []);
+  assert.deepEqual(proc.ipcEntries, []);
+  assert.deepEqual(proc.auditIssues, []);
   assert.deepEqual(proc.logs, []);
   assert.ok(proc.monitorClients instanceof Map);
   assert.equal(proc.monitorClients.size, 0);

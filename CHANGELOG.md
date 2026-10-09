@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.6.0
+
+### Features — creative power tools
+- **`snapshot`** — CDP accessibility tree (`Accessibility.getFullAXTree`).
+- **`vision`** — one-shot screenshot + page + console errors + network failures (image + JSON).
+- **`get_response_body`** — `Network.getResponseBody` by `requestId` (buffers now record `loadingFinished`).
+- **`block_urls`** / **`set_extra_headers`** — Network request shaping.
+- **`get_performance_metrics`** — `Performance.getMetrics`.
+- **`start_cpu_profile`** / **`stop_cpu_profile`** / **`heap_snapshot`** — V8 Profiler + HeapProfiler artifacts.
+- **`main_state`** — Electron windows / paths / versions / metrics via `evaluate_main`.
+- **`ipc_tap`** / **`get_ipc_log`** — main-process IPC observability (requires `inspectMain`).
+- **`diff_screenshot`** — baseline vs current PNG (exact + byte similarity).
+- **`get_audit_issues`** — Chromium Audits domain buffer (enabled with monitoring).
+- **`find_installed_apps`** — scan common install locations for packaged Electron apps.
+- Surface: **52 tools · 7 resources · 4 prompts**.
+
 ## 1.5.1
 
 ### Fixes
