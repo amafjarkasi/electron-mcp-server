@@ -48,7 +48,13 @@ import {
   isCdpTransportError,
   withTimeout,
 } from "../build/process-manager.js";
-import { hasCpuProfileSession } from "../build/power-tools.js";
+import {
+  countInFlight,
+  hasCpuProfileSession,
+  matchAxNode,
+  networkEntriesToHar,
+  urlPatternMatches,
+} from "../build/power-tools.js";
 
 void _classify;
 
@@ -1440,4 +1446,81 @@ test("executeCDPCommand closes old client on reconnect retry", async () => {
     true,
     "Expected old monitor client to be closed on reconnect error",
   );
+});
+
+test("matchAxNode prefers exact name and role", () => {
+  const nodes = [
+    { role: "button", name: "Go home", backendDOMNodeId: 1 },
+    { role: "button", name: "Go", backendDOMNodeId: 2 },
+    { role: "textbox", name: "name", backendDOMNodeId: 3, ignored: true },
+    { role: "textbox", name: "name", description: "field", backendDOMNodeId: 4 },
+  ];
+  const exact = matchAxNode(nodes, { name: "Go", role: "button", exact: true });
+  assert.equal(exact?.backendDOMNodeId, 2);
+  const partial = matchAxNode(nodes, { name: "home", role: "button" });
+  assert.equal(partial?.backendDOMNodeId, 1);
+  const wrongRole = matchAxNode(nodes, { name: "Go", role: "link", exact: true });
+  assert.equal(wrongRole, undefined);
+  const textbox = matchAxNode(nodes, { name: "name", role: "textbox" });
+  assert.equal(textbox?.backendDOMNodeId, 4);
+});
+
+test("urlPatternMatches treats star as a wildcard", () => {
+  assert.equal(
+    urlPatternMatches("*stub-marker*", "https://example.invalid/stub-marker"),
+    true,
+  );
+  assert.equal(
+    urlPatternMatches("*stub-marker*", "https://example.invalid/other"),
+    false,
+  );
+  assert.equal(urlPatternMatches("https://exact.test/a", "https://exact.test/a"), true);
+  assert.equal(urlPatternMatches("", "https://exact.test/a"), false);
+});
+
+test("countInFlight treats unfinished request and response as in flight", () => {
+  assert.equal(
+    countInFlight([
+      { requestId: "a", event: "request" },
+      { requestId: "a", event: "response" },
+      { requestId: "b", event: "request" },
+      { requestId: "b", event: "finished" },
+      { requestId: "c", event: "request" },
+      { requestId: "c", event: "failed" },
+    ]),
+    1,
+  );
+});
+
+test("networkEntriesToHar groups events into HAR 1.2 entries", () => {
+  const har = networkEntriesToHar([
+    {
+      timestamp: "2026-10-09T00:00:00.000Z",
+      targetId: "t",
+      requestId: "r1",
+      method: "GET",
+      url: "https://example.test/a",
+      event: "request",
+    },
+    {
+      timestamp: "2026-10-09T00:00:01.000Z",
+      targetId: "t",
+      requestId: "r1",
+      url: "https://example.test/a",
+      status: 200,
+      mimeType: "application/json",
+      event: "response",
+    },
+    {
+      timestamp: "2026-10-09T00:00:02.000Z",
+      targetId: "t",
+      requestId: "r1",
+      event: "finished",
+    },
+  ]);
+  assert.equal(har.log.version, "1.2");
+  assert.equal(har.log.entries.length, 1);
+  assert.equal(har.log.entries[0].request.method, "GET");
+  assert.equal(har.log.entries[0].request.url, "https://example.test/a");
+  assert.equal(har.log.entries[0].response.status, 200);
 });

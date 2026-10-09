@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.8.0
+
+### Features — accessibility act + network control
+- **`click_ax` / `type_ax`** — click or type by accessibility name and role.
+- **`network_stub` / `clear_network_stubs`** — Fetch interception (fulfill or fail by `urlPattern`).
+- **`wait_network_idle`** — wait until the network buffer is quiet.
+- **`export_har`** — write the buffered network log as HAR 1.2.
+- **`handle_dialog`** — auto accept or dismiss JavaScript dialogs.
+- **`highlight`** — scroll a selector into view and paint a CDP overlay.
+- **`assert_ui`** — structured url / title / text / selector / expression checks.
+- **`open_deep_link`** — emit `open-url` and `second-instance` (requires `inspectMain`). Returns the URL app listeners recorded and mirrors it to `window.__DEEP_LINK__`.
+- Prompt **`ax_then_assert`** — snapshot → click_ax/type_ax → assert_ui.
+- Surface: **75 tools · 7 resources · 6 prompts**.
+
 ## 1.7.0
 
 ### Features — next creative ten

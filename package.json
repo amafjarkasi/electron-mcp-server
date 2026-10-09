@@ -1,6 +1,6 @@
 {
   "name": "electron-debug-mcp",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "MCP server for launching and debugging Electron apps via Chrome DevTools Protocol",
   "type": "module",
   "main": "./build/index.js",
