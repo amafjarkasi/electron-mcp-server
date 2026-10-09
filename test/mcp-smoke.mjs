@@ -766,6 +766,70 @@ async function main() {
     assert(!resumeResult.isError, `resume error: ${resumeResult.content?.[0]?.text}`);
     pass("resume");
 
+    // Navigate/reload before creative soft tools — virtual_clock can leave the
+    // renderer unable to complete a subsequent file:// navigation in CI.
+    const pageBeforeNav = await client.request("tools/call", {
+      name: "page_info",
+      arguments: { processId },
+    });
+    assert(!pageBeforeNav.isError, `page_info before navigate: ${pageBeforeNav.content?.[0]?.text}`);
+    const beforeNav = parseToolText(pageBeforeNav);
+    const originalUrl = beforeNav.url;
+    assert(originalUrl, `page_info missing url: ${JSON.stringify(beforeNav)}`);
+
+    const navAway = await client.request("tools/call", {
+      name: "navigate",
+      arguments: {
+        processId,
+        url: "about:blank",
+        waitUntilLoad: true,
+        timeoutMs: 15000,
+      },
+    });
+    assert(!navAway.isError, `navigate about:blank error: ${navAway.content?.[0]?.text}`);
+    pass("navigate (about:blank)");
+
+    const navBack = await client.request("tools/call", {
+      name: "navigate",
+      arguments: {
+        processId,
+        url: originalUrl,
+        waitUntilLoad: true,
+        timeoutMs: 15000,
+      },
+    });
+    assert(!navBack.isError, `navigate back error: ${navBack.content?.[0]?.text}`);
+    pass("navigate (restore)");
+
+    const reloadResult = await client.request("tools/call", {
+      name: "reload",
+      arguments: { processId, ignoreCache: false },
+    });
+    assert(!reloadResult.isError, `reload error: ${reloadResult.content?.[0]?.text}`);
+    const reloaded = parseToolText(reloadResult);
+    assert(
+      Array.isArray(reloaded.reloaded) && reloaded.reloaded.length > 0,
+      `reload returned no targets: ${JSON.stringify(reloaded)}`
+    );
+    pass("reload");
+
+    const cdpResultEarly = await client.request("tools/call", {
+      name: "cdp_command",
+      arguments: {
+        processId,
+        method: "Runtime.evaluate",
+        params: { expression: "1+2", returnByValue: true },
+      },
+    });
+    assert(!cdpResultEarly.isError, `cdp_command error: ${cdpResultEarly.content?.[0]?.text}`);
+    const cdpEarly = parseToolText(cdpResultEarly);
+    const cdpEarlyValue = cdpEarly?.result?.result?.value ?? cdpEarly?.result?.value;
+    assert(
+      cdpEarlyValue === 3,
+      `cdp_command unexpected value: ${JSON.stringify(cdpEarly)}`
+    );
+    pass("cdp_command");
+
     // --- v1.6 creative power tools (soft-skip heavy/optional CDP where flaky) ---
     const soft = async (label, fn) => {
       try {
@@ -1044,16 +1108,20 @@ async function main() {
     });
 
     await soft("virtual_clock", async () => {
-      const pause = await client.request("tools/call", {
+      const clock = await client.request("tools/call", {
         name: "virtual_clock",
         arguments: { processId, policy: "advance", budget: 50 },
       });
-      assert(!pause.isError, `virtual_clock: ${pause.content?.[0]?.text}`);
-      // Reload in case virtual time left the renderer sticky.
-      await client.request("tools/call", {
+      assert(!clock.isError, `virtual_clock: ${clock.content?.[0]?.text}`);
+      // ignoreCache reload — virtual time can otherwise stick across navigations in CI.
+      const reloadAfterClock = await client.request("tools/call", {
         name: "reload",
-        arguments: { processId },
+        arguments: { processId, ignoreCache: true },
       });
+      assert(
+        !reloadAfterClock.isError,
+        `reload after virtual_clock: ${reloadAfterClock.content?.[0]?.text}`,
+      );
       pass("virtual_clock");
     });
 
@@ -1103,68 +1171,6 @@ async function main() {
     } else {
       pass("get_response_body soft-skip (no requestId)");
     }
-
-    const pageBeforeNav = await client.request("tools/call", {
-      name: "page_info",
-      arguments: { processId },
-    });
-    assert(!pageBeforeNav.isError, `page_info before navigate: ${pageBeforeNav.content?.[0]?.text}`);
-    const beforeNav = parseToolText(pageBeforeNav);
-    const originalUrl = beforeNav.url;
-    assert(originalUrl, `page_info missing url: ${JSON.stringify(beforeNav)}`);
-
-    const navAway = await client.request("tools/call", {
-      name: "navigate",
-      arguments: {
-        processId,
-        url: "about:blank",
-        waitUntilLoad: true,
-        timeoutMs: 10000,
-      },
-    });
-    assert(!navAway.isError, `navigate about:blank error: ${navAway.content?.[0]?.text}`);
-    pass("navigate (about:blank)");
-
-    const navBack = await client.request("tools/call", {
-      name: "navigate",
-      arguments: {
-        processId,
-        url: originalUrl,
-        waitUntilLoad: true,
-        timeoutMs: 10000,
-      },
-    });
-    assert(!navBack.isError, `navigate back error: ${navBack.content?.[0]?.text}`);
-    pass("navigate (restore)");
-
-    const reloadResult = await client.request("tools/call", {
-      name: "reload",
-      arguments: { processId, ignoreCache: false },
-    });
-    assert(!reloadResult.isError, `reload error: ${reloadResult.content?.[0]?.text}`);
-    const reloaded = parseToolText(reloadResult);
-    assert(
-      Array.isArray(reloaded.reloaded) && reloaded.reloaded.length > 0,
-      `reload returned no targets: ${JSON.stringify(reloaded)}`
-    );
-    pass("reload");
-
-    const cdpResult = await client.request("tools/call", {
-      name: "cdp_command",
-      arguments: {
-        processId,
-        method: "Runtime.evaluate",
-        params: { expression: "1+2", returnByValue: true },
-      },
-    });
-    assert(!cdpResult.isError, `cdp_command error: ${cdpResult.content?.[0]?.text}`);
-    const cdp = parseToolText(cdpResult);
-    const cdpValue = cdp?.result?.result?.value ?? cdp?.result?.value;
-    assert(
-      cdpValue === 3,
-      `cdp_command unexpected value: ${JSON.stringify(cdp)}`
-    );
-    pass("cdp_command");
 
     // start_app used inspectMain:true — main/node target must be evaluable.
     let mainEval;
