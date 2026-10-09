@@ -45,6 +45,8 @@ import {
   isPathInside,
   waitForCondition,
   registerProcessCleanup,
+  isCdpTransportError,
+  withTimeout,
 } from "../build/process-manager.js";
 import { hasCpuProfileSession } from "../build/power-tools.js";
 
@@ -1007,6 +1009,43 @@ test("allocateLocalPort returns a bindable ephemeral port", async () => {
       srv.close((err) => (err ? reject(err) : resolve()));
     });
   });
+});
+
+// ===========================================================================
+// CDP transport classification + withTimeout
+// ===========================================================================
+
+test("isCdpTransportError matches socket / timeout failures only", () => {
+  assert.equal(isCdpTransportError(new Error("ECONNRESET")), true);
+  assert.equal(isCdpTransportError(new Error("WebSocket is not open")), true);
+  assert.equal(isCdpTransportError(new Error("CDP Runtime.evaluate timed out after 20000ms")), true);
+  assert.equal(isCdpTransportError(new Error("connection closed")), true);
+  assert.equal(isCdpTransportError(new Error("Invalid parameters")), false);
+  assert.equal(isCdpTransportError(new Error("'Network.getResponseBody' wasn't found")), false);
+  assert.equal(isCdpTransportError("EPIPE: broken pipe"), true);
+});
+
+test("withTimeout resolves before the deadline", async () => {
+  const value = await withTimeout(
+    Promise.resolve(42),
+    1_000,
+    "unit-fast",
+  );
+  assert.equal(value, 42);
+});
+
+test("withTimeout rejects when the promise stalls", async () => {
+  await assert.rejects(
+    () =>
+      withTimeout(
+        new Promise(() => {
+          /* never resolves */
+        }),
+        30,
+        "unit-stall",
+      ),
+    /unit-stall timed out after 30ms/,
+  );
 });
 
 // ===========================================================================

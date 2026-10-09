@@ -1,5 +1,6 @@
 import { type ChildProcess, execFile, spawn } from "child_process";
 import CDP from "chrome-remote-interface";
+import * as crypto from "crypto";
 import * as fs from "fs";
 import { createRequire } from "module";
 import * as net from "net";
@@ -8,6 +9,11 @@ import * as path from "path";
 import { promisify } from "util";
 import { processEvents } from "./events.js";
 import { log } from "./log.js";
+
+/** Default budget for a single CDP command / connect / target list fetch. */
+export const CDP_COMMAND_TIMEOUT_MS = 20_000;
+export const CDP_CONNECT_TIMEOUT_MS = 10_000;
+export const CDP_TARGET_LIST_TIMEOUT_MS = 5_000;
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
@@ -654,9 +660,10 @@ export async function startElectronApp(
 		throw new Error(`App path does not exist: ${resolvedAppPath}`);
 	}
 
-	const id = `electron-${Date.now()}`;
-	const port =
-		debugPort ?? Math.floor(Math.random() * (9999 - 9222 + 1)) + 9222;
+	const id = `electron-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
+	// Bind a real free port when the caller did not pin one (avoids random
+	// collisions with Hyper-V excluded ranges / concurrent starts).
+	const port = debugPort ?? (await allocateLocalPort());
 
 	const autoArgs: string[] = [];
 	if (
@@ -925,7 +932,8 @@ export async function updateCDPTargets(
 	const updatePromise = (async () => {
 		try {
 			const response = await fetch(
-				`http://127.0.0.1:${electronProcess.debugPort}/json/list`
+				`http://127.0.0.1:${electronProcess.debugPort}/json/list`,
+				{ signal: AbortSignal.timeout(CDP_TARGET_LIST_TIMEOUT_MS) },
 			);
 			if (!response.ok) {
 				throw new Error(`Failed to get targets: ${response.statusText}`);
@@ -944,6 +952,7 @@ export async function updateCDPTargets(
 				try {
 					const inspectRes = await fetch(
 						`http://127.0.0.1:${electronProcess.inspectPort}/json/list`,
+						{ signal: AbortSignal.timeout(CDP_TARGET_LIST_TIMEOUT_MS) },
 					);
 					if (inspectRes.ok) {
 						inspectTargets = ((await inspectRes.json()) as CDPTarget[]).map(
@@ -1419,15 +1428,60 @@ export async function connectToCDPTarget(
 	}
 
 	const targetPort = target.port ?? electronProcess.debugPort;
-	const client = await CDP({
+	// Race connect against a deadline. CDP cannot cancel an in-flight
+	// handshake, so a late winner must be closed to avoid leaking sockets.
+	const connection = CDP({
 		target: targetId,
 		port: targetPort,
 		host: "127.0.0.1",
 	});
+	let client: CDP.Client;
+	try {
+		client = await withTimeout(
+			connection,
+			CDP_CONNECT_TIMEOUT_MS,
+			`CDP connect to target ${targetId}`,
+		);
+	} catch (err) {
+		void connection.then((late) => closeClient(late)).catch(() => {
+			/* ignore */
+		});
+		throw err;
+	}
 
 	electronProcess.cdpClient = client;
 	electronProcess.cdpTargetId = targetId;
 	return client;
+}
+
+/** True when a CDP failure looks like a dropped socket / closed connection. */
+export function isCdpTransportError(err: unknown): boolean {
+	const msg = err instanceof Error ? err.message : String(err);
+	return /ECONNRESET|ECONNREFUSED|ENOTFOUND|EPIPE|socket|WebSocket|disconnected|connection closed|not open|TIMEDOUT|timed out|ETIMEDOUT/i.test(
+		msg,
+	);
+}
+
+/** Drop a possibly-wedged CDP client for `targetId` so the next call reconnects. */
+function invalidateCdpClient(
+	electronProcess: ElectronProcess,
+	targetId: string,
+): void {
+	const oldMonitor = electronProcess.monitorClients.get(targetId);
+	electronProcess.monitorClients.delete(targetId);
+	if (oldMonitor) {
+		void closeClient(oldMonitor);
+	}
+	if (electronProcess.cdpTargetId === targetId) {
+		if (
+			electronProcess.cdpClient &&
+			electronProcess.cdpClient !== oldMonitor
+		) {
+			void closeClient(electronProcess.cdpClient);
+		}
+		electronProcess.cdpClient = undefined;
+		electronProcess.cdpTargetId = undefined;
+	}
 }
 
 export async function executeCDPCommand(
@@ -1435,37 +1489,44 @@ export async function executeCDPCommand(
 	targetId: string,
 	method: string,
 	params: Record<string, unknown> = {},
+	timeoutMs = CDP_COMMAND_TIMEOUT_MS,
 ): Promise<unknown> {
 	const client = await connectToCDPTarget(electronProcess, targetId);
 	try {
-		return await client.send(method, params);
+		return await withTimeout(
+			client.send(method, params),
+			timeoutMs,
+			`CDP ${method}`,
+		);
 	} catch (err) {
-		// One reconnect attempt for dropped sockets
+		if (!isCdpTransportError(err)) {
+			throw err;
+		}
+		// One reconnect attempt for dropped sockets / timed-out commands only
 		log.warn(
 			`[${electronProcess.id}] CDP ${method} failed, reconnecting:`,
 			err,
 		);
-		const oldMonitor = electronProcess.monitorClients.get(targetId);
-		electronProcess.monitorClients.delete(targetId);
-		if (oldMonitor) {
-			void closeClient(oldMonitor);
-		}
-		if (electronProcess.cdpTargetId === targetId) {
-			if (
-				electronProcess.cdpClient &&
-				electronProcess.cdpClient !== oldMonitor
-			) {
-				void closeClient(electronProcess.cdpClient);
-			}
-			electronProcess.cdpClient = undefined;
-			electronProcess.cdpTargetId = undefined;
-		}
+		invalidateCdpClient(electronProcess, targetId);
 		const retry = await connectToCDPTarget(electronProcess, targetId);
-		return retry.send(method, params);
+		try {
+			return await withTimeout(
+				retry.send(method, params),
+				timeoutMs,
+				`CDP ${method} (retry)`,
+			);
+		} catch (retryErr) {
+			// Timed-out / dead sockets leave chrome-remote-interface wedged —
+			// drop the client so the next tool call opens a fresh session.
+			if (isCdpTransportError(retryErr)) {
+				invalidateCdpClient(electronProcess, targetId);
+			}
+			throw retryErr;
+		}
 	}
 }
 
-async function withTimeout<T>(
+export async function withTimeout<T>(
 	promise: Promise<T>,
 	ms: number,
 	label: string,

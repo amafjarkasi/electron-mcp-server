@@ -21,6 +21,12 @@
 - `snapshot` caps node count; `vision` soft-fails page/screenshot; heap waits on progress + rejects empty snapshots.
 - `diff_screenshot` validates PNG magic; IPC tap is defensive per-webContents; installed-app scan is bounded.
 - Smoke soft-skips flaky creative tools and cleans temp profile/heap/diff artifacts.
+- Per-command CDP timeouts (`CDP_COMMAND_TIMEOUT_MS`) with transport-only reconnect; late connect sockets closed; `/json/list` uses `AbortSignal.timeout`.
+- Default debug/inspect ports via `allocateLocalPort`; process ids include a random suffix to avoid collisions.
+- CPU profile start is serialized (`starting` lock); stop keeps the session on failure so callers can retry; cleanup stops Profiler on forget.
+- Heap snapshot binds listeners on the same CDP client that sends `takeHeapSnapshot`; disables HeapProfiler in `finally`.
+- `main_state` / `ipc_tap` throw on main-process `ok: false`; IPC tap sets the installed flag before wiring listeners.
+- Smoke uses a shared `finally` for stop/detach/temp cleanup; CPU/diff/heap soft paths clean artifacts even on failure.
 
 ## 1.5.1
 

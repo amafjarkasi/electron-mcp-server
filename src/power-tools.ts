@@ -15,12 +15,14 @@ import {
 	evaluateMain,
 	executeCDPCommand,
 	getPageInfo,
+	getProcess,
 	pickPageTarget,
 	pushCapped,
 	registerProcessCleanup,
 	saveScreenshot,
 	updateCDPTargets,
 	validateOutputPath,
+	withTimeout,
 } from "./process-manager.js";
 import { log } from "./log.js";
 
@@ -30,35 +32,43 @@ const HEAP_TIMEOUT_MS = 60_000;
 const CDP_TIMEOUT_MS = 20_000;
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-const cpuProfileSessions = new Map<
-	string,
-	{ targetId: string; startedAt: number }
->();
+type CpuSession = {
+	targetId: string;
+	startedAt: number;
+	/** Set while CDP start is in flight to serialize concurrent starts. */
+	starting?: boolean;
+};
+
+const cpuProfileSessions = new Map<string, CpuSession>();
 
 registerProcessCleanup((processId) => {
+	const session = cpuProfileSessions.get(processId);
 	cpuProfileSessions.delete(processId);
+	if (!session || session.starting) return;
+	// Best-effort stop for attach/detach (owned apps are dying anyway).
+	void (async () => {
+		try {
+			const proc = getProcess(processId);
+			if (!proc || proc.status !== "running") return;
+			await executeCDPCommand(
+				proc,
+				session.targetId,
+				"Profiler.stop",
+				{},
+				5_000,
+			).catch(() => undefined);
+			await executeCDPCommand(
+				proc,
+				session.targetId,
+				"Profiler.disable",
+				{},
+				5_000,
+			).catch(() => undefined);
+		} catch {
+			// ignore
+		}
+	})();
 });
-
-async function withTimeout<T>(
-	promise: Promise<T>,
-	ms: number,
-	label: string,
-): Promise<T> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	try {
-		return await Promise.race([
-			promise,
-			new Promise<T>((_, reject) => {
-				timer = setTimeout(
-					() => reject(new Error(`${label} timed out after ${ms}ms`)),
-					ms,
-				);
-			}),
-		]);
-	} finally {
-		if (timer) clearTimeout(timer);
-	}
-}
 
 async function cdpTimed(
 	electronProcess: ElectronProcess,
@@ -67,11 +77,8 @@ async function cdpTimed(
 	params: Record<string, unknown> = {},
 	ms = CDP_TIMEOUT_MS,
 ): Promise<unknown> {
-	return withTimeout(
-		executeCDPCommand(electronProcess, targetId, method, params),
-		ms,
-		method,
-	);
+	// executeCDPCommand already applies a timeout; pass through for clarity.
+	return executeCDPCommand(electronProcess, targetId, method, params, ms);
 }
 
 function isPng(buf: Buffer): boolean {
@@ -295,15 +302,27 @@ export async function startCpuProfile(
 ): Promise<{ processId: string; targetId: string }> {
 	await updateCDPTargets(electronProcess);
 	const target = pickPageTarget(electronProcess, targetId);
-	if (cpuProfileSessions.has(electronProcess.id)) {
+	const existing = cpuProfileSessions.get(electronProcess.id);
+	if (existing) {
 		throw new Error(
 			`CPU profile already active for ${electronProcess.id}. Call stop_cpu_profile first.`,
 		);
 	}
-	await cdpTimed(electronProcess, target.id, "Profiler.enable", {});
+	// Reserve the slot before awaiting CDP so concurrent starts cannot race.
+	cpuProfileSessions.set(electronProcess.id, {
+		targetId: target.id,
+		startedAt: Date.now(),
+		starting: true,
+	});
 	try {
+		await cdpTimed(electronProcess, target.id, "Profiler.enable", {});
 		await cdpTimed(electronProcess, target.id, "Profiler.start", {});
+		cpuProfileSessions.set(electronProcess.id, {
+			targetId: target.id,
+			startedAt: Date.now(),
+		});
 	} catch (err) {
+		cpuProfileSessions.delete(electronProcess.id);
 		try {
 			await cdpTimed(electronProcess, target.id, "Profiler.disable", {});
 		} catch {
@@ -311,10 +330,6 @@ export async function startCpuProfile(
 		}
 		throw err;
 	}
-	cpuProfileSessions.set(electronProcess.id, {
-		targetId: target.id,
-		startedAt: Date.now(),
-	});
 	return { processId: electronProcess.id, targetId: target.id };
 }
 
@@ -329,11 +344,11 @@ export async function stopCpuProfile(
 	durationMs: number;
 }> {
 	const session = cpuProfileSessions.get(electronProcess.id);
-	if (!session) {
+	if (!session || session.starting) {
 		throw new Error(`No active CPU profile for ${electronProcess.id}`);
 	}
 
-	let result: { profile?: unknown } = {};
+	let result: { profile?: unknown };
 	try {
 		result = (await cdpTimed(
 			electronProcess,
@@ -342,19 +357,22 @@ export async function stopCpuProfile(
 			{},
 			30_000,
 		)) as { profile?: unknown };
-	} finally {
-		cpuProfileSessions.delete(electronProcess.id);
-		try {
-			await cdpTimed(
-				electronProcess,
-				session.targetId,
-				"Profiler.disable",
-				{},
-				5_000,
-			);
-		} catch {
-			// ignore — target may be gone
-		}
+	} catch (err) {
+		// Keep the session so the caller can retry stop.
+		throw err;
+	}
+
+	cpuProfileSessions.delete(electronProcess.id);
+	try {
+		await cdpTimed(
+			electronProcess,
+			session.targetId,
+			"Profiler.disable",
+			{},
+			5_000,
+		);
+	} catch {
+		// ignore — target may be gone
 	}
 
 	const out =
@@ -388,9 +406,10 @@ export async function takeHeapSnapshot(
 ): Promise<{ processId: string; targetId: string; path: string; bytes: number }> {
 	await updateCDPTargets(electronProcess);
 	const target = pickPageTarget(electronProcess, targetId);
-	const client = await connectToCDPTarget(electronProcess, target.id);
-
+	// Enable first, then bind listeners on the *same* client that will send
+	// takeHeapSnapshot — executeCDPCommand may reconnect and orphan listeners.
 	await cdpTimed(electronProcess, target.id, "HeapProfiler.enable", {});
+	const client = await connectToCDPTarget(electronProcess, target.id);
 
 	const chunks: string[] = [];
 	const onChunk = (params: unknown) => {
@@ -424,17 +443,18 @@ export async function takeHeapSnapshot(
 	try {
 		await withTimeout(
 			(async () => {
-				await executeCDPCommand(
-					electronProcess,
-					target.id,
+				// Use the bound client directly — never reconnect under live listeners.
+				await withTimeout(
+					client.send("HeapProfiler.takeHeapSnapshot", {
+						reportProgress: true,
+					}),
+					HEAP_TIMEOUT_MS - 5_000,
 					"HeapProfiler.takeHeapSnapshot",
-					{ reportProgress: true },
 				);
 				const deadline = Date.now() + 2_000;
 				while (!finished && Date.now() < deadline) {
 					await new Promise((r) => setTimeout(r, 25));
 				}
-				// Final chunk flush even if progress event was missed
 				await new Promise((r) => setTimeout(r, 50));
 			})(),
 			HEAP_TIMEOUT_MS,
@@ -442,6 +462,15 @@ export async function takeHeapSnapshot(
 		);
 	} finally {
 		detach();
+		try {
+			await withTimeout(
+				client.send("HeapProfiler.disable", {}),
+				5_000,
+				"HeapProfiler.disable",
+			);
+		} catch {
+			// ignore — target may be gone or domain already off
+		}
 	}
 
 	if (chunks.length === 0) {
@@ -523,7 +552,14 @@ export async function getMainState(
 		"main_state",
 	);
 	const value = (result.result as { result?: { value?: unknown } })?.result
-		?.value;
+		?.value as Record<string, unknown> | undefined;
+	if (value && value.ok === false) {
+		throw new Error(
+			typeof value.error === "string"
+				? value.error
+				: "main_state failed in main process",
+		);
+	}
 	return {
 		processId: electronProcess.id,
 		targetId: result.targetId,
@@ -544,6 +580,8 @@ const IPC_TAP_EXPR = `(() => {
 		if (global.__electronMcpIpcTapInstalled) {
 			return { ok: true, already: true, count: (global.__electronMcpIpcLog || []).length };
 		}
+		// Mark installed first so a partial failure cannot stack app.on listeners.
+		global.__electronMcpIpcTapInstalled = true;
 		global.__electronMcpIpcLog = global.__electronMcpIpcLog || [];
 		const push = (entry) => {
 			try {
@@ -577,9 +615,9 @@ const IPC_TAP_EXPR = `(() => {
 				return listener(event, ...args);
 			});
 		};
-		global.__electronMcpIpcTapInstalled = true;
 		return { ok: true, already: false, count: 0 };
 	} catch (err) {
+		global.__electronMcpIpcTapInstalled = false;
 		return { ok: false, error: err && err.message ? err.message : String(err) };
 	}
 })()`;
@@ -594,6 +632,13 @@ export async function enableIpcTap(
 	);
 	const value = (result.result as { result?: { value?: unknown } })?.result
 		?.value as Record<string, unknown> | undefined;
+	if (value && value.ok === false) {
+		throw new Error(
+			typeof value.error === "string"
+				? value.error
+				: "ipc_tap failed in main process",
+		);
+	}
 	return { processId: electronProcess.id, targetId: result.targetId, ...(value ?? {}) };
 }
 
