@@ -57,6 +57,7 @@ class McpClient {
     this.pending = new Map();
     this.nextId = 1;
     this.stderr = "";
+    this.logNotifications = [];
 
     this.child.stdout.setEncoding("utf8");
     this.child.stdout.on("data", (chunk) => this.#onStdout(chunk));
@@ -92,6 +93,11 @@ class McpClient {
         this.pending.delete(msg.id);
         if (msg.error) reject(new Error(JSON.stringify(msg.error)));
         else resolve(msg.result);
+      } else if (
+        msg.method === "notifications/message" ||
+        msg.method === "notifications/logging/message"
+      ) {
+        this.logNotifications.push(msg.params ?? msg);
       }
     }
   }
@@ -220,7 +226,7 @@ async function main() {
   try {
     const init = await client.request("initialize", {
       protocolVersion: "2024-11-05",
-      capabilities: {},
+      capabilities: { logging: {} },
       clientInfo: { name: "mcp-smoke-test", version: "1.0.0" },
     });
     assert(init?.serverInfo?.name === "electron-debug-mcp", "bad serverInfo");
@@ -229,9 +235,7 @@ async function main() {
     client.notify("notifications/initialized");
     pass("initialize");
 
-    const tools = await client.request("tools/list");
-    const names = new Set((tools.tools ?? []).map((t) => t.name));
-    for (const required of [
+    const EXPECTED_TOOLS = [
       "start_app",
       "attach",
       "attach_by_pid",
@@ -268,17 +272,38 @@ async function main() {
       "reload",
       "pause",
       "resume",
-    ]) {
+    ];
+    assert.equal?.(EXPECTED_TOOLS.length, 36);
+    assert(
+      EXPECTED_TOOLS.length === 36,
+      `EXPECTED_TOOLS length drift: ${EXPECTED_TOOLS.length}`
+    );
+
+    const tools = await client.request("tools/list");
+    const names = new Set((tools.tools ?? []).map((t) => t.name));
+    assert(
+      names.size === 36,
+      `expected exactly 36 tools, got ${names.size}: ${[...names].sort().join(",")}`
+    );
+    for (const required of EXPECTED_TOOLS) {
       assert(names.has(required), `missing tool ${required}`);
     }
-    pass("tools/list");
+    pass("tools/list (36)");
 
     const prompts = await client.request("prompts/list");
+    const promptNames = new Set((prompts.prompts ?? []).map((p) => p.name));
+    for (const required of [
+      "debug_blank_window",
+      "find_renderer_exception",
+      "ui_smoke_check",
+    ]) {
+      assert(promptNames.has(required), `missing prompt ${required}`);
+    }
     assert(
-      (prompts.prompts ?? []).some((p) => p.name === "debug_blank_window"),
-      "missing debug_blank_window prompt"
+      promptNames.size === 3,
+      `expected exactly 3 prompts, got ${promptNames.size}`
     );
-    pass("prompts/list");
+    pass("prompts/list (3)");
 
     const resources = await client.request("resources/list");
     assert(
@@ -458,7 +483,33 @@ async function main() {
       arguments: { enabled: true },
     });
     assert(!liveResult.isError, `set_console_live error: ${liveResult.content?.[0]?.text}`);
-    pass("set_console_live");
+    const logsBeforeLive = client.logNotifications.length;
+    await client.request("tools/call", {
+      name: "evaluate",
+      arguments: {
+        processId,
+        expression: "console.log('smoke-live-log-ping'); 'live'",
+      },
+    });
+    // Wait for MCP logging notification from set_console_live
+    const liveDeadline = Date.now() + 5000;
+    while (
+      Date.now() < liveDeadline &&
+      !client.logNotifications
+        .slice(logsBeforeLive)
+        .some((n) => String(n.data ?? n.message ?? "").includes("smoke-live-log-ping"))
+    ) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert(
+      client.logNotifications
+        .slice(logsBeforeLive)
+        .some((n) => String(n.data ?? n.message ?? "").includes("smoke-live-log-ping")),
+      `set_console_live did not emit MCP log for console.log; got ${JSON.stringify(
+        client.logNotifications.slice(logsBeforeLive).slice(-5)
+      )}`
+    );
+    pass("set_console_live (MCP log notification)");
 
     const savePath = path.join(smokeOutDir, "smoke-screenshot.png");
     const saveResult = await client.request("tools/call", {
@@ -505,34 +556,32 @@ async function main() {
     assert(store.entries?.smoke === "1", `storage mismatch: ${JSON.stringify(store)}`);
     pass("get/set_storage");
 
+    // Use an http(s) URL — Chromium rejects cookies on file:// pages.
     const setCookieResult = await client.request("tools/call", {
       name: "set_cookie",
       arguments: {
         processId,
         name: "smoke",
         value: "ok",
-        url: "file:///",
+        url: "http://127.0.0.1/",
+        path: "/",
       },
     });
-    // file:// cookies may be rejected by Chromium; accept success or clear error
-    if (!setCookieResult.isError) {
-      const cookiesResult = await client.request("tools/call", {
-        name: "get_cookies",
-        arguments: { processId },
-      });
-      assert(!cookiesResult.isError, `get_cookies error: ${cookiesResult.content?.[0]?.text}`);
-      pass("get/set_cookie");
-    } else {
-      const msg = setCookieResult.content?.[0]?.text || "";
-      assert(/cookie|url|domain|success|false|Invalid/i.test(msg) || msg.length > 0, msg);
-      // Still exercise get_cookies
-      const cookiesResult = await client.request("tools/call", {
-        name: "get_cookies",
-        arguments: { processId },
-      });
-      assert(!cookiesResult.isError, `get_cookies error: ${cookiesResult.content?.[0]?.text}`);
-      pass("get/set_cookie (set may fail on file://)");
-    }
+    assert(
+      !setCookieResult.isError,
+      `set_cookie error: ${setCookieResult.content?.[0]?.text}`
+    );
+    const cookiesResult = await client.request("tools/call", {
+      name: "get_cookies",
+      arguments: { processId, urls: ["http://127.0.0.1/"] },
+    });
+    assert(!cookiesResult.isError, `get_cookies error: ${cookiesResult.content?.[0]?.text}`);
+    const cookies = parseToolText(cookiesResult);
+    assert(
+      (cookies.cookies ?? []).some((c) => c.name === "smoke" && c.value === "ok"),
+      `expected smoke cookie: ${JSON.stringify(cookies)}`
+    );
+    pass("get/set_cookie");
 
     const traceStart = await client.request("tools/call", {
       name: "start_tracing",
@@ -563,31 +612,26 @@ async function main() {
     pass("find_apps");
 
     const startedPid = started.pid;
-    if (startedPid) {
-      // Stop MCP ownership bookkeeping isn't required — attach_by_pid to same port should reuse/attach
-      const byPid = await client.request("tools/call", {
-        name: "attach_by_pid",
-        arguments: { pid: startedPid, name: "by-pid" },
+    assert(startedPid, "start_app must return pid for attach_by_pid coverage");
+    const byPid = await client.request("tools/call", {
+      name: "attach_by_pid",
+      arguments: { pid: startedPid, name: "by-pid" },
+    });
+    assert(
+      !byPid.isError,
+      `attach_by_pid must succeed for start_app pid ${startedPid}: ${byPid.content?.[0]?.text}`
+    );
+    const attachedPid = parseToolText(byPid);
+    assert(
+      attachedPid.debugPort === DEBUG_PORT,
+      `attach_by_pid wrong port: ${JSON.stringify(attachedPid)}`
+    );
+    pass("attach_by_pid");
+    if (attachedPid.id && attachedPid.id !== processId) {
+      await client.request("tools/call", {
+        name: "stop_app",
+        arguments: { processId: attachedPid.id },
       });
-      // May succeed (same port attach returns existing) or fail if pid cmdline lacks port — both OK if find_apps worked
-      if (!byPid.isError) {
-        const attachedPid = parseToolText(byPid);
-        assert(attachedPid.debugPort === DEBUG_PORT, `attach_by_pid wrong port: ${JSON.stringify(attachedPid)}`);
-        pass("attach_by_pid");
-        // If it created a separate session id, stop the duplicate attach session only when different
-        if (attachedPid.id && attachedPid.id !== processId) {
-          await client.request("tools/call", {
-            name: "stop_app",
-            arguments: { processId: attachedPid.id },
-          });
-        }
-      } else {
-        const msg = byPid.content?.[0]?.text || "";
-        assert(/debug|port|pid|Could not resolve/i.test(msg), `unexpected attach_by_pid error: ${msg}`);
-        pass("attach_by_pid (resolve may need cmdline port — exercised)");
-      }
-    } else {
-      pass("attach_by_pid (skipped — no pid)");
     }
 
     const waitEnabled = await client.request("tools/call", {

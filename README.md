@@ -222,33 +222,16 @@ That reinstalls Electron, extracts `electron.exe` with system `tar`, then runs t
 
 ## 🖥️ Cursor & Claude Desktop setup
 
-### Cursor
+### Via npm (recommended)
 
-1. `npm run build`
-2. Open **Cursor → MCP settings**
-3. Add (use your absolute path):
-
-**Windows**
+After publishing / linking the package, point MCP at the `electron-debug-mcp` bin:
 
 ```json
 {
   "mcpServers": {
     "electron-debug": {
-      "command": "node",
-      "args": ["C:/Users/you/code/electron-mcp-server/build/index.js"]
-    }
-  }
-}
-```
-
-**macOS / Linux**
-
-```json
-{
-  "mcpServers": {
-    "electron-debug": {
-      "command": "node",
-      "args": ["/Users/you/code/electron-mcp-server/build/index.js"],
+      "command": "npx",
+      "args": ["-y", "electron-debug-mcp"],
       "env": {
         "ELECTRON_MCP_NO_SANDBOX": "1"
       }
@@ -257,22 +240,37 @@ That reinstalls Electron, extracts `electron.exe` with system `tar`, then runs t
 }
 ```
 
-4. Restart Cursor  
-5. Confirm tools: `start_app`, `attach`, `find_apps`, `screenshot`, `get_console_messages`, `click`, `start_tracing`, …
+📄 Template: [`examples/cursor-mcp.json`](./examples/cursor-mcp.json) · [`examples/claude-desktop-config.json`](./examples/claude-desktop-config.json)
 
-📄 Template: [`examples/cursor-mcp.json`](./examples/cursor-mcp.json)
+### From a local clone
 
-### Claude Desktop
+```bash
+npm install && npm run build
+```
 
-Same `mcpServers` block in `claude_desktop_config.json`, pointing at `build/index.js`. Edit the file at:
+```json
+{
+  "mcpServers": {
+    "electron-debug": {
+      "command": "node",
+      "args": ["/absolute/path/to/electron-mcp-server/build/index.js"],
+      "env": {
+        "ELECTRON_MCP_NO_SANDBOX": "1"
+      }
+    }
+  }
+}
+```
+
+📄 Template: [`examples/cursor-mcp.local.json`](./examples/cursor-mcp.local.json)
+
+### Claude Desktop config paths
 
 - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 - **Linux:** `~/.config/Claude/claude_desktop_config.json`
 
-📄 Template: [`examples/claude-desktop-config.json`](./examples/claude-desktop-config.json)
-
-> ⚠️ **Don’t** run `node build/index.js` in a normal terminal for daily use — it waits on stdio for an MCP client. Let Cursor/Claude spawn it.
+> ⚠️ **Don’t** run `node build/index.js` / `npx electron-debug-mcp` in a normal terminal for daily use — it waits on stdio for an MCP client. Let Cursor/Claude spawn it.
 
 ---
 

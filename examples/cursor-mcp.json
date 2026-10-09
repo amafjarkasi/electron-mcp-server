@@ -1,10 +1,10 @@
 {
   "mcpServers": {
     "electron-debug": {
-      "command": "node",
-      "args": ["C:/Users/you/code/electron-mcp-server/build/index.js"],
+      "command": "npx",
+      "args": ["-y", "electron-debug-mcp"],
       "env": {
-        "ELECTRON_MCP_NO_SANDBOX": "0"
+        "ELECTRON_MCP_NO_SANDBOX": "1"
       }
     }
   }

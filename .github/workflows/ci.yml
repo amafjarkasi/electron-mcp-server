@@ -36,6 +36,9 @@ jobs:
       - name: Pack dry-run (publish surface)
         run: npm run pack:check
 
+      - name: Typecheck
+        run: npm run typecheck
+
       - name: Run tests (Linux / Xvfb)
         if: runner.os == 'Linux'
         uses: coactions/setup-xvfb@v1

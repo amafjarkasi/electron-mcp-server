@@ -37,6 +37,8 @@ import {
   pushCapped,
   setConsoleLiveLogging,
   stopElectronApp,
+  preferAppTarget,
+  allocateLocalPort,
   updateCDPTargets,
   validateOutputPath,
   isPathInside,
@@ -939,6 +941,33 @@ test("validateOutputPath splits allowlist on both ';' and '|'", () => {
   } finally {
     restoreEnv(prev);
   }
+});
+
+// ===========================================================================
+// preferAppTarget / allocateLocalPort
+// ===========================================================================
+
+test("preferAppTarget skips DevTools front-end pages", () => {
+  const app = { id: "app", url: "file:///index.html" };
+  const dt = { id: "dt", url: "devtools://devtools/bundled/inspector.html" };
+  assert.equal(preferAppTarget([dt, app]), app);
+  assert.equal(preferAppTarget([app, dt]), app);
+  assert.equal(preferAppTarget([dt]), dt);
+  assert.equal(preferAppTarget([]), undefined);
+});
+
+test("allocateLocalPort returns a bindable ephemeral port", async () => {
+  const { createServer } = await import("node:net");
+  const port = await allocateLocalPort();
+  assert.ok(Number.isInteger(port) && port > 0 && port <= 65535);
+  // Port should be free again after allocation (listen was closed).
+  await new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.once("error", reject);
+    srv.listen({ host: "127.0.0.1", port }, () => {
+      srv.close((err) => (err ? reject(err) : resolve()));
+    });
+  });
 });
 
 // ===========================================================================

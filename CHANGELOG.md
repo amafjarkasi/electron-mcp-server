@@ -10,9 +10,9 @@
 
 ### Tests & CI
 - Expanded E2E smoke: `inspectMain`, navigate/reload/pause/resume/cdp/`get_logs`, all 6 resources, real discover ports, post-stop cleanup.
-- Wired `monitor.test.mjs` into `npm test`.
-- CI matrix: Ubuntu + Xvfb, Windows, and macOS; Node 22.
-- `npm pack --dry-run` in CI; unit coverage for delete-on-stop / idempotent `stop_app`.
+- Smoke hardens: exact 36 tools + 3 prompts, `attach_by_pid` must succeed, cookies via `http://`, `set_console_live` asserts MCP log notifications.
+- Wired `monitor.test.mjs` into `npm test`; unit tests for `preferAppTarget` / `allocateLocalPort` / delete-on-stop.
+- CI matrix: Ubuntu + Xvfb, Windows, and macOS; Node 22; `typecheck` + `npm pack --dry-run`.
 
 ### Packaging & security
 - Package `files` / `.npmignore` / repository metadata; `prepublishOnly` builds before publish.
