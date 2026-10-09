@@ -28,6 +28,24 @@ app.whenReady().then(() => {
   console.log("minimal-electron-app ready");
 });
 
+function rememberDeepLink(url) {
+  if (!url) return;
+  // Synchronous on purpose. executeJavaScript does not settle while CDP is attached.
+  global.__LAST_DEEP_LINK__ = String(url);
+}
+
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  rememberDeepLink(url);
+});
+
+app.on("second-instance", (_event, argv) => {
+  const link = [...(argv || [])]
+    .reverse()
+    .find((arg) => typeof arg === "string" && arg.includes("://"));
+  rememberDeepLink(link);
+});
+
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();

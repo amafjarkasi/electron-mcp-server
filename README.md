@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="#-60-second-quick-start"><img src="https://img.shields.io/badge/⚡_Quick_Start-0F766E?style=for-the-badge" alt="Quick Start" /></a>
-  <a href="#-complete-tools-cheatsheet"><img src="https://img.shields.io/badge/🛠️_52_Tools-47848F?style=for-the-badge" alt="52 Tools" /></a>
+  <a href="#-complete-tools-cheatsheet"><img src="https://img.shields.io/badge/🛠️_75_Tools-47848F?style=for-the-badge" alt="75 Tools" /></a>
   <a href="#-usage-examples"><img src="https://img.shields.io/badge/📚_Examples-0EA5E9?style=for-the-badge" alt="Examples" /></a>
   <a href="#-cursor--claude-desktop-setup"><img src="https://img.shields.io/badge/🖥️_Cursor_Ready-3178C6?style=for-the-badge" alt="Cursor Ready" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/📜_ISC-F59E0B?style=for-the-badge" alt="ISC" /></a>
@@ -23,7 +23,7 @@
   <img src="https://img.shields.io/badge/Electron-desktop_apps-2B2E3A?style=flat-square&logo=electron&logoColor=white" alt="Electron" />
   <img src="https://img.shields.io/badge/TypeScript-7.x-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TS" />
   <img src="https://img.shields.io/badge/Node-%3E%3D18-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node" />
-  <img src="https://img.shields.io/badge/version-1.7.0-blue?style=flat-square" alt="version" />
+  <img src="https://img.shields.io/badge/version-1.8.0-blue?style=flat-square" alt="version" />
   <img src="https://img.shields.io/badge/tests-unit_+_monitor_+_e2e_smoke-8B5CF6?style=flat-square" alt="tests" />
 </p>
 
@@ -77,6 +77,7 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 > “Type into `#email`, press Enter, wait for Welcome, then list console errors.”  
 > “Start a CPU profile, click through settings, stop it, and save a heap snapshot.”  
 > “Enable `ipc_tap`, reproduce the bug, then dump `get_ipc_log`.”  
+> “`type_ax` the name field, `click_ax` Go, then `assert_ui` the status text.”  
 > “Diagnose why this Electron window is blank — run `doctor` first.”
 
 ### 📊 At a glance
@@ -86,7 +87,7 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 | 🔌 **Transport** | MCP **stdio** JSON-RPC |
 | 🧬 **Debug bridge** | Chrome DevTools Protocol (Runtime · Page · Network · Debugger · Input · Log · Tracing · Accessibility · Performance · Profiler · HeapProfiler · Audits) |
 | 🚀 **App control** | Spawn Electron **or** attach by port / PID / process scan |
-| 📦 **Surface area** | **65 tools** · **7 resources** · **5 prompts** · logging + resource list-changed |
+| 📦 **Surface area** | **75 tools** · **7 resources** · **6 prompts** · logging + resource list-changed |
 | 🖥️ **Platforms** | Windows · macOS · Linux (CI: **Ubuntu + Xvfb**, **Windows**, **macOS**) |
 | 📦 **Requires** | Node **≥ 18**, npm, one-time Electron binary download |
 | 🛡️ **Safety** | Optional `ELECTRON_MCP_ALLOWED_ROOTS` (app paths) · `ELECTRON_MCP_OUTPUT_ROOTS` (screenshot/trace output, plus built-in blocklist of sensitive locations); attach sessions detach-only on stop |
@@ -95,7 +96,8 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 ### ✅ Status
 
 - 🟢 Ready for local agent-driven Electron debugging (stdio MCP ↔ CDP)
-- 🟢 **v1.7.0** — 65 tools · vision loop · coverage / emulate / screencast / mhtml / topology · published on [npm](https://www.npmjs.com/package/electron-debug-mcp) (see [CHANGELOG](./CHANGELOG.md))
+- 🟢 **v1.8.0** — 75 tools · `click_ax` / `type_ax` · network stub + HAR · `assert_ui` · dialogs · deep links (see [CHANGELOG](./CHANGELOG.md))
+- 🟢 **v1.7.0** — coverage / emulate / screencast / mhtml / topology · published on [npm](https://www.npmjs.com/package/electron-debug-mcp)
 - 🟢 Session cleanup — stopped apps are removed from `list_apps`; CDP traces abandoned on stop/exit
 - 🟢 E2E smoke covers lifecycle, UI, resources, discover, and main-process eval (see [Testing](#-testing))
 - 🟢 CI: Ubuntu + Xvfb, Windows, and macOS (Node 22)
@@ -153,7 +155,7 @@ Electron bugs are often **invisible** to coding agents:
 
 ```mermaid
 mindmap
-  root((Electron Debug MCP<br/>v1.6 · 65 tools))
+  root((Electron Debug MCP<br/>v1.8 · 75 tools))
     Lifecycle
       start_app
       attach / attach_by_pid
@@ -170,11 +172,13 @@ mindmap
       cookies / storage
     Network
       get_network_log
-      get_response_body
+      network_stub / export_har
+      wait_network_idle
       block_urls
       set_extra_headers
     Interact
       wait_for / click
+      click_ax / type_ax
       type_text / press_key
       navigate / reload
       pause / resume
@@ -216,7 +220,7 @@ mindmap
 - 🧮 `evaluate` / `evaluate_main` / 🧠 `main_state`
 - 🍪 `get_cookies` / `set_cookie` · 🗄️ `get_storage` / `set_storage`
 - 🧾 `get_console_messages` · 🚨 `get_audit_issues`
-- 🌐 `get_network_log` · 📄 `get_response_body`
+- 🌐 `get_network_log` · 📄 `get_response_body` · 🧪 `network_stub` / `export_har`
 - 📜 `get_logs` · 🎯 `list_targets` / `page_info`
 
 </td>
@@ -227,8 +231,9 @@ mindmap
 ### 🖱️ Interaction
 - 🧭 `navigate` + load wait
 - ⏳ `wait_for` — selector / hidden / enabled / count / text / URL / console
-- 🖱️ `click` left/right/middle
+- 🖱️ `click` left/right/middle · ♿ `click_ax` / `type_ax`
 - ⌨️ `type_text` (+ clear / Enter) · `press_key` (+ modifiers)
+- ✅ `assert_ui` · 💬 `handle_dialog` · 🔗 `open_deep_link`
 - 🔄 `reload` · ⏸️ `pause` · ▶️ `resume`
 - 🧹 `clear_buffers` (console / network / logs / ipc / audits)
 
@@ -237,7 +242,7 @@ mindmap
 
 ### 🧠 Agent UX & power
 - 📝 MCP handshake **instructions** (+ `doctor` / `electron://server`)
-- 💬 Prompts: blank window · exceptions · UI smoke · attach_and_screenshot · **vision_then_act**
+- 💬 Prompts: blank window · exceptions · UI smoke · attach_and_screenshot · **vision_then_act** · **ax_then_assert**
 - 📈 `start_tracing` / `stop_tracing`
 - ⏱️ `start_cpu_profile` / `stop_cpu_profile` · 🧩 `heap_snapshot`
 - 📊 `get_performance_metrics`
@@ -342,10 +347,10 @@ flowchart TB
     Agent["Cursor / Claude / agent"]
   end
 
-  subgraph Server["Electron Debug MCP v1.6"]
-    Tools["65 tools"]
+  subgraph Server["Electron Debug MCP v1.8"]
+    Tools["75 tools"]
     Resources["7 resources"]
-    Prompts["5 prompts"]
+    Prompts["6 prompts"]
     Notify["logging · list-changed"]
   end
 
@@ -387,10 +392,10 @@ flowchart LR
 | Category | Tools |
 | --- | --- |
 | 🚀 Lifecycle | `start_app` · `attach` · `attach_by_pid` · `find_apps` · `discover_apps` · `find_installed_apps` · `stop_app` · `list_apps` · `diagnose` · `doctor` |
-| 🔍 Inspect | `screenshot` · `save_screenshot` · `diff_screenshot` · `vision` · `snapshot` · `get_dom` · `query_selector` · `evaluate` · `evaluate_main` · `main_state` · `webcontents_topology` · `get_cookies` · `set_cookie` · `get_storage` · `set_storage` · `get_console_messages` · `get_network_log` · `get_response_body` · `get_logs` · `get_audit_issues` · `list_targets` · `page_info` · `perf_audit` · `capture_mhtml` · `emulate` · `virtual_clock` · `set_file_input` · `set_breakpoint` · `resolve_stack` · coverage / screencast |
-| 🖱️ Interact | `navigate` · `wait_for` · `click` · `type_text` · `press_key` · `reload` · `pause` · `resume` · `clear_buffers` · `set_console_live` |
-| 🧰 Power | `start_tracing` · `stop_tracing` · `start_cpu_profile` · `stop_cpu_profile` · `heap_snapshot` · `get_performance_metrics` · `block_urls` · `set_extra_headers` · `ipc_tap` · `get_ipc_log` · `cdp_command` |
-| 💬 Prompts | `debug_blank_window` · `find_renderer_exception` · `ui_smoke_check` · `attach_and_screenshot` · `vision_then_act` |
+| 🔍 Inspect | `screenshot` · `save_screenshot` · `diff_screenshot` · `vision` · `snapshot` · `highlight` · `get_dom` · `query_selector` · `evaluate` · `evaluate_main` · `main_state` · `webcontents_topology` · `get_cookies` · `set_cookie` · `get_storage` · `set_storage` · `get_console_messages` · `get_network_log` · `get_response_body` · `export_har` · `get_logs` · `get_audit_issues` · `list_targets` · `page_info` · `perf_audit` · `capture_mhtml` · `emulate` · `virtual_clock` · `set_file_input` · `set_breakpoint` · `resolve_stack` · coverage / screencast |
+| 🖱️ Interact | `navigate` · `wait_for` · `click` · `click_ax` · `type_ax` · `type_text` · `press_key` · `assert_ui` · `handle_dialog` · `open_deep_link` · `reload` · `pause` · `resume` · `clear_buffers` · `set_console_live` |
+| 🧰 Power | `start_tracing` · `stop_tracing` · `start_cpu_profile` · `stop_cpu_profile` · `heap_snapshot` · `get_performance_metrics` · `block_urls` · `set_extra_headers` · `network_stub` · `clear_network_stubs` · `wait_network_idle` · `ipc_tap` · `get_ipc_log` · `cdp_command` |
+| 💬 Prompts | `debug_blank_window` · `find_renderer_exception` · `ui_smoke_check` · `attach_and_screenshot` · `vision_then_act` · `ax_then_assert` |
 
 ---
 
@@ -685,6 +690,23 @@ Escape hatch for any DevTools method not wrapped above.
 
 ---
 
+### ♿ v1.8 — act by accessibility, stub network, assert
+
+| Tool | Key params | What it does |
+| --- | --- | --- |
+| `click_ax` | `name`, `role?`, `exact?`, `button?` | Click the AX node (box model → mouse) |
+| `type_ax` | `name`, `text`, `role?`, `clear?` | Focus the AX node and `Input.insertText` |
+| `network_stub` | `urlPattern`, `action` `fulfill`\|`fail`, `status?`, `body?` | `Fetch.enable` rule (`*` wildcard). Same pattern replaces the previous rule |
+| `clear_network_stubs` | — | `Fetch.disable` and drop rules |
+| `wait_network_idle` | `idleMs?`, `timeoutMs?` | Quiet buffer, no in-flight request/response |
+| `export_har` | `path?` | HAR 1.2 from the network buffer (no bodies) |
+| `handle_dialog` | `action` `accept`\|`dismiss`, `promptText?`, `clear?` | Auto-answer `alert` / `confirm` / `prompt` |
+| `highlight` | `selector`, `durationMs?` | Overlay highlight; auto-hides when `durationMs` > 0 |
+| `assert_ui` | `urlIncludes?`, `titleIncludes?`, `textIncludes?`, `selector?`, `expression?`, `maxConsoleErrors?` | `{ pass, checks }`. A failed check is `pass: false`, not a tool error |
+| `open_deep_link` | `url`, `channel?` | Emit `open-url` + `second-instance` (needs `inspectMain`). Returns the URL app code recorded, and mirrors it to `window.__DEEP_LINK__` |
+
+---
+
 ## 📡 Resources (read-only)
 
 | URI | MIME | Description |
@@ -708,6 +730,7 @@ Escape hatch for any DevTools method not wrapped above.
 | `ui_smoke_check` | `processId`, `selector` | Wait → interact → verify |
 | `attach_and_screenshot` | `processId?`, `debugPort?` | Find/attach → screenshot + console errors |
 | `vision_then_act` | `processId`, `goal` | vision → snapshot → act → verify loop |
+| `ax_then_assert` | `processId`, `goal` | snapshot → `click_ax` / `type_ax` → `assert_ui` |
 
 ---
 

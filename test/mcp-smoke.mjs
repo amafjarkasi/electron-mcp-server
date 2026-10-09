@@ -304,6 +304,17 @@ async function main() {
       "capture_mhtml",
       "virtual_clock",
       "webcontents_topology",
+      // v1.8
+      "click_ax",
+      "type_ax",
+      "network_stub",
+      "clear_network_stubs",
+      "wait_network_idle",
+      "export_har",
+      "handle_dialog",
+      "highlight",
+      "assert_ui",
+      "open_deep_link",
     ];
     const tools = await client.request("tools/list");
     const names = new Set((tools.tools ?? []).map((t) => t.name));
@@ -335,13 +346,14 @@ async function main() {
       "ui_smoke_check",
       "attach_and_screenshot",
       "vision_then_act",
+      "ax_then_assert",
     ]) {
       assert(promptNames.has(required), `missing prompt ${required}`);
     }
     // Allow additive prompts but never drop required ones.
     assert(
-      promptNames.size >= 5,
-      `expected at least 5 prompts, got ${promptNames.size}`
+      promptNames.size >= 6,
+      `expected at least 6 prompts, got ${promptNames.size}`
     );
     pass(`prompts/list (${promptNames.size})`);
 
@@ -1147,6 +1159,213 @@ async function main() {
       });
       assert(!stack.isError, `resolve_stack: ${stack.content?.[0]?.text}`);
       pass("resolve_stack");
+    });
+
+    // --- v1.8 creative tools (soft) ---
+    await soft("click_ax / type_ax / assert_ui", async () => {
+      const before = await client.request("tools/call", {
+        name: "evaluate",
+        arguments: { processId, expression: "window.__FIXTURE__.clicks" },
+      });
+      assert(!before.isError, `clicks before: ${before.content?.[0]?.text}`);
+      const clicksBefore = Number(parseToolText(before)?.result?.result?.value ?? 0);
+      const typed = await client.request("tools/call", {
+        name: "type_ax",
+        arguments: {
+          processId,
+          name: "name",
+          role: "textbox",
+          text: "ada",
+          clear: true,
+          exact: true,
+        },
+      });
+      assert(!typed.isError, `type_ax: ${typed.content?.[0]?.text}`);
+      const clicked = await client.request("tools/call", {
+        name: "click_ax",
+        arguments: { processId, name: "Go", role: "button", exact: true },
+      });
+      assert(!clicked.isError, `click_ax: ${clicked.content?.[0]?.text}`);
+      const after = await client.request("tools/call", {
+        name: "evaluate",
+        arguments: { processId, expression: "window.__FIXTURE__.clicks" },
+      });
+      const clicksAfter = Number(parseToolText(after)?.result?.result?.value ?? 0);
+      assert(
+        clicksAfter === clicksBefore + 1,
+        `click_ax did not increment clicks (${clicksBefore} -> ${clicksAfter})`,
+      );
+      const asserted = await client.request("tools/call", {
+        name: "assert_ui",
+        arguments: {
+          processId,
+          titleIncludes: "Minimal Electron Fixture",
+          textIncludes: "clicked:ada",
+          selector: "#go",
+          expression: "window.__FIXTURE__.clicks >= 1",
+        },
+      });
+      assert(!asserted.isError, `assert_ui: ${asserted.content?.[0]?.text}`);
+      const assertedData = parseToolText(asserted);
+      assert(assertedData.pass === true, `assert_ui failed: ${JSON.stringify(assertedData.checks)}`);
+      pass("click_ax / type_ax / assert_ui");
+    });
+
+    await soft("highlight", async () => {
+      const hi = await client.request("tools/call", {
+        name: "highlight",
+        arguments: { processId, selector: "#go", durationMs: 50 },
+      });
+      assert(!hi.isError, `highlight: ${hi.content?.[0]?.text}`);
+      const data = parseToolText(hi);
+      assert(data.nodeId && data.hidden === true, `highlight missing node: ${JSON.stringify(data)}`);
+      pass("highlight");
+    });
+
+    await soft("network_stub", async () => {
+      try {
+        const stub = await client.request("tools/call", {
+          name: "network_stub",
+          arguments: {
+            processId,
+            urlPattern: "*stub-marker*",
+            action: "fulfill",
+            status: 201,
+            body: "{\"stubbed\":true}",
+            contentType: "application/json",
+          },
+        });
+        assert(!stub.isError, `network_stub: ${stub.content?.[0]?.text}`);
+        const fetched = await client.request("tools/call", {
+          name: "evaluate",
+          arguments: {
+            processId,
+            expression:
+              "fetch('https://example.invalid/stub-marker').then(async (r) => ({ status: r.status, body: await r.json() }))",
+          },
+        });
+        assert(!fetched.isError, `stub fetch: ${fetched.content?.[0]?.text}`);
+        const value = parseToolText(fetched)?.result?.result?.value;
+        assert(
+          value?.status === 201 && value?.body?.stubbed === true,
+          `stub body mismatch: ${JSON.stringify(value)}`,
+        );
+        pass("network_stub");
+      } finally {
+        try {
+          await client.request(
+            "tools/call",
+            { name: "clear_network_stubs", arguments: { processId } },
+            15_000,
+          );
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+
+    await soft("wait_network_idle", async () => {
+      const idle = await client.request("tools/call", {
+        name: "wait_network_idle",
+        arguments: { processId, idleMs: 200, timeoutMs: 4000 },
+      });
+      assert(!idle.isError, `wait_network_idle: ${idle.content?.[0]?.text}`);
+      const data = parseToolText(idle);
+      assert(data.idle === true, `wait_network_idle not idle: ${JSON.stringify(data)}`);
+      pass("wait_network_idle");
+    });
+
+    await soft("export_har", async () => {
+      let harPath;
+      try {
+        const har = await client.request("tools/call", {
+          name: "export_har",
+          arguments: { processId },
+        });
+        assert(!har.isError, `export_har: ${har.content?.[0]?.text}`);
+        const data = parseToolText(har);
+        assert(data.path && data.bytes > 0, `export_har missing file: ${JSON.stringify(data)}`);
+        harPath = data.path;
+        const parsed = JSON.parse(fs.readFileSync(harPath, "utf8"));
+        assert(parsed.log?.version === "1.2", "export_har not HAR 1.2");
+        pass("export_har");
+      } finally {
+        if (harPath) {
+          try {
+            fs.unlinkSync(harPath);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    });
+
+    await soft("handle_dialog", async () => {
+      try {
+        const armed = await client.request("tools/call", {
+          name: "handle_dialog",
+          arguments: { processId, action: "accept" },
+        });
+        assert(!armed.isError, `handle_dialog: ${armed.content?.[0]?.text}`);
+        const alerted = await client.request("tools/call", {
+          name: "evaluate",
+          arguments: {
+            processId,
+            expression: '(() => { alert("fixture-dialog"); return "after-alert"; })()',
+          },
+        });
+        assert(!alerted.isError, `alert: ${alerted.content?.[0]?.text}`);
+        const value = parseToolText(alerted)?.result?.result?.value;
+        assert(value === "after-alert", `dialog blocked evaluate: ${JSON.stringify(value)}`);
+        const again = await client.request("tools/call", {
+          name: "handle_dialog",
+          arguments: { processId, action: "accept" },
+        });
+        const seen = parseToolText(again)?.seen ?? [];
+        assert(
+          seen.some((d) => String(d.message).includes("fixture-dialog")),
+          `dialog not recorded: ${JSON.stringify(seen)}`,
+        );
+        pass("handle_dialog");
+      } finally {
+        try {
+          await client.request(
+            "tools/call",
+            { name: "handle_dialog", arguments: { processId, clear: true } },
+            15_000,
+          );
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+
+    await soft("open_deep_link", async () => {
+      const link = await client.request("tools/call", {
+        name: "open_deep_link",
+        arguments: { processId, url: "electron-debug-mcp://fixture" },
+      });
+      assert(!link.isError, `open_deep_link: ${link.content?.[0]?.text}`);
+      const data = parseToolText(link);
+      assert(data.ok === true, `open_deep_link not ok: ${JSON.stringify(data)}`);
+      const delivered = data.delivered ?? [];
+      assert(
+        delivered.some((d) => d.event === "open-url" && d.listeners === true),
+        `open-url had no listener: ${JSON.stringify(delivered)}`,
+      );
+      assert(
+        delivered.some((d) => d.event === "second-instance" && d.listeners === true),
+        `second-instance had no listener: ${JSON.stringify(delivered)}`,
+      );
+      assert(
+        data.recorded === "electron-debug-mcp://fixture",
+        `app did not record deep link: ${JSON.stringify(data)}`,
+      );
+      assert(
+        data.renderer === "electron-debug-mcp://fixture",
+        `renderer missed deep link: ${JSON.stringify(data)}`,
+      );
+      pass("open_deep_link");
     });
 
     // Soft: get_response_body needs a finished requestId — use latest if any.

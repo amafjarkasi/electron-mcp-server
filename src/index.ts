@@ -51,11 +51,15 @@ import {
 	withTimeout,
 } from "./process-manager.js";
 import {
+	assertUi,
 	blockUrls,
 	captureMhtml,
+	clearNetworkStubs,
+	clickByAx,
 	diffScreenshot,
 	emulate,
 	enableIpcTap,
+	exportHar,
 	findInstalledElectronApps,
 	getAccessibilitySnapshot,
 	getAppVision,
@@ -65,6 +69,10 @@ import {
 	getPerformanceMetrics,
 	getResponseBody,
 	getWebContentsTopology,
+	handleDialog,
+	highlightSelector,
+	networkStub,
+	openDeepLink,
 	removeBreakpoint,
 	resolveStack,
 	runPerfAudit,
@@ -79,6 +87,8 @@ import {
 	stopCpuProfile,
 	stopScreencast,
 	takeHeapSnapshot,
+	typeByAx,
+	waitNetworkIdle,
 } from "./power-tools.js";
 
 const require = createRequire(import.meta.url);
@@ -2127,6 +2137,276 @@ server.tool(
 	},
 );
 
+// --- Creative power tools (v1.8) ---
+
+server.tool(
+	"click_ax",
+	"Click an element by accessibility name (optional role). Uses the AX tree, not CSS.",
+	{
+		processId: z.string(),
+		name: z.string().describe('Accessible name, e.g. "Go" or "Submit"'),
+		role: z.string().optional().describe('AX role, e.g. "button" or "link"'),
+		exact: z.boolean().optional().describe("Require an exact name match"),
+		button: z.enum(["left", "right", "middle"]).optional(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, name, role, exact, button, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(
+				await clickByAx(proc, { name, role, exact, button, targetId }),
+			);
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"type_ax",
+	"Focus an element by accessibility name and insert text (optional clear)",
+	{
+		processId: z.string(),
+		name: z.string().describe("Accessible name of the field"),
+		text: z.string(),
+		role: z.string().optional().describe('AX role, e.g. "textbox"'),
+		exact: z.boolean().optional(),
+		clear: z.boolean().optional(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, name, text, role, exact, clear, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(
+				await typeByAx(proc, { name, text, role, exact, clear, targetId }),
+			);
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"network_stub",
+	"Intercept matching URLs via Fetch and fulfill or fail them. Replaces a rule with the same urlPattern. Pair with clear_network_stubs.",
+	{
+		processId: z.string(),
+		urlPattern: z
+			.string()
+			.describe('CDP urlPattern; * is a wildcard, e.g. "*api/users*"'),
+		action: z.enum(["fulfill", "fail"]),
+		status: z.number().int().min(0).max(599).optional(),
+		body: z.string().optional(),
+		contentType: z.string().optional(),
+		headers: z.record(z.string()).optional(),
+		errorReason: z
+			.enum([
+				"Failed",
+				"Aborted",
+				"TimedOut",
+				"BlockedByClient",
+				"NameNotResolved",
+			])
+			.optional(),
+		targetId: z.string().optional(),
+	},
+	async ({
+		processId,
+		urlPattern,
+		action,
+		status,
+		body,
+		contentType,
+		headers,
+		errorReason,
+		targetId,
+	}) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(
+				await networkStub(proc, {
+					urlPattern,
+					action,
+					status,
+					body,
+					contentType,
+					headers,
+					errorReason,
+					targetId,
+				}),
+			);
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"clear_network_stubs",
+	"Disable Fetch interception and drop stub rules for this session",
+	{
+		processId: z.string(),
+	},
+	async ({ processId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await clearNetworkStubs(proc));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"wait_network_idle",
+	"Wait until no network request is in flight and the log has been quiet for idleMs",
+	{
+		processId: z.string(),
+		idleMs: z.number().int().positive().max(10_000).optional(),
+		timeoutMs: z.number().int().positive().max(30_000).optional(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, idleMs, timeoutMs, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(
+				await waitNetworkIdle(proc, { idleMs, timeoutMs, targetId }),
+			);
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"export_har",
+	"Write the buffered network log as HAR 1.2 JSON (method, URL, status; no bodies)",
+	{
+		processId: z.string(),
+		path: z.string().optional(),
+	},
+	async ({ processId, path: filePath }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await exportHar(proc, filePath));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"handle_dialog",
+	"Auto accept or dismiss the next JavaScript dialogs (alert/confirm/prompt). clear:true disarms.",
+	{
+		processId: z.string(),
+		action: z.enum(["accept", "dismiss"]).optional(),
+		promptText: z.string().optional().describe("Value when accepting a prompt"),
+		clear: z.boolean().optional(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, action, promptText, clear, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(
+				await handleDialog(proc, { action, promptText, clear, targetId }),
+			);
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"highlight",
+	"Scroll a CSS selector into view and paint a CDP overlay highlight (auto-hides when durationMs > 0)",
+	{
+		processId: z.string(),
+		selector: z.string(),
+		durationMs: z.number().int().nonnegative().max(5000).optional(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, selector, durationMs, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(
+				await highlightSelector(proc, { selector, durationMs, targetId }),
+			);
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"assert_ui",
+	"Check url/title/text/selector/console-error budget/expression. Returns pass:false with per-check detail (does not throw on a failed check).",
+	{
+		processId: z.string(),
+		urlIncludes: z.string().optional(),
+		titleIncludes: z.string().optional(),
+		textIncludes: z.string().optional(),
+		selector: z.string().optional(),
+		selectorHidden: z.string().optional(),
+		maxConsoleErrors: z.number().int().nonnegative().optional(),
+		expression: z
+			.string()
+			.optional()
+			.describe("JS expression that must be truthy"),
+		targetId: z.string().optional(),
+	},
+	async ({
+		processId,
+		urlIncludes,
+		titleIncludes,
+		textIncludes,
+		selector,
+		selectorHidden,
+		maxConsoleErrors,
+		expression,
+		targetId,
+	}) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(
+				await assertUi(proc, {
+					urlIncludes,
+					titleIncludes,
+					textIncludes,
+					selector,
+					selectorHidden,
+					maxConsoleErrors,
+					expression,
+					targetId,
+				}),
+			);
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"open_deep_link",
+	"Emit Electron open-url and second-instance (requires inspectMain). Returns the URL the app recorded and mirrors it to window.__DEEP_LINK__.",
+	{
+		processId: z.string(),
+		url: z.string().describe("Deep link or URL to deliver"),
+		channel: z
+			.string()
+			.optional()
+			.describe("Also webContents.send(channel, url) when set"),
+	},
+	async ({ processId, url, channel }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await openDeepLink(proc, { url, channel }));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
 // --- Prompts ---
 
 server.prompt(
@@ -2266,10 +2546,39 @@ Process: ${processId}
 Agent loop (prefer tools over guessing):
 1. vision — one-shot screenshot + console errors + network failures.
 2. snapshot — accessibility tree for roles/names to choose selectors.
-3. Act — wait_for / click / type_text / press_key / set_file_input / navigate as needed.
-4. Verify — screenshot or diff_screenshot; re-check get_console_messages.
+3. Act — click_ax / type_ax by accessible name, or wait_for / click / type_text / press_key / navigate.
+4. Verify — assert_ui, screenshot, or diff_screenshot; re-check get_console_messages.
 5. If stuck — webcontents_topology, main_state / ipc_tap, perf_audit.
 6. Summarize what changed and remaining risks.`,
+				},
+			},
+		],
+	}),
+);
+
+server.prompt(
+	"ax_then_assert",
+	"Agent loop: snapshot → click_ax/type_ax → assert_ui (accessibility-first)",
+	{
+		processId: z.string(),
+		goal: z.string().describe("What the agent should accomplish in the Electron UI"),
+	},
+	async ({ processId, goal }) => ({
+		messages: [
+			{
+				role: "user",
+				content: {
+					type: "text",
+					text: `Goal: ${goal}
+Process: ${processId}
+
+Accessibility-first loop:
+1. snapshot — read roles and accessible names.
+2. Act with click_ax / type_ax using those names (CSS click/type_text only if AX matching fails).
+3. If a fetch is involved, network_stub or wait_network_idle as needed.
+4. If alert/confirm/prompt can appear, handle_dialog before the action.
+5. assert_ui with the expected title, text, selector, or expression.
+6. Summarize pass/fail from assert_ui checks.`,
 				},
 			},
 		],
@@ -2303,13 +2612,14 @@ server.resource(
 						consoleLiveLogging: isConsoleLiveLoggingEnabled(),
 						capabilities: {
 							tools:
-								"see tools/list (65 tools: lifecycle, inspect, vision/snapshot, profiling, coverage, emulate, screencast, IPC, audits…)",
+								"see tools/list (75 tools: lifecycle, inspect, vision/snapshot, a11y act, network stub, profiling, coverage, emulate, screencast, IPC, audits…)",
 							prompts: [
 								"debug_blank_window",
 								"find_renderer_exception",
 								"ui_smoke_check",
 								"attach_and_screenshot",
 								"vision_then_act",
+								"ax_then_assert",
 							],
 							resources: [
 								"electron://server",

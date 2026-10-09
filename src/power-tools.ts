@@ -9,6 +9,7 @@ import * as path from "path";
 import {
 	type ElectronProcess,
 	type IpcEntry,
+	type NetworkEntry,
 	captureScreenshot,
 	connectToCDPTarget,
 	ensureMonitoring,
@@ -1876,4 +1877,1059 @@ export async function getWebContentsTopology(
 		main,
 		links,
 	};
+}
+
+// ---------------------------------------------------------------------------
+// v1.8 creative tools — a11y act, network stub/HAR/idle, dialogs, assert, deep link
+// ---------------------------------------------------------------------------
+
+export type AxMatchNode = {
+	nodeId?: string;
+	role?: string;
+	name?: string;
+	description?: string;
+	backendDOMNodeId?: number;
+	ignored?: boolean;
+};
+
+/** Pick the best accessibility node for a name (and optional role). */
+export function matchAxNode(
+	nodes: AxMatchNode[],
+	query: { name: string; role?: string; exact?: boolean },
+): AxMatchNode | undefined {
+	const want = query.name.trim().toLowerCase();
+	const role = query.role?.trim().toLowerCase();
+	if (!want) return undefined;
+	let best: { node: AxMatchNode; score: number } | undefined;
+	for (const node of nodes) {
+		if (node.ignored || node.backendDOMNodeId == null) continue;
+		if (role && (node.role ?? "").toLowerCase() !== role) continue;
+		const name = (node.name ?? "").trim().toLowerCase();
+		const desc = (node.description ?? "").trim().toLowerCase();
+		let score = 0;
+		if (name === want) score = 4;
+		else if (!query.exact && name.includes(want)) score = 3;
+		else if (desc === want) score = 2;
+		else if (!query.exact && desc.includes(want)) score = 1;
+		if (score > 0 && (!best || score > best.score)) {
+			best = { node, score };
+		}
+	}
+	return best?.node;
+}
+
+function axHint(nodes: AxMatchNode[]): string {
+	return nodes
+		.filter((n) => !n.ignored && (n.name || n.role))
+		.slice(0, 12)
+		.map((n) => `${n.role ?? "?"}:${n.name ?? ""}`)
+		.join(", ");
+}
+
+/** CDP `urlPattern`: `*` is a wildcard. Anchored, case-insensitive. */
+export function urlPatternMatches(pattern: string, url: string): boolean {
+	const trimmed = pattern.trim();
+	if (!trimmed || !url) return false;
+	const escaped = trimmed
+		.replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+		.replace(/\*/g, ".*");
+	return new RegExp(`^${escaped}$`, "i").test(url);
+}
+
+/** Requests whose latest event is still `request` or `response`. */
+export function countInFlight(
+	entries: Array<{ requestId: string; event: string }>,
+): number {
+	const last = new Map<string, string>();
+	for (const entry of entries) {
+		if (entry.requestId) last.set(entry.requestId, entry.event);
+	}
+	let inflight = 0;
+	for (const event of last.values()) {
+		if (event === "request" || event === "response") inflight += 1;
+	}
+	return inflight;
+}
+
+/** Best-effort HAR 1.2 from the buffered network log (no bodies/headers). */
+export function networkEntriesToHar(entries: NetworkEntry[]): {
+	log: {
+		version: string;
+		creator: { name: string; version: string };
+		entries: Array<Record<string, unknown>>;
+	};
+} {
+	const groups = new Map<string, NetworkEntry[]>();
+	for (const entry of entries) {
+		const list = groups.get(entry.requestId) ?? [];
+		list.push(entry);
+		groups.set(entry.requestId, list);
+	}
+	const harEntries: Array<Record<string, unknown>> = [];
+	for (const [, evs] of groups) {
+		if (harEntries.length >= 500) break;
+		const req = evs.find((e) => e.event === "request");
+		const res = evs.find((e) => e.event === "response");
+		const fail = evs.find((e) => e.event === "failed");
+		const url = req?.url ?? res?.url;
+		if (!url) continue;
+		harEntries.push({
+			startedDateTime: req?.timestamp ?? evs[0]?.timestamp,
+			time: 0,
+			request: {
+				method: req?.method ?? "GET",
+				url,
+				httpVersion: "HTTP/1.1",
+				headers: [],
+				queryString: [],
+				cookies: [],
+				headersSize: -1,
+				bodySize: -1,
+			},
+			response: {
+				status: res?.status ?? 0,
+				statusText: fail?.errorText ?? "",
+				httpVersion: "HTTP/1.1",
+				headers: [],
+				cookies: [],
+				content: { size: 0, mimeType: res?.mimeType ?? "" },
+				redirectURL: "",
+				headersSize: -1,
+				bodySize: -1,
+			},
+			cache: {},
+			timings: { send: 0, wait: 0, receive: 0 },
+			_requestId: req?.requestId ?? evs[0]?.requestId,
+			...(fail ? { _errorText: fail.errorText } : {}),
+		});
+	}
+	return {
+		log: {
+			version: "1.2",
+			creator: { name: "electron-debug-mcp", version: "1.8.0" },
+			entries: harEntries,
+		},
+	};
+}
+
+type EvalPayload = {
+	result?: { value?: unknown; subtype?: string; description?: string };
+	exceptionDetails?: { text?: string; exception?: { description?: string } };
+};
+
+async function evalPage(
+	electronProcess: ElectronProcess,
+	targetId: string,
+	expression: string,
+): Promise<unknown> {
+	const result = (await cdpTimed(
+		electronProcess,
+		targetId,
+		"Runtime.evaluate",
+		{
+			expression,
+			returnByValue: true,
+			awaitPromise: true,
+		},
+	)) as EvalPayload;
+	if (result.exceptionDetails) {
+		throw new Error(
+			result.exceptionDetails.exception?.description ||
+				result.exceptionDetails.text ||
+				"evaluate error",
+		);
+	}
+	if (result.result?.subtype === "error") {
+		throw new Error(result.result.description || "evaluate error");
+	}
+	return result.result?.value;
+}
+
+async function dispatchClick(
+	electronProcess: ElectronProcess,
+	targetId: string,
+	x: number,
+	y: number,
+	button: "left" | "right" | "middle",
+): Promise<void> {
+	const btn =
+		button === "right" ? "right" : button === "middle" ? "middle" : "left";
+	await cdpTimed(electronProcess, targetId, "Input.dispatchMouseEvent", {
+		type: "mousePressed",
+		x,
+		y,
+		button: btn,
+		clickCount: 1,
+	});
+	await cdpTimed(electronProcess, targetId, "Input.dispatchMouseEvent", {
+		type: "mouseReleased",
+		x,
+		y,
+		button: btn,
+		clickCount: 1,
+	});
+}
+
+async function boxCenterForBackendNode(
+	electronProcess: ElectronProcess,
+	targetId: string,
+	backendNodeId: number,
+): Promise<{ x: number; y: number; nodeId?: number }> {
+	await cdpTimed(electronProcess, targetId, "DOM.enable", {});
+	const described = (await cdpTimed(
+		electronProcess,
+		targetId,
+		"DOM.describeNode",
+		{ backendNodeId },
+	)) as { node?: { nodeId?: number } };
+	const nodeId = described.node?.nodeId;
+	if (nodeId) {
+		try {
+			await cdpTimed(electronProcess, targetId, "DOM.scrollIntoViewIfNeeded", {
+				nodeId,
+			});
+		} catch {
+			/* node may already be in view */
+		}
+	}
+	const model = (await cdpTimed(
+		electronProcess,
+		targetId,
+		"DOM.getBoxModel",
+		nodeId ? { nodeId } : { backendNodeId },
+	)) as { model?: { content?: number[] } };
+	const quad = model.model?.content;
+	if (!quad || quad.length < 8) {
+		throw new Error(`No box model for backend node ${backendNodeId}`);
+	}
+	const x = (quad[0]! + quad[2]! + quad[4]! + quad[6]!) / 4;
+	const y = (quad[1]! + quad[3]! + quad[5]! + quad[7]!) / 4;
+	return { x, y, nodeId };
+}
+
+async function resolveAxTarget(
+	electronProcess: ElectronProcess,
+	options: { name: string; role?: string; exact?: boolean; targetId?: string },
+): Promise<{ targetId: string; node: AxMatchNode }> {
+	const snap = await getAccessibilitySnapshot(electronProcess, {
+		targetId: options.targetId,
+		maxNodes: 2000,
+	});
+	const node = matchAxNode(snap.nodes, options);
+	if (!node?.backendDOMNodeId) {
+		const hint = axHint(snap.nodes);
+		throw new Error(
+			`No accessibility node matching name "${options.name}"${
+				options.role ? ` role "${options.role}"` : ""
+			}${hint ? `. Nearby: ${hint}` : ""}`,
+		);
+	}
+	return { targetId: snap.targetId, node };
+}
+
+export async function clickByAx(
+	electronProcess: ElectronProcess,
+	options: {
+		name: string;
+		role?: string;
+		exact?: boolean;
+		button?: "left" | "right" | "middle";
+		targetId?: string;
+	},
+): Promise<{
+	processId: string;
+	targetId: string;
+	name?: string;
+	role?: string;
+	x: number;
+	y: number;
+	backendDOMNodeId: number;
+}> {
+	const { targetId, node } = await resolveAxTarget(electronProcess, options);
+	const center = await boxCenterForBackendNode(
+		electronProcess,
+		targetId,
+		node.backendDOMNodeId!,
+	);
+	const x = Math.round(center.x);
+	const y = Math.round(center.y);
+	await dispatchClick(
+		electronProcess,
+		targetId,
+		x,
+		y,
+		options.button ?? "left",
+	);
+	return {
+		processId: electronProcess.id,
+		targetId,
+		name: node.name,
+		role: node.role,
+		x,
+		y,
+		backendDOMNodeId: node.backendDOMNodeId!,
+	};
+}
+
+export async function typeByAx(
+	electronProcess: ElectronProcess,
+	options: {
+		name: string;
+		text: string;
+		role?: string;
+		exact?: boolean;
+		clear?: boolean;
+		targetId?: string;
+	},
+): Promise<{
+	processId: string;
+	targetId: string;
+	name?: string;
+	role?: string;
+	typed: string;
+}> {
+	const { targetId, node } = await resolveAxTarget(electronProcess, options);
+	await cdpTimed(electronProcess, targetId, "DOM.focus", {
+		backendNodeId: node.backendDOMNodeId,
+	});
+	if (options.clear) {
+		await evalPage(
+			electronProcess,
+			targetId,
+			`(() => {
+				const el = document.activeElement;
+				if (!el) return false;
+				if ("value" in el) el.value = "";
+				else el.textContent = "";
+				el.dispatchEvent(new Event("input", { bubbles: true }));
+				return true;
+			})()`,
+		);
+	}
+	if (options.text) {
+		await cdpTimed(electronProcess, targetId, "Input.insertText", {
+			text: options.text,
+		});
+	}
+	return {
+		processId: electronProcess.id,
+		targetId,
+		name: node.name,
+		role: node.role,
+		typed: options.text,
+	};
+}
+
+type StubRule = {
+	id: string;
+	urlPattern: string;
+	action: "fulfill" | "fail";
+	status: number;
+	body?: string;
+	contentType?: string;
+	headers?: Record<string, string>;
+	errorReason?: string;
+};
+
+type BoundClient = {
+	on(event: string, callback: (params: unknown) => void): void;
+	removeListener(event: string, callback: (params: unknown) => void): void;
+	send(method: string, params?: object): Promise<unknown>;
+};
+
+type StubSession = {
+	targetId: string;
+	rules: StubRule[];
+	client?: BoundClient;
+	handler?: (params: unknown) => void;
+};
+
+const stubSessions = new Map<string, StubSession>();
+
+function unbind(
+	client: BoundClient | undefined,
+	event: string,
+	handler?: (params: unknown) => void,
+): void {
+	if (!client || !handler) return;
+	try {
+		client.removeListener(event, handler);
+	} catch {
+		/* ignore */
+	}
+}
+
+async function onFetchPaused(
+	electronProcess: ElectronProcess,
+	targetId: string,
+	params: unknown,
+): Promise<void> {
+	const paused = (params ?? {}) as {
+		requestId?: string;
+		request?: { url?: string };
+	};
+	if (!paused.requestId) return;
+	const session = stubSessions.get(electronProcess.id);
+	const url = paused.request?.url ?? "";
+	const rule = session?.rules.find((r) => urlPatternMatches(r.urlPattern, url));
+	try {
+		const client = await connectToCDPTarget(electronProcess, targetId);
+		if (!rule) {
+			await client.send("Fetch.continueRequest", { requestId: paused.requestId });
+			return;
+		}
+		if (rule.action === "fail") {
+			await client.send("Fetch.failRequest", {
+				requestId: paused.requestId,
+				errorReason: rule.errorReason ?? "Failed",
+			});
+			return;
+		}
+		const headerMap = new Map<string, string>();
+		headerMap.set(
+			"Content-Type",
+			rule.contentType ?? "text/plain; charset=utf-8",
+		);
+		for (const [name, value] of Object.entries(rule.headers ?? {})) {
+			headerMap.set(name, value);
+		}
+		const responseHeaders = [...headerMap.entries()].map(([name, value]) => ({
+			name,
+			value,
+		}));
+		await client.send("Fetch.fulfillRequest", {
+			requestId: paused.requestId,
+			responseCode: rule.status,
+			responsePhrase: rule.status === 200 ? "OK" : "Stubbed",
+			responseHeaders,
+			body: Buffer.from(rule.body ?? "", "utf8").toString("base64"),
+		});
+	} catch (err) {
+		log.warn(
+			`[${electronProcess.id}] Fetch stub for ${url || paused.requestId} failed:`,
+			err,
+		);
+	}
+}
+
+async function bindStubSession(
+	electronProcess: ElectronProcess,
+	session: StubSession,
+): Promise<void> {
+	await ensureMonitoring(electronProcess);
+	const client = await connectToCDPTarget(electronProcess, session.targetId);
+	if (session.client && session.handler && session.client !== client) {
+		unbind(session.client, "Fetch.requestPaused", session.handler);
+	}
+	if (!session.handler || session.client !== client) {
+		unbind(session.client, "Fetch.requestPaused", session.handler);
+		const handler = (params: unknown) => {
+			void onFetchPaused(electronProcess, session.targetId, params);
+		};
+		client.on("Fetch.requestPaused", handler);
+		session.handler = handler;
+		session.client = client;
+	}
+	await withTimeout(
+		client.send("Fetch.enable", {
+			patterns: session.rules.map((rule) => ({
+				urlPattern: rule.urlPattern,
+				requestStage: "Request",
+			})),
+		}),
+		CDP_TIMEOUT_MS,
+		"Fetch.enable",
+	);
+}
+
+registerProcessCleanup((processId) => {
+	const session = stubSessions.get(processId);
+	stubSessions.delete(processId);
+	if (!session) return;
+	unbind(session.client, "Fetch.requestPaused", session.handler);
+	void (async () => {
+		try {
+			const proc = getProcess(processId);
+			if (!proc) return;
+			await executeCDPCommand(
+				proc,
+				session.targetId,
+				"Fetch.disable",
+				{},
+				5_000,
+			).catch(() => undefined);
+		} catch {
+			/* ignore */
+		}
+	})();
+});
+
+const MAX_STUB_BODY = 256_000;
+
+export async function networkStub(
+	electronProcess: ElectronProcess,
+	options: {
+		urlPattern: string;
+		action: "fulfill" | "fail";
+		status?: number;
+		body?: string;
+		contentType?: string;
+		headers?: Record<string, string>;
+		errorReason?: string;
+		targetId?: string;
+	},
+): Promise<{
+	processId: string;
+	targetId: string;
+	rule: { id: string; urlPattern: string; action: string; status: number };
+	ruleCount: number;
+}> {
+	const pattern = options.urlPattern.trim();
+	if (!pattern) throw new Error("urlPattern is required");
+	if (options.body && options.body.length > MAX_STUB_BODY) {
+		throw new Error(`Stub body exceeds ${MAX_STUB_BODY} characters`);
+	}
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, options.targetId);
+	let session = stubSessions.get(electronProcess.id);
+	if (!session || session.targetId !== target.id) {
+		if (session) {
+			unbind(session.client, "Fetch.requestPaused", session.handler);
+			try {
+				await executeCDPCommand(
+					electronProcess,
+					session.targetId,
+					"Fetch.disable",
+					{},
+					5_000,
+				);
+			} catch {
+				/* previous target may already be gone */
+			}
+		}
+		session = { targetId: target.id, rules: [] };
+		stubSessions.set(electronProcess.id, session);
+	}
+	const rule: StubRule = {
+		id: crypto.randomBytes(4).toString("hex"),
+		urlPattern: pattern,
+		action: options.action,
+		status: options.status ?? (options.action === "fail" ? 0 : 200),
+		body: options.body,
+		contentType: options.contentType,
+		headers: options.headers,
+		errorReason: options.errorReason,
+	};
+	session.rules = [
+		...session.rules.filter((existing) => existing.urlPattern !== pattern),
+		rule,
+	];
+	await bindStubSession(electronProcess, session);
+	return {
+		processId: electronProcess.id,
+		targetId: target.id,
+		rule: {
+			id: rule.id,
+			urlPattern: rule.urlPattern,
+			action: rule.action,
+			status: rule.status,
+		},
+		ruleCount: session.rules.length,
+	};
+}
+
+export async function clearNetworkStubs(
+	electronProcess: ElectronProcess,
+): Promise<{ processId: string; cleared: boolean; removed: number }> {
+	const session = stubSessions.get(electronProcess.id);
+	stubSessions.delete(electronProcess.id);
+	const removed = session?.rules.length ?? 0;
+	if (session) {
+		unbind(session.client, "Fetch.requestPaused", session.handler);
+		try {
+			await executeCDPCommand(
+				electronProcess,
+				session.targetId,
+				"Fetch.disable",
+				{},
+				5_000,
+			);
+		} catch {
+			/* session may already be gone */
+		}
+	}
+	return { processId: electronProcess.id, cleared: true, removed };
+}
+
+export async function waitNetworkIdle(
+	electronProcess: ElectronProcess,
+	options: { idleMs?: number; timeoutMs?: number; targetId?: string } = {},
+): Promise<{
+	processId: string;
+	idle: true;
+	waitedMs: number;
+	requests: number;
+	inFlight: number;
+}> {
+	await ensureMonitoring(electronProcess);
+	const idleMs = Math.min(Math.max(options.idleMs ?? 500, 50), 10_000);
+	const timeoutMs = Math.min(Math.max(options.timeoutMs ?? 8_000, idleMs), 30_000);
+	const started = Date.now();
+	let lastCount = -1;
+	let lastChange = started;
+	const entriesFor = () =>
+		options.targetId
+			? electronProcess.networkEntries.filter(
+					(entry) => entry.targetId === options.targetId,
+				)
+			: electronProcess.networkEntries;
+
+	while (Date.now() - started < timeoutMs) {
+		const entries = entriesFor();
+		if (entries.length !== lastCount) {
+			lastCount = entries.length;
+			lastChange = Date.now();
+		}
+		const inFlight = countInFlight(entries);
+		if (inFlight === 0 && Date.now() - lastChange >= idleMs) {
+			return {
+				processId: electronProcess.id,
+				idle: true,
+				waitedMs: Date.now() - started,
+				requests: entries.length,
+				inFlight: 0,
+			};
+		}
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	}
+	const entries = entriesFor();
+	throw new Error(
+		`Network not idle after ${timeoutMs}ms (${countInFlight(entries)} in flight, ${entries.length} buffered)`,
+	);
+}
+
+export async function exportHar(
+	electronProcess: ElectronProcess,
+	filePath?: string,
+): Promise<{ processId: string; path: string; bytes: number; entries: number }> {
+	await ensureMonitoring(electronProcess);
+	const har = networkEntriesToHar(electronProcess.networkEntries);
+	const out =
+		filePath?.trim() ||
+		path.join(
+			os.tmpdir(),
+			`electron-mcp-har-${electronProcess.id}-${Date.now()}.har`,
+		);
+	const resolved = validateOutputPath(out);
+	const body = JSON.stringify(har, null, 2);
+	fs.mkdirSync(path.dirname(resolved), { recursive: true });
+	fs.writeFileSync(resolved, body);
+	return {
+		processId: electronProcess.id,
+		path: resolved,
+		bytes: Buffer.byteLength(body),
+		entries: har.log.entries.length,
+	};
+}
+
+type DialogSeen = {
+	at: string;
+	type?: string;
+	message?: string;
+	url?: string;
+};
+
+type DialogSession = {
+	targetId: string;
+	action: "accept" | "dismiss";
+	promptText?: string;
+	seen: DialogSeen[];
+	client?: BoundClient;
+	handler?: (params: unknown) => void;
+};
+
+const dialogSessions = new Map<string, DialogSession>();
+
+async function onDialogOpened(
+	electronProcess: ElectronProcess,
+	params: unknown,
+): Promise<void> {
+	const session = dialogSessions.get(electronProcess.id);
+	if (!session?.client) return;
+	const dialog = (params ?? {}) as {
+		type?: string;
+		message?: string;
+		url?: string;
+		defaultPrompt?: string;
+	};
+	session.seen.push({
+		at: new Date().toISOString(),
+		type: dialog.type,
+		message: dialog.message,
+		url: dialog.url,
+	});
+	if (session.seen.length > 20) session.seen.splice(0, session.seen.length - 20);
+	try {
+		await session.client.send("Page.handleJavaScriptDialog", {
+			accept: session.action === "accept",
+			...(session.action === "accept" && session.promptText != null
+				? { promptText: session.promptText }
+				: {}),
+		});
+	} catch (err) {
+		log.warn(`[${electronProcess.id}] handle dialog failed:`, err);
+	}
+}
+
+registerProcessCleanup((processId) => {
+	const session = dialogSessions.get(processId);
+	dialogSessions.delete(processId);
+	if (!session) return;
+	unbind(session.client, "Page.javascriptDialogOpening", session.handler);
+});
+
+export async function handleDialog(
+	electronProcess: ElectronProcess,
+	options: {
+		action?: "accept" | "dismiss";
+		promptText?: string;
+		clear?: boolean;
+		targetId?: string;
+	},
+): Promise<{
+	processId: string;
+	targetId?: string;
+	action?: "accept" | "dismiss";
+	cleared?: boolean;
+	seen: DialogSeen[];
+}> {
+	if (options.clear) {
+		const existing = dialogSessions.get(electronProcess.id);
+		dialogSessions.delete(electronProcess.id);
+		if (existing) {
+			unbind(existing.client, "Page.javascriptDialogOpening", existing.handler);
+		}
+		return {
+			processId: electronProcess.id,
+			cleared: true,
+			seen: existing?.seen ?? [],
+		};
+	}
+	if (!options.action) {
+		throw new Error("handle_dialog requires action or clear:true");
+	}
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, options.targetId);
+	await ensureMonitoring(electronProcess);
+	const client = await connectToCDPTarget(electronProcess, target.id);
+	let session = dialogSessions.get(electronProcess.id);
+	if (!session || session.targetId !== target.id || session.client !== client) {
+		if (session) {
+			unbind(session.client, "Page.javascriptDialogOpening", session.handler);
+		}
+		session = {
+			targetId: target.id,
+			action: options.action,
+			promptText: options.promptText,
+			seen: session?.seen ?? [],
+		};
+		const handler = (params: unknown) => {
+			void onDialogOpened(electronProcess, params);
+		};
+		client.on("Page.javascriptDialogOpening", handler);
+		session.handler = handler;
+		session.client = client;
+		dialogSessions.set(electronProcess.id, session);
+	}
+	session.action = options.action;
+	session.promptText = options.promptText;
+	await cdpTimed(electronProcess, target.id, "Page.enable", {});
+	return {
+		processId: electronProcess.id,
+		targetId: target.id,
+		action: session.action,
+		seen: session.seen,
+	};
+}
+
+export async function highlightSelector(
+	electronProcess: ElectronProcess,
+	options: { selector: string; targetId?: string; durationMs?: number },
+): Promise<{
+	processId: string;
+	targetId: string;
+	selector: string;
+	nodeId: number;
+	hidden: boolean;
+}> {
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, options.targetId);
+	await cdpTimed(electronProcess, target.id, "DOM.enable", {});
+	const doc = (await cdpTimed(electronProcess, target.id, "DOM.getDocument", {
+		depth: 0,
+		pierce: true,
+	})) as { root?: { nodeId?: number } };
+	const rootId = doc.root?.nodeId;
+	if (!rootId) throw new Error("DOM.getDocument returned no root");
+	const queried = (await cdpTimed(
+		electronProcess,
+		target.id,
+		"DOM.querySelector",
+		{ nodeId: rootId, selector: options.selector },
+	)) as { nodeId?: number };
+	if (!queried.nodeId) {
+		throw new Error(`No node for selector ${options.selector}`);
+	}
+	try {
+		await cdpTimed(electronProcess, target.id, "DOM.scrollIntoViewIfNeeded", {
+			nodeId: queried.nodeId,
+		});
+	} catch {
+		/* ignore */
+	}
+	await cdpTimed(electronProcess, target.id, "Overlay.enable", {});
+	await cdpTimed(electronProcess, target.id, "Overlay.highlightNode", {
+		nodeId: queried.nodeId,
+		highlightConfig: {
+			showInfo: true,
+			contentColor: { r: 16, g: 185, b: 129, a: 0.35 },
+			borderColor: { r: 15, g: 118, b: 110, a: 0.9 },
+		},
+	});
+	const durationMs = Math.min(Math.max(options.durationMs ?? 0, 0), 5_000);
+	if (durationMs > 0) {
+		await new Promise((resolve) => setTimeout(resolve, durationMs));
+		try {
+			await cdpTimed(electronProcess, target.id, "Overlay.hideHighlight", {});
+		} catch {
+			/* ignore */
+		}
+	}
+	return {
+		processId: electronProcess.id,
+		targetId: target.id,
+		selector: options.selector,
+		nodeId: queried.nodeId,
+		hidden: durationMs > 0,
+	};
+}
+
+export type UiAssertion = {
+	name: string;
+	ok: boolean;
+	detail?: string;
+};
+
+export async function assertUi(
+	electronProcess: ElectronProcess,
+	options: {
+		urlIncludes?: string;
+		titleIncludes?: string;
+		textIncludes?: string;
+		selector?: string;
+		selectorHidden?: string;
+		maxConsoleErrors?: number;
+		expression?: string;
+		targetId?: string;
+	},
+): Promise<{
+	processId: string;
+	targetId: string;
+	pass: boolean;
+	checks: UiAssertion[];
+}> {
+	await ensureMonitoring(electronProcess);
+	await updateCDPTargets(electronProcess);
+	const page = await getPageInfo(electronProcess, options.targetId);
+	const checks: UiAssertion[] = [];
+
+	if (options.urlIncludes != null) {
+		checks.push({
+			name: "urlIncludes",
+			ok: page.url.includes(options.urlIncludes),
+			detail: page.url,
+		});
+	}
+	if (options.titleIncludes != null) {
+		checks.push({
+			name: "titleIncludes",
+			ok: page.title.includes(options.titleIncludes),
+			detail: page.title,
+		});
+	}
+	if (options.textIncludes != null) {
+		try {
+			const text = String(
+				(await evalPage(
+					electronProcess,
+					page.targetId,
+					"document.body ? document.body.innerText : ''",
+				)) ?? "",
+			);
+			checks.push({
+				name: "textIncludes",
+				ok: text.includes(options.textIncludes),
+				detail: text.slice(0, 300),
+			});
+		} catch (err) {
+			checks.push({
+				name: "textIncludes",
+				ok: false,
+				detail: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+	if (options.selector != null) {
+		try {
+			const found = await evalPage(
+				electronProcess,
+				page.targetId,
+				`!!document.querySelector(${JSON.stringify(options.selector)})`,
+			);
+			checks.push({
+				name: "selector",
+				ok: Boolean(found),
+				detail: options.selector,
+			});
+		} catch (err) {
+			checks.push({
+				name: "selector",
+				ok: false,
+				detail: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+	if (options.selectorHidden != null) {
+		try {
+			const found = await evalPage(
+				electronProcess,
+				page.targetId,
+				`!!document.querySelector(${JSON.stringify(options.selectorHidden)})`,
+			);
+			checks.push({
+				name: "selectorHidden",
+				ok: !found,
+				detail: options.selectorHidden,
+			});
+		} catch (err) {
+			checks.push({
+				name: "selectorHidden",
+				ok: false,
+				detail: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+	if (options.maxConsoleErrors != null) {
+		const errors = electronProcess.consoleMessages.filter(
+			(message) => message.level === "error" || message.source === "exception",
+		).length;
+		checks.push({
+			name: "maxConsoleErrors",
+			ok: errors <= options.maxConsoleErrors,
+			detail: String(errors),
+		});
+	}
+	if (options.expression != null) {
+		try {
+			const value = await evalPage(
+				electronProcess,
+				page.targetId,
+				options.expression,
+			);
+			checks.push({
+				name: "expression",
+				ok: Boolean(value),
+				detail: JSON.stringify(value)?.slice(0, 200),
+			});
+		} catch (err) {
+			checks.push({
+				name: "expression",
+				ok: false,
+				detail: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+	if (checks.length === 0) {
+		throw new Error("assert_ui needs at least one check");
+	}
+	return {
+		processId: electronProcess.id,
+		targetId: page.targetId,
+		pass: checks.every((check) => check.ok),
+		checks,
+	};
+}
+
+export async function openDeepLink(
+	electronProcess: ElectronProcess,
+	options: { url: string; channel?: string },
+): Promise<Record<string, unknown>> {
+	const url = options.url.trim();
+	if (!url) throw new Error("url is required");
+	const expression = `(() => {
+		try {
+			const electron = (${LOAD_ELECTRON})();
+			const { app, BrowserWindow } = electron;
+			const url = ${JSON.stringify(url)};
+			const channel = ${JSON.stringify(options.channel ?? "")};
+			const delivered = [];
+			try {
+				const listeners = app.emit("open-url", { preventDefault() {} }, url);
+				delivered.push({ event: "open-url", listeners: !!listeners });
+			} catch (err) {
+				delivered.push({ event: "open-url", error: err && err.message ? err.message : String(err) });
+			}
+			try {
+				const listeners = app.emit("second-instance", {}, [process.execPath, url], process.cwd());
+				delivered.push({ event: "second-instance", listeners: !!listeners });
+			} catch (err) {
+				delivered.push({ event: "second-instance", error: err && err.message ? err.message : String(err) });
+			}
+			const wins = BrowserWindow.getAllWindows().filter((w) => w && !w.isDestroyed());
+			if (channel && wins[0]) {
+				try {
+					wins[0].webContents.send(channel, url);
+					delivered.push({ event: "ipc", channel });
+				} catch (err) {
+					delivered.push({ event: "ipc", error: err && err.message ? err.message : String(err) });
+				}
+			}
+			return {
+				ok: true,
+				url,
+				windowCount: wins.length,
+				delivered,
+				recorded: global.__LAST_DEEP_LINK__ || null,
+			};
+		} catch (err) {
+			return { ok: false, error: err && err.message ? err.message : String(err) };
+		}
+	})()`;
+
+	const result = await withTimeout(
+		evaluateMain(electronProcess, expression, undefined, true),
+		CDP_TIMEOUT_MS,
+		"open_deep_link",
+	);
+	const value = (result.result as { result?: { value?: Record<string, unknown> } })
+		?.result?.value;
+	if (!value || value.ok === false) {
+		throw new Error(
+			typeof value?.error === "string" ? value.error : "open_deep_link failed",
+		);
+	}
+
+	let renderer: unknown = null;
+	try {
+		const page = await getPageInfo(electronProcess);
+		await evalPage(
+			electronProcess,
+			page.targetId,
+			`window.__DEEP_LINK__ = ${JSON.stringify(url)}; true`,
+		);
+		renderer = url;
+	} catch (err) {
+		renderer = { error: err instanceof Error ? err.message : String(err) };
+	}
+	return { processId: electronProcess.id, ...value, renderer };
 }
