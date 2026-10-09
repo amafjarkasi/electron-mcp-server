@@ -399,6 +399,36 @@ export function hasCpuProfileSession(processId: string): boolean {
 	return cpuProfileSessions.has(processId);
 }
 
+/**
+ * Resolve Electron APIs inside CDP `Runtime.evaluate` on the `--inspect`
+ * target. Bare `require` is usually missing on Electron's `browser_init`
+ * context, so fall back to `_linkedBinding` for app / BrowserWindow.
+ */
+const LOAD_ELECTRON = `(() => {
+	const req = typeof require === 'function'
+		? require
+		: (process.mainModule && typeof process.mainModule.require === 'function'
+			? process.mainModule.require.bind(process.mainModule)
+			: null);
+	if (typeof req === 'function') {
+		try {
+			const mod = req('electron');
+			if (mod && mod.app && mod.BrowserWindow) return mod;
+		} catch { /* fall through */ }
+	}
+	const electron = {};
+	try { electron.app = process._linkedBinding('electron_browser_app').app; } catch { /* */ }
+	try { electron.BrowserWindow = process._linkedBinding('electron_browser_window').BrowserWindow; } catch { /* */ }
+	try {
+		const wc = process._linkedBinding('electron_browser_web_contents');
+		electron.webContents = wc;
+	} catch { /* */ }
+	if (!electron.app || !electron.BrowserWindow) {
+		throw new Error('Unable to access Electron APIs from this main-process evaluate context');
+	}
+	return electron;
+})`;
+
 export async function takeHeapSnapshot(
 	electronProcess: ElectronProcess,
 	filePath?: string,
@@ -506,7 +536,7 @@ export async function getMainState(
 			try { return JSON.parse(JSON.stringify(v)); } catch { return String(v); }
 		};
 		try {
-			const electron = require('electron');
+			const electron = (${LOAD_ELECTRON})();
 			const { app, BrowserWindow } = electron;
 			const windows = BrowserWindow.getAllWindows().map((w) => {
 				try {
@@ -575,7 +605,7 @@ const IPC_TAP_EXPR = `(() => {
 		} catch { return String(v); }
 	};
 	try {
-		const electron = require('electron');
+		const electron = (${LOAD_ELECTRON})();
 		const { ipcMain, BrowserWindow, app } = electron;
 		if (global.__electronMcpIpcTapInstalled) {
 			return { ok: true, already: true, count: (global.__electronMcpIpcLog || []).length };
@@ -608,14 +638,18 @@ const IPC_TAP_EXPR = `(() => {
 		};
 		for (const w of BrowserWindow.getAllWindows()) wrapSend(w.webContents);
 		app.on('web-contents-created', (_e, wc) => wrapSend(wc));
-		const origHandle = ipcMain.handle.bind(ipcMain);
-		ipcMain.handle = (channel, listener) => {
-			return origHandle(channel, async (event, ...args) => {
-				push({ timestamp: new Date().toISOString(), direction: 'handle', channel: String(channel), argsPreview: syn(args) });
-				return listener(event, ...args);
-			});
-		};
-		return { ok: true, already: false, count: 0 };
+		// ipcMain is often unavailable on the inspect browser_init context —
+		// webContents hooks above still cover send / ipc-message traffic.
+		if (ipcMain && typeof ipcMain.handle === 'function') {
+			const origHandle = ipcMain.handle.bind(ipcMain);
+			ipcMain.handle = (channel, listener) => {
+				return origHandle(channel, async (event, ...args) => {
+					push({ timestamp: new Date().toISOString(), direction: 'handle', channel: String(channel), argsPreview: syn(args) });
+					return listener(event, ...args);
+				});
+			};
+		}
+		return { ok: true, already: false, count: 0, ipcMainWrapped: Boolean(ipcMain) };
 	} catch (err) {
 		global.__electronMcpIpcTapInstalled = false;
 		return { ok: false, error: err && err.message ? err.message : String(err) };

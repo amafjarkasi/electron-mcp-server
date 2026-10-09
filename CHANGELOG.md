@@ -26,6 +26,7 @@
 - CPU profile start is serialized (`starting` lock); stop keeps the session on failure so callers can retry; cleanup stops Profiler on forget.
 - Heap snapshot binds listeners on the same CDP client that sends `takeHeapSnapshot`; disables HeapProfiler in `finally`.
 - `main_state` / `ipc_tap` throw on main-process `ok: false`; IPC tap sets the installed flag before wiring listeners.
+- Main-process evaluates load Electron via `require` when present, else `_linkedBinding` (`app` / `BrowserWindow`) for CDP’s `browser_init` inspect context; `ipc_tap` treats `ipcMain` as optional.
 - Smoke uses a shared `finally` for stop/detach/temp cleanup; CPU/diff/heap soft paths clean artifacts even on failure.
 
 ## 1.5.1
