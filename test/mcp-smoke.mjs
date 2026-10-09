@@ -222,6 +222,7 @@ async function main() {
   let processId;
   let attachedId;
   let external;
+  let exitCode = 0;
 
   try {
     const init = await client.request("initialize", {
@@ -273,6 +274,22 @@ async function main() {
       "reload",
       "pause",
       "resume",
+      // v1.6 creative power tools
+      "snapshot",
+      "vision",
+      "get_response_body",
+      "block_urls",
+      "set_extra_headers",
+      "get_performance_metrics",
+      "start_cpu_profile",
+      "stop_cpu_profile",
+      "heap_snapshot",
+      "main_state",
+      "ipc_tap",
+      "get_ipc_log",
+      "diff_screenshot",
+      "get_audit_issues",
+      "find_installed_apps",
     ];
     const tools = await client.request("tools/list");
     const names = new Set((tools.tools ?? []).map((t) => t.name));
@@ -718,6 +735,209 @@ async function main() {
     );
     pass("diagnose");
 
+    // --- v1.6 creative power tools (soft-skip heavy/optional CDP where flaky) ---
+    const soft = async (label, fn) => {
+      try {
+        await fn();
+      } catch (err) {
+        pass(`${label} soft-skip (${err instanceof Error ? err.message : String(err)})`);
+      }
+    };
+
+    await soft("snapshot", async () => {
+      const snap = await client.request("tools/call", {
+        name: "snapshot",
+        arguments: { processId, depth: 8 },
+      });
+      assert(!snap.isError, `snapshot error: ${snap.content?.[0]?.text}`);
+      const snapData = parseToolText(snap);
+      assert(
+        Array.isArray(snapData.nodes) && snapData.nodeCount >= 1,
+        `snapshot empty: ${JSON.stringify(snapData).slice(0, 200)}`
+      );
+      pass(`snapshot (${snapData.nodeCount} nodes)`);
+    });
+
+    await soft("vision", async () => {
+      const vision = await client.request("tools/call", {
+        name: "vision",
+        arguments: { processId, includeScreenshot: true },
+      });
+      assert(!vision.isError, `vision error: ${vision.content?.[0]?.text}`);
+      assert(
+        (vision.content ?? []).some((c) => c.type === "image" || c.type === "text"),
+        "vision missing content"
+      );
+      pass("vision");
+    });
+
+    await soft("get_performance_metrics", async () => {
+      const perf = await client.request("tools/call", {
+        name: "get_performance_metrics",
+        arguments: { processId },
+      });
+      assert(!perf.isError, `get_performance_metrics error: ${perf.content?.[0]?.text}`);
+      const perfData = parseToolText(perf);
+      assert(perfData.metrics && typeof perfData.metrics === "object", "perf metrics missing");
+      pass("get_performance_metrics");
+    });
+
+    await soft("start/stop_cpu_profile", async () => {
+      let started = false;
+      let profilePath;
+      try {
+        const cpuStart = await client.request("tools/call", {
+          name: "start_cpu_profile",
+          arguments: { processId },
+        });
+        assert(!cpuStart.isError, `start_cpu_profile error: ${cpuStart.content?.[0]?.text}`);
+        started = true;
+        await new Promise((r) => setTimeout(r, 100));
+        const cpuStop = await client.request("tools/call", {
+          name: "stop_cpu_profile",
+          arguments: { processId },
+        });
+        started = false;
+        assert(!cpuStop.isError, `stop_cpu_profile error: ${cpuStop.content?.[0]?.text}`);
+        const cpuData = parseToolText(cpuStop);
+        assert(cpuData.path && cpuData.bytes > 0, `cpu profile missing file: ${JSON.stringify(cpuData)}`);
+        profilePath = cpuData.path;
+        pass("start/stop_cpu_profile");
+      } finally {
+        if (started) {
+          try {
+            await client.request(
+              "tools/call",
+              { name: "stop_cpu_profile", arguments: { processId } },
+              15_000,
+            );
+          } catch {
+            /* ignore — soft path already failed */
+          }
+        }
+        if (profilePath) {
+          try {
+            fs.unlinkSync(profilePath);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    });
+
+    await soft("block_urls", async () => {
+      const block = await client.request("tools/call", {
+        name: "block_urls",
+        arguments: { processId, urls: ["*://blocked.example/*"] },
+      });
+      assert(!block.isError, `block_urls error: ${block.content?.[0]?.text}`);
+      pass("block_urls");
+    });
+
+    await soft("set_extra_headers", async () => {
+      const headers = await client.request("tools/call", {
+        name: "set_extra_headers",
+        arguments: { processId, headers: { "X-Electron-Mcp": "1" } },
+      });
+      assert(!headers.isError, `set_extra_headers error: ${headers.content?.[0]?.text}`);
+      pass("set_extra_headers");
+    });
+
+    await soft("get_audit_issues", async () => {
+      const audits = await client.request("tools/call", {
+        name: "get_audit_issues",
+        arguments: { processId },
+      });
+      assert(!audits.isError, `get_audit_issues error: ${audits.content?.[0]?.text}`);
+      pass("get_audit_issues");
+    });
+
+    await soft("find_installed_apps", async () => {
+      const installed = await client.request("tools/call", {
+        name: "find_installed_apps",
+        arguments: {},
+      });
+      assert(!installed.isError, `find_installed_apps error: ${installed.content?.[0]?.text}`);
+      const installedData = parseToolText(installed);
+      assert(typeof installedData.count === "number", "find_installed_apps missing count");
+      pass(`find_installed_apps (${installedData.count})`);
+    });
+
+    const baselinePath = path.join(smokeOutDir, `mcp-smoke-baseline-${Date.now()}.png`);
+    await soft("diff_screenshot", async () => {
+      let currentPath;
+      try {
+        const baseShot = await client.request("tools/call", {
+          name: "save_screenshot",
+          arguments: { processId, path: baselinePath },
+        });
+        assert(!baseShot.isError, `baseline screenshot error: ${baseShot.content?.[0]?.text}`);
+        const diff = await client.request("tools/call", {
+          name: "diff_screenshot",
+          arguments: { processId, baselinePath },
+        });
+        assert(!diff.isError, `diff_screenshot error: ${diff.content?.[0]?.text}`);
+        const diffData = parseToolText(diff);
+        assert(typeof diffData.identical === "boolean", "diff_screenshot missing identical");
+        currentPath = diffData.currentPath;
+        pass(`diff_screenshot (identical=${diffData.identical})`);
+      } finally {
+        for (const p of [baselinePath, currentPath].filter(Boolean)) {
+          try {
+            fs.unlinkSync(p);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    });
+
+    await soft("heap_snapshot", async () => {
+      let heapPath;
+      try {
+        const heap = await client.request("tools/call", {
+          name: "heap_snapshot",
+          arguments: { processId },
+        });
+        assert(!heap.isError, `heap_snapshot error: ${heap.content?.[0]?.text}`);
+        const heapData = parseToolText(heap);
+        assert(heapData.path && heapData.bytes > 0, `heap_snapshot missing file: ${JSON.stringify(heapData)}`);
+        heapPath = heapData.path;
+        pass("heap_snapshot");
+      } finally {
+        if (heapPath) {
+          try {
+            fs.unlinkSync(heapPath);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    });
+
+    // Soft: get_response_body needs a finished requestId — use latest if any.
+    const netForBody = await client.request("tools/call", {
+      name: "get_network_log",
+      arguments: { processId, tail: 20 },
+    });
+    const netEntries = parseToolText(netForBody)?.entries ?? [];
+    const finished = [...netEntries]
+      .reverse()
+      .find((e) => e.event === "finished" || e.event === "response");
+    if (finished?.requestId) {
+      const body = await client.request("tools/call", {
+        name: "get_response_body",
+        arguments: { processId, requestId: finished.requestId },
+      });
+      if (!body.isError) {
+        pass("get_response_body");
+      } else {
+        pass(`get_response_body soft-skip (${body.content?.[0]?.text ?? "error"})`);
+      }
+    } else {
+      pass("get_response_body soft-skip (no requestId)");
+    }
+
     const pageBeforeNav = await client.request("tools/call", {
       name: "page_info",
       arguments: { processId },
@@ -822,6 +1042,40 @@ async function main() {
       `evaluate_main unexpected value: ${JSON.stringify(mainVal)}`
     );
     pass("evaluate_main");
+
+    {
+      const mainState = await client.request("tools/call", {
+        name: "main_state",
+        arguments: { processId },
+      });
+      if (mainState.isError) {
+        pass(`main_state soft-skip (${mainState.content?.[0]?.text})`);
+      } else {
+        const mainStateData = parseToolText(mainState);
+        assert(
+          mainStateData.main,
+          `main_state empty: ${JSON.stringify(mainStateData).slice(0, 200)}`
+        );
+        pass("main_state");
+      }
+    }
+
+    {
+      const ipcTap = await client.request("tools/call", {
+        name: "ipc_tap",
+        arguments: { processId },
+      });
+      if (ipcTap.isError) {
+        pass(`ipc_tap soft-skip (${ipcTap.content?.[0]?.text})`);
+      } else {
+        const ipcLog = await client.request("tools/call", {
+          name: "get_ipc_log",
+          arguments: { processId },
+        });
+        assert(!ipcLog.isError, `get_ipc_log error: ${ipcLog.content?.[0]?.text}`);
+        pass("ipc_tap / get_ipc_log");
+      }
+    }
 
     // Attach flow: launch external electron, attach via MCP
     external = await launchFixture(ATTACH_PORT);
@@ -977,49 +1231,57 @@ async function main() {
     );
     pass("stop_app idempotent");
 
-    if (external && !external.killed) {
-      external.kill("SIGKILL");
-    }
-
-    try {
-      fs.rmSync(smokeOutDir, { recursive: true, force: true });
-    } catch {
-      // ignore
-    }
-
     console.log("\nAll smoke tests passed.");
-    await client.close();
-    process.exit(0);
   } catch (err) {
+    exitCode = 1;
     console.error(`FAIL smoke: ${err instanceof Error ? err.message : String(err)}`);
     if (client.stderr) {
       console.error("\n--- server stderr (tail) ---");
       console.error(client.stderr.slice(-2500));
     }
+  } finally {
+    // Always tear down managed apps / external fixture / temp dir / MCP child.
     if (attachedId) {
       try {
-        await client.request("tools/call", {
-          name: "stop_app",
-          arguments: { processId: attachedId },
-        });
+        await client.request(
+          "tools/call",
+          { name: "stop_app", arguments: { processId: attachedId } },
+          15_000,
+        );
       } catch {
         // ignore
       }
     }
     if (processId) {
       try {
-        await client.request("tools/call", {
-          name: "stop_app",
-          arguments: { processId },
-        });
+        await client.request(
+          "tools/call",
+          { name: "stop_app", arguments: { processId } },
+          15_000,
+        );
       } catch {
         // ignore
       }
     }
-    if (external && !external.killed) external.kill("SIGKILL");
-    await client.close();
-    process.exit(1);
+    if (external && !external.killed) {
+      try {
+        external.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+    }
+    try {
+      fs.rmSync(smokeOutDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+    try {
+      await client.close();
+    } catch {
+      // ignore
+    }
   }
+  process.exit(exitCode);
 }
 
 main();

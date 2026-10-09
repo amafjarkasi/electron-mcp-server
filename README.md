@@ -6,12 +6,12 @@
 
 <p align="center">
   <b>Debug Electron apps from Cursor &amp; Claude with real DevTools superpowers.</b><br/>
-  <sub>Model Context Protocol server · Chrome DevTools Protocol · start / attach / screenshot / console / DOM / UI automation / main-process inspect / tracing</sub>
+  <sub>Model Context Protocol server · Chrome DevTools Protocol · vision / a11y snapshot · profiling · IPC · audits · UI automation · main-process inspect</sub>
 </p>
 
 <p align="center">
   <a href="#-60-second-quick-start"><img src="https://img.shields.io/badge/⚡_Quick_Start-0F766E?style=for-the-badge" alt="Quick Start" /></a>
-  <a href="#-complete-tools-cheatsheet"><img src="https://img.shields.io/badge/🛠️_36_Tools-47848F?style=for-the-badge" alt="36 Tools" /></a>
+  <a href="#-complete-tools-cheatsheet"><img src="https://img.shields.io/badge/🛠️_52_Tools-47848F?style=for-the-badge" alt="52 Tools" /></a>
   <a href="#-usage-examples"><img src="https://img.shields.io/badge/📚_Examples-0EA5E9?style=for-the-badge" alt="Examples" /></a>
   <a href="#-cursor--claude-desktop-setup"><img src="https://img.shields.io/badge/🖥️_Cursor_Ready-3178C6?style=for-the-badge" alt="Cursor Ready" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/📜_ISC-F59E0B?style=for-the-badge" alt="ISC" /></a>
@@ -23,7 +23,7 @@
   <img src="https://img.shields.io/badge/Electron-desktop_apps-2B2E3A?style=flat-square&logo=electron&logoColor=white" alt="Electron" />
   <img src="https://img.shields.io/badge/TypeScript-7.x-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TS" />
   <img src="https://img.shields.io/badge/Node-%3E%3D18-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node" />
-  <img src="https://img.shields.io/badge/version-1.5.1-blue?style=flat-square" alt="version" />
+  <img src="https://img.shields.io/badge/version-1.6.0-blue?style=flat-square" alt="version" />
   <img src="https://img.shields.io/badge/tests-unit_+_monitor_+_e2e_smoke-8B5CF6?style=flat-square" alt="tests" />
 </p>
 
@@ -39,19 +39,23 @@ Instead of guessing from source alone, the agent can:
 | --- | --- |
 | Boot your app under a debugger | `start_app` with `--remote-debugging-port` |
 | Hook an app you already launched | `attach` · `attach_by_pid` · `find_apps` · `discover_apps` |
-| See the UI | `screenshot` / `save_screenshot` (full page or **element clip** via `selector`) |
-| Read renderer failures | `get_console_messages` (`level: "error"`) + exceptions |
+| Find packaged installs | `find_installed_apps` |
+| See the UI (one shot) | `vision` — screenshot + page + errors + network failures |
+| A11y UI map | `snapshot` — `Accessibility.getFullAXTree` |
+| See the UI (classic) | `screenshot` / `save_screenshot` / `diff_screenshot` |
+| Read renderer failures | `get_console_messages` (`level: "error"`) + `get_audit_issues` |
 | Stream console live | `set_console_live` → MCP log notifications |
 | Inspect markup | `get_dom` / `query_selector` |
 | Run JS in the page | `evaluate` |
-| Run JS in **main** | `start_app({ inspectMain: true })` → `evaluate_main` |
+| Run JS in **main** | `start_app({ inspectMain: true })` → `evaluate_main` / `main_state` |
+| IPC observability | `ipc_tap` → `get_ipc_log` (needs `inspectMain`) |
 | Cookies & web storage | `get_cookies` / `set_cookie` · `get_storage` / `set_storage` |
-| Watch network | `get_network_log` |
+| Watch / shape network | `get_network_log` · `get_response_body` · `block_urls` · `set_extra_headers` |
 | Drive the UI | `wait_for` → `type_text` / `press_key` → `click` → `navigate` / `reload` |
 | Pause / resume JS | `pause` · `resume` (Debugger; detached after resume) |
 | Read process stdout/stderr | `get_logs` |
-| Perf deep-dive | `start_tracing` → reproduce → `stop_tracing` (open in `chrome://tracing`) |
-| One-shot health check | `diagnose` |
+| Perf deep-dive | `start_tracing` / CPU profile / `heap_snapshot` / `get_performance_metrics` |
+| Env / session health | `doctor` · `diagnose` · `electron://server` |
 | Full DevTools power | `cdp_command` (`Domain.method`) |
 
 It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Chrome DevTools Protocol**, buffers console + network on monitored page targets, and keeps **stdout clean** (all server logs go to **stderr**).
@@ -65,19 +69,21 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 ### 💬 Example things you can ask the agent
 
 > “Start `D:/apps/my-app` on port 9222 and tell me if the renderer threw on boot.”  
-> “Find my running Electron app, attach by PID, screenshot `#sidebar`, and dump localStorage.”  
+> “Call `vision` and summarize what the window shows plus any console/network failures.”  
+> “Take an a11y `snapshot`, then screenshot `#sidebar` and dump localStorage.”  
 > “Type into `#email`, press Enter, wait for Welcome, then list console errors.”  
-> “Start a CDP trace, click through settings, stop tracing, and save the JSON.”  
-> “Diagnose why this Electron window is blank.”
+> “Start a CPU profile, click through settings, stop it, and save a heap snapshot.”  
+> “Enable `ipc_tap`, reproduce the bug, then dump `get_ipc_log`.”  
+> “Diagnose why this Electron window is blank — run `doctor` first.”
 
 ### 📊 At a glance
 
 | Aspect | Details |
 | :--- | :--- |
 | 🔌 **Transport** | MCP **stdio** JSON-RPC |
-| 🧬 **Debug bridge** | Chrome DevTools Protocol (Runtime · Page · Network · Debugger · Input · Log · Tracing) |
+| 🧬 **Debug bridge** | Chrome DevTools Protocol (Runtime · Page · Network · Debugger · Input · Log · Tracing · Accessibility · Performance · Profiler · HeapProfiler · Audits) |
 | 🚀 **App control** | Spawn Electron **or** attach by port / PID / process scan |
-| 📦 **Surface area** | **37 tools** · **7 resources** · **4 prompts** · logging + resource list-changed |
+| 📦 **Surface area** | **52 tools** · **7 resources** · **4 prompts** · logging + resource list-changed |
 | 🖥️ **Platforms** | Windows · macOS · Linux (CI: **Ubuntu + Xvfb**, **Windows**, **macOS**) |
 | 📦 **Requires** | Node **≥ 18**, npm, one-time Electron binary download |
 | 🛡️ **Safety** | Optional `ELECTRON_MCP_ALLOWED_ROOTS` (app paths) · `ELECTRON_MCP_OUTPUT_ROOTS` (screenshot/trace output, plus built-in blocklist of sensitive locations); attach sessions detach-only on stop |
@@ -86,7 +92,7 @@ It speaks **MCP over stdio** (Cursor / Claude Desktop friendly), bridges to **Ch
 ### ✅ Status
 
 - 🟢 Ready for local agent-driven Electron debugging (stdio MCP ↔ CDP)
-- 🟢 **v1.5.1** — 37 tools · `doctor` · `inspectMain` / `evaluate_main` · session cleanup · Windows+macOS CI (see [CHANGELOG](./CHANGELOG.md))
+- 🟢 **v1.6.0** — 52 tools · `snapshot` / `vision` / profiling / IPC / audits · `doctor` · session cleanup · Windows+macOS CI (see [CHANGELOG](./CHANGELOG.md))
 - 🟢 Session cleanup — stopped apps are removed from `list_apps`; CDP traces abandoned on stop/exit
 - 🟢 E2E smoke covers lifecycle, UI, resources, discover, and main-process eval (see [Testing](#-testing))
 - 🟢 CI: Ubuntu + Xvfb, Windows, and macOS (Node 22)
@@ -126,19 +132,60 @@ Electron bugs are often **invisible** to coding agents:
 
 | 😣 Pain | 🙈 What agents usually see | 👁️ What this server adds |
 | --- | --- | --- |
-| Blank / white window | Source files only | Live **screenshot** + DOM (+ element clip) |
-| Silent renderer crash | Nothing | **Console + exception** buffer (+ live stream) |
-| Failed API calls | Guesswork | **Network** event log |
+| Blank / white window | Source files only | **`vision`** / screenshot + DOM + a11y **`snapshot`** |
+| Silent renderer crash | Nothing | **Console + exception** buffer + **Audits** issues |
+| Failed API calls | Guesswork | **Network** log + **`get_response_body`** |
 | Wrong route / URL | Unknown | **page_info** / `evaluate` |
 | UI not responding | Can't interact | **click** / **type_text** / **press_key** / **wait_for** |
 | Auth / state bugs | Blind | **cookies** + **localStorage/sessionStorage** |
-| Perf jank | Guesswork | **CDP tracing** export |
-| App already running | Manual port hunt | **find_apps** / **attach_by_pid** |
+| Main-process / IPC mysteries | Blind | **`main_state`** + **`ipc_tap`** |
+| Perf / memory | Guesswork | **Tracing** · **CPU profile** · **heap snapshot** · **metrics** |
+| UI regression | Manual eyeball | **`diff_screenshot`** vs baseline |
+| App already running | Manual port hunt | **find_apps** / **attach_by_pid** / **find_installed_apps** |
 | Need DevTools power | Manual only | Full **cdp_command** escape hatch |
 
 ---
 
 ## 🚀 Feature tour
+
+```mermaid
+mindmap
+  root((Electron Debug MCP<br/>v1.6 · 52 tools))
+    Lifecycle
+      start_app
+      attach / attach_by_pid
+      find_apps / discover_apps
+      find_installed_apps
+      doctor / diagnose
+      stop_app
+    Inspect
+      vision / snapshot
+      screenshot / diff_screenshot
+      DOM / evaluate
+      main_state / evaluate_main
+      console / audits / logs
+      cookies / storage
+    Network
+      get_network_log
+      get_response_body
+      block_urls
+      set_extra_headers
+    Interact
+      wait_for / click
+      type_text / press_key
+      navigate / reload
+      pause / resume
+    Power
+      tracing
+      CPU profile / heap_snapshot
+      performance metrics
+      ipc_tap / get_ipc_log
+      cdp_command
+    Agent UX
+      prompts · resources
+      set_console_live
+      electron://server
+```
 
 <table>
 <tr>
@@ -150,23 +197,24 @@ Electron bugs are often **invisible** to coding agents:
 - 🆔 `attach_by_pid` — resolve port from process argv
 - 🧭 `find_apps` — list Electron PIDs + debug / inspect ports
 - 🔎 `discover_apps` — scan local CDP ports
+- 📦 `find_installed_apps` — packaged `.app` / exe / `.desktop` scan
 - ⏹️ `stop_app` — kill owned / detach attached (removes session; idempotent)
 - 📋 `list_apps` — sessions, ports, buffer counts
-- 🩺 `diagnose` — port health + recent errors
+- 🩺 `diagnose` / 🏥 `doctor` — port health + env self-check
 
 </td>
 <td width="50%" valign="top">
 
 ### 🔍 Inspection
-- 📸 `screenshot` / 💾 `save_screenshot` — full page or **selector clip**
+- 👁️ `vision` — one-shot screenshot + page + errors + network failures
+- ♿ `snapshot` — accessibility tree (roles / names)
+- 📸 `screenshot` / 💾 `save_screenshot` / 📐 `diff_screenshot`
 - 🌳 `get_dom` / `query_selector`
-- 🧮 `evaluate` / `evaluate_main`
-- 🍪 `get_cookies` / `set_cookie`
-- 🗄️ `get_storage` / `set_storage`
-- 🧾 `get_console_messages` — log/warn/error/exceptions
-- 🌐 `get_network_log` — request/response/fail
-- 📜 `get_logs` — Electron stdout/stderr
-- 🎯 `list_targets` / `page_info`
+- 🧮 `evaluate` / `evaluate_main` / 🧠 `main_state`
+- 🍪 `get_cookies` / `set_cookie` · 🗄️ `get_storage` / `set_storage`
+- 🧾 `get_console_messages` · 🚨 `get_audit_issues`
+- 🌐 `get_network_log` · 📄 `get_response_body`
+- 📜 `get_logs` · 🎯 `list_targets` / `page_info`
 
 </td>
 </tr>
@@ -179,18 +227,19 @@ Electron bugs are often **invisible** to coding agents:
 - 🖱️ `click` left/right/middle
 - ⌨️ `type_text` (+ clear / Enter) · `press_key` (+ modifiers)
 - 🔄 `reload` · ⏸️ `pause` · ▶️ `resume`
-- 🧹 `clear_buffers`
+- 🧹 `clear_buffers` (console / network / logs / ipc / audits)
 
 </td>
 <td width="50%" valign="top">
 
 ### 🧠 Agent UX & power
-- 📝 MCP handshake **instructions**
-- 💬 Prompts: blank window · exceptions · UI smoke
-- 🏷️ Target roles: page / worker / browser / main
-- 🔔 `set_console_live` + resource list-changed
+- 📝 MCP handshake **instructions** (+ `doctor` / `electron://server`)
+- 💬 Prompts: blank window · exceptions · UI smoke · attach_and_screenshot
 - 📈 `start_tracing` / `stop_tracing`
-- 🛡️ stderr-only diagnostics (stdio-safe)
+- ⏱️ `start_cpu_profile` / `stop_cpu_profile` · 🧩 `heap_snapshot`
+- 📊 `get_performance_metrics`
+- 🚫 `block_urls` · 📎 `set_extra_headers`
+- 📡 `ipc_tap` / `get_ipc_log`
 - 🧰 `cdp_command` for any DevTools method
 
 </td>
@@ -276,38 +325,49 @@ npm install && npm run build
 
 ## 🧩 How it works
 
-```text
-┌──────────────────────────┐
-│  Cursor / Claude / MCP   │
-│  client (agent)          │
-└────────────┬─────────────┘
-             │ stdio JSON-RPC
-             ▼
-┌──────────────────────────┐
-│  Electron Debug MCP      │
-│  🛠️ tools (36)           │
-│  📡 resources            │
-│  💬 prompts              │
-│  📣 logging / list-changed│
-└────────────┬─────────────┘
-             │ spawn / attach / PID resolve
-             │ CDP WebSocket
-             ▼
-┌──────────────────────────┐
-│  Electron application    │
-│  --remote-debugging-port │
-│  Runtime·Page·Network·…  │
-│  optional --inspect (main)│
-└──────────────────────────┘
+```mermaid
+flowchart TB
+  subgraph Client["MCP client"]
+    Agent["Cursor / Claude / agent"]
+  end
+
+  subgraph Server["Electron Debug MCP v1.6"]
+    Tools["52 tools"]
+    Resources["7 resources"]
+    Prompts["4 prompts"]
+    Notify["logging · list-changed"]
+  end
+
+  subgraph App["Electron application"]
+    CDP["CDP : remote-debugging-port<br/>Runtime · Page · Network · Accessibility<br/>Performance · Profiler · Audits · …"]
+    Inspect["optional --inspect<br/>main / node target"]
+  end
+
+  Agent -->|"stdio JSON-RPC"| Tools
+  Agent --> Resources
+  Agent --> Prompts
+  Tools -->|"spawn / attach / PID"| CDP
+  Tools -->|"inspectMain"| Inspect
+  Notify -.-> Agent
 ```
 
-After `start_app` / `attach` / `attach_by_pid`, page targets get **Runtime / Log / Network / Page** enabled so console + network events keep buffering between tool calls. With `inspectMain: true`, a separate Node inspector port is opened and its `node` target is merged into `list_targets` for `evaluate_main`.
+After `start_app` / `attach` / `attach_by_pid`, page targets get **Runtime / Log / Network / Page / Audits** enabled so console, network, and audit issues keep buffering between tool calls. With `inspectMain: true`, a separate Node inspector port is opened and its `node` target is merged into `list_targets` for `evaluate_main` / `main_state` / `ipc_tap`.
 
 **Finding a running app**
 
+```mermaid
+flowchart LR
+  A["find_apps<br/>OS process scan"] --> D["attach / attach_by_pid"]
+  B["discover_apps<br/>CDP port probe"] --> D
+  C["find_installed_apps<br/>packaged install scan"] --> E["start_app / manual launch"]
+  E --> D
+  D --> F["session in list_apps"]
+```
+
 1. `find_apps` — OS process scan (Electron PIDs + `--remote-debugging-port` / `--inspect` from argv)  
 2. `discover_apps` — HTTP probe of local CDP ports (`/json/version`, `/json/list`)  
-3. `attach` / `attach_by_pid` — open a managed session (detach-only on `stop_app`; session entry is then removed)
+3. `find_installed_apps` — packaged apps under Applications / Program Files / `.desktop`  
+4. `attach` / `attach_by_pid` — open a managed session (detach-only on `stop_app`; session entry is then removed)
 
 ---
 
@@ -315,10 +375,10 @@ After `start_app` / `attach` / `attach_by_pid`, page targets get **Runtime / Log
 
 | Category | Tools |
 | --- | --- |
-| 🚀 Lifecycle | `start_app` · `attach` · `attach_by_pid` · `find_apps` · `discover_apps` · `stop_app` · `list_apps` · `diagnose` · `doctor` |
-| 🔍 Inspect | `screenshot` · `save_screenshot` · `get_dom` · `query_selector` · `evaluate` · `evaluate_main` · `get_cookies` · `set_cookie` · `get_storage` · `set_storage` · `get_console_messages` · `get_network_log` · `get_logs` · `list_targets` · `page_info` |
+| 🚀 Lifecycle | `start_app` · `attach` · `attach_by_pid` · `find_apps` · `discover_apps` · `find_installed_apps` · `stop_app` · `list_apps` · `diagnose` · `doctor` |
+| 🔍 Inspect | `screenshot` · `save_screenshot` · `diff_screenshot` · `vision` · `snapshot` · `get_dom` · `query_selector` · `evaluate` · `evaluate_main` · `main_state` · `get_cookies` · `set_cookie` · `get_storage` · `set_storage` · `get_console_messages` · `get_network_log` · `get_response_body` · `get_logs` · `get_audit_issues` · `list_targets` · `page_info` |
 | 🖱️ Interact | `navigate` · `wait_for` · `click` · `type_text` · `press_key` · `reload` · `pause` · `resume` · `clear_buffers` · `set_console_live` |
-| 🧰 Power | `start_tracing` · `stop_tracing` · `cdp_command` |
+| 🧰 Power | `start_tracing` · `stop_tracing` · `start_cpu_profile` · `stop_cpu_profile` · `heap_snapshot` · `get_performance_metrics` · `block_urls` · `set_extra_headers` · `ipc_tap` · `get_ipc_log` · `cdp_command` |
 | 💬 Prompts | `debug_blank_window` · `find_renderer_exception` · `ui_smoke_check` · `attach_and_screenshot` |
 
 ---
@@ -547,13 +607,46 @@ Reloads **page** targets only (never the main-process `node` inspect target). Om
 
 `Debugger.pause` / `Debugger.resume` on a page target. `resume` also calls `Debugger.disable` afterward so later screenshots / input are not blocked by an open debugger session.
 
-#### `clear_buffers` — `{ processId, console?=true, network?=true, logs?=false }`  
+#### `clear_buffers` — `{ processId, console?, network?, logs?, ipc?, audits? }`  
 
-Clears in-memory console / network / stdout-stderr buffers for the session. Defaults clear console + network; set `logs: true` to also clear `get_logs` capture.
+Clears in-memory buffers. With no flags, clears console + network. Set `logs` / `ipc` / `audits` explicitly when needed.
 
 ---
 
-### 🧰 Power / tracing
+### 🧰 Power / tracing / profiling (v1.6)
+
+#### `vision` — `{ processId, targetId?, includeScreenshot?=true }`
+
+One-shot agent view: page info, windows, recent console errors, network failures, audit issues, plus an MCP **image** when screenshot succeeds.
+
+#### `snapshot` — `{ processId, depth?, targetId? }`
+
+CDP `Accessibility.getFullAXTree` → roles / names / backend node ids (agent-friendly UI map).
+
+#### `diff_screenshot` — `{ processId, baselinePath, currentPath?, selector?, targetId? }`
+
+Compare a baseline PNG to a fresh capture (or an existing `currentPath`). Returns `identical`, byte `similarity`, and SHA-256s.
+
+#### `get_response_body` — `{ processId, requestId, targetId? }`  
+#### `block_urls` — `{ processId, urls[], targetId? }`  
+#### `set_extra_headers` — `{ processId, headers{}, targetId? }`  
+#### `get_performance_metrics` — `{ processId, targetId? }` → `Performance.getMetrics` map  
+#### `get_audit_issues` — `{ processId, tail? }` — buffered Chromium Audits issues  
+
+#### `start_cpu_profile` / `stop_cpu_profile` — `{ processId, targetId? }` / `{ processId, path? }`  
+Writes a `.cpuprofile` under the output-path rules (default: OS temp).
+
+#### `heap_snapshot` — `{ processId, path?, targetId? }`  
+Writes a `.heapsnapshot` for DevTools Memory analysis.
+
+#### `main_state` — `{ processId }`  
+Electron nervous system via `evaluate_main`: windows, `app.getPath(*)`, versions, metrics. Requires a main/node target (`inspectMain: true`).
+
+#### `ipc_tap` / `get_ipc_log` — `{ processId }` / `{ processId, tail?, refreshFromMain? }`  
+Installs a main-process IPC tap; drain with `get_ipc_log`. Requires `inspectMain`.
+
+#### `find_installed_apps` — `{}`  
+Best-effort scan of packaged Electron installs (macOS `.app`, Windows dirs, Linux `.desktop`).
 
 #### `start_tracing`
 
@@ -870,19 +963,69 @@ Open `app-trace.json` in `chrome://tracing`.
 
 ### 1️⃣3️⃣ Recommended agent loop
 
-```text
-find_apps / discover_apps / start_app(inspectMain?) / attach / attach_by_pid
-    → diagnose
-    → set_console_live(true)   # optional
-    → get_console_messages(level="error") + get_logs
-    → screenshot / save_screenshot(selector?)
-    → wait_for (if UI)
-    → click / type_text / press_key / navigate / reload / evaluate / get_dom
-    → evaluate_main            # if inspectMain / node target present
-    → get_storage / get_cookies   # if state matters
-    → start_tracing … stop_tracing   # if perf
-    → cdp_command              # escape hatch
-    → stop_app                 # removes session from list_apps
+```mermaid
+flowchart TD
+  Start["doctor optional"] --> Find["find_apps / discover_apps / start_app inspectMain? / attach / attach_by_pid"]
+  Find --> Health["diagnose"]
+  Health --> See["vision or snapshot + screenshot"]
+  See --> Errors["get_console_messages error + get_audit_issues + get_logs"]
+  Errors --> UI{"UI work?"}
+  UI -->|yes| Wait["wait_for"]
+  Wait --> Act["click / type_text / press_key / navigate / reload"]
+  Act --> Eval["evaluate / get_dom"]
+  UI -->|no| Eval
+  Eval --> Main{"inspectMain?"}
+  Main -->|yes| MainTools["evaluate_main / main_state / ipc_tap"]
+  Main -->|no| State
+  MainTools --> State["get_storage / get_cookies / get_network_log"]
+  State --> Perf{"perf / memory?"}
+  Perf -->|yes| Trace["tracing · CPU profile · heap_snapshot · metrics"]
+  Perf -->|no| Escape
+  Trace --> Escape["cdp_command escape hatch"]
+  Escape --> Stop["stop_app — drops session"]
+```
+
+### 1️⃣4️⃣ Vision · a11y · profiling · IPC (v1.6)
+
+```json
+// vision — image + JSON summary
+{ "processId": "electron-…", "includeScreenshot": true }
+```
+
+```json
+// snapshot — accessibility tree
+{ "processId": "electron-…", "depth": 12 }
+```
+
+```json
+// start_cpu_profile → …reproduce… → stop_cpu_profile
+{ "processId": "electron-…" }
+```
+
+```json
+// heap_snapshot
+{ "processId": "electron-…", "path": "D:/tmp/app.heapsnapshot" }
+```
+
+```json
+// main_state + ipc_tap (requires inspectMain)
+{ "processId": "electron-…" }
+```
+
+```json
+// diff_screenshot vs baseline
+{
+  "processId": "electron-…",
+  "baselinePath": "D:/tmp/baseline.png"
+}
+```
+
+```json
+// block analytics noise
+{
+  "processId": "electron-…",
+  "urls": ["*://*.google-analytics.com/*", "*://*.sentry.io/*"]
+}
 ```
 
 ---
@@ -924,6 +1067,7 @@ $env:ELECTRON_MCP_ALLOWED_ROOTS="D:\apps;D:\GH"
 | `npm test` | ensure + build + unit + smoke |
 | `npm run test:unit` | Unit tests (`unit-helpers`, `probe`, `monitor`) |
 | `npm run test:smoke` | Full MCP e2e vs fixture app |
+| `npm run doctor` | Build + stdio self-check (`doctor` tool + `electron://server`) |
 | `npm run pack:check` | `npm pack --dry-run` (publish surface) |
 | `prepublishOnly` | Builds before `npm publish` |
 | `postinstall` | Runs ensure-electron (no-op if electron omitted) |
@@ -938,9 +1082,9 @@ $env:ELECTRON_MCP_ALLOWED_ROOTS="D:\apps;D:\GH"
 npm test
 ```
 
-Smoke path (v1.5+):
+Smoke path (v1.6):
 
-`initialize` → tool/prompt/resource lists → `start_app` (`inspectMain`) → evaluate → console/network/DOM → UI automation → `save_screenshot` (+ **selector clip**) → storage / cookies → tracing → `find_apps` / `attach_by_pid` → `get_logs` → screenshot → diagnose → **navigate / reload / pause / resume / cdp_command / evaluate_main** → attach → **discover** (real ports) → **all 7 resources** → stop → **post-stop `list_apps` cleanup**
+`initialize` → tool/prompt/resource lists (`doctor`, `electron://server`) → `start_app` (`inspectMain`) → evaluate → console/network/DOM → UI automation → `save_screenshot` (+ **selector clip**) → storage / cookies → tracing → `find_apps` / `attach_by_pid` → `get_logs` → screenshot → diagnose → **`snapshot` / `vision` / metrics / CPU profile / heap / network shaping / audits / `find_installed_apps` / `diff_screenshot`** → navigate / reload / pause / resume / cdp / **`evaluate_main` / `main_state` / `ipc_tap`** → attach → discover → **all 7 resources** → stop → post-stop cleanup
 
 Unit tests also cover CDP monitor hang-regression (`test/monitor.test.mjs`).
 
@@ -950,18 +1094,27 @@ CI: [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) — **Ubuntu + Xvfb
 
 ## 🗂️ Project layout
 
-```text
-electron-mcp-server/
-├── assets/logo.svg · logo.png
-├── examples/cursor-mcp.json · claude-desktop-config.json
-├── fixtures/minimal-electron-app/
-├── scripts/ensure-electron.mjs · fix-electron.cmd · fix-electron.ps1
-├── src/index.ts · process-manager.ts · events.ts · log.ts
-├── src/types/chrome-remote-interface.d.ts
-├── test/mcp-smoke.mjs · unit-helpers.test.mjs · probe.test.mjs · monitor.test.mjs
-├── .github/workflows/ci.yml
-├── .npmignore
-└── README.md · LICENSE · package.json · tsconfig.json
+```mermaid
+flowchart TB
+  subgraph Root["electron-mcp-server"]
+    Assets["assets/ logo.svg"]
+    Examples["examples/ MCP configs · doctor-checklist"]
+    Fixtures["fixtures/minimal-electron-app"]
+    Scripts["scripts/ ensure-electron · doctor · fix-electron"]
+    Src["src/"]
+    Test["test/ smoke · unit · probe · monitor"]
+    Ci[".github/workflows/ci.yml"]
+    Docs["README · CHANGELOG · CONTRIBUTING · LICENSE"]
+  end
+
+  subgraph SrcDetail["src/"]
+    Index["index.ts — MCP tools / prompts / resources"]
+    PM["process-manager.ts — CDP / sessions"]
+    Power["power-tools.ts — vision · snapshot · profiling · IPC"]
+    Ev["events.ts · log.ts · types/"]
+  end
+
+  Src --> SrcDetail
 ```
 
 Published npm package includes `build/`, `assets/`, `README.md`, `LICENSE`, and `CHANGELOG.md` (`files` + `.npmignore`). `electron` is an **optionalDependency** so `start_app` works after a normal install; attach-only users can `npm install --omit=optional` and skip the Electron download.
@@ -1001,6 +1154,9 @@ Published npm package includes `build/`, `assets/`, `README.md`, `LICENSE`, and 
 | Port in use | Change `debugPort` or `discover_apps` / `find_apps` |
 | Linux headless | `ELECTRON_MCP_NO_SANDBOX=1` + Xvfb |
 | Tracing empty / fails | Call `start_tracing` before the slow path; only one active trace per session |
+| `main_state` / `ipc_tap` fail | Need `inspectMain: true` (or an attachable node target) |
+| `heap_snapshot` / CPU profile empty | Wait briefly after start; ensure page target is alive |
+| `get_response_body` fails | Use a `requestId` after `loadingFinished` / response events |
 | `list_apps` empty after stop | Expected — sessions are deleted on stop/exit |
 
 ---

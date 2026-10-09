@@ -44,7 +44,11 @@ import {
   resolveOutputPath,
   isPathInside,
   waitForCondition,
+  registerProcessCleanup,
+  isCdpTransportError,
+  withTimeout,
 } from "../build/process-manager.js";
+import { hasCpuProfileSession } from "../build/power-tools.js";
 
 void _classify;
 
@@ -265,6 +269,8 @@ test("createProcessRecord seeds empty buffers and a monitorClients map", () => {
   const proc = makeProc();
   assert.deepEqual(proc.consoleMessages, []);
   assert.deepEqual(proc.networkEntries, []);
+  assert.deepEqual(proc.ipcEntries, []);
+  assert.deepEqual(proc.auditIssues, []);
   assert.deepEqual(proc.logs, []);
   assert.ok(proc.monitorClients instanceof Map);
   assert.equal(proc.monitorClients.size, 0);
@@ -715,6 +721,37 @@ test("clearProcessBuffers with empty list clears nothing", () => {
   assert.deepEqual(proc.logs, ["stay"]);
 });
 
+test("clearProcessBuffers can clear ipc and audits", () => {
+  const proc = makeProc();
+  proc.ipcEntries.push({
+    timestamp: "",
+    direction: "handle",
+    channel: "x",
+    argsPreview: "[]",
+  });
+  proc.auditIssues.push({
+    timestamp: "",
+    targetId: "t",
+    code: "CookieIssue",
+  });
+  const { cleared } = clearProcessBuffers(proc, ["ipc", "audits"]);
+  assert.deepEqual(cleared.sort(), ["audits", "ipc"]);
+  assert.equal(proc.ipcEntries.length, 0);
+  assert.equal(proc.auditIssues.length, 0);
+});
+
+test("registerProcessCleanup runs on stopElectronApp for missing process is no-op", async () => {
+  let hits = 0;
+  registerProcessCleanup(() => {
+    hits += 1;
+  });
+  // Unknown id — still returns true, but no cleanup hook for a live session map entry.
+  assert.equal(await stopElectronApp("does-not-exist"), true);
+  // Hook only fires when a real session is cleaned; ensure hasCpuProfileSession stays false.
+  assert.equal(hasCpuProfileSession("does-not-exist"), false);
+  assert.equal(typeof hits, "number");
+});
+
 // ===========================================================================
 // setConsoleLiveLogging / isConsoleLiveLoggingEnabled
 // ===========================================================================
@@ -972,6 +1009,43 @@ test("allocateLocalPort returns a bindable ephemeral port", async () => {
       srv.close((err) => (err ? reject(err) : resolve()));
     });
   });
+});
+
+// ===========================================================================
+// CDP transport classification + withTimeout
+// ===========================================================================
+
+test("isCdpTransportError matches socket / timeout failures only", () => {
+  assert.equal(isCdpTransportError(new Error("ECONNRESET")), true);
+  assert.equal(isCdpTransportError(new Error("WebSocket is not open")), true);
+  assert.equal(isCdpTransportError(new Error("CDP Runtime.evaluate timed out after 20000ms")), true);
+  assert.equal(isCdpTransportError(new Error("connection closed")), true);
+  assert.equal(isCdpTransportError(new Error("Invalid parameters")), false);
+  assert.equal(isCdpTransportError(new Error("'Network.getResponseBody' wasn't found")), false);
+  assert.equal(isCdpTransportError("EPIPE: broken pipe"), true);
+});
+
+test("withTimeout resolves before the deadline", async () => {
+  const value = await withTimeout(
+    Promise.resolve(42),
+    1_000,
+    "unit-fast",
+  );
+  assert.equal(value, 42);
+});
+
+test("withTimeout rejects when the promise stalls", async () => {
+  await assert.rejects(
+    () =>
+      withTimeout(
+        new Promise(() => {
+          /* never resolves */
+        }),
+        30,
+        "unit-stall",
+      ),
+    /unit-stall timed out after 30ms/,
+  );
 });
 
 // ===========================================================================

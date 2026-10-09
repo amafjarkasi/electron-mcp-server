@@ -1,5 +1,6 @@
 import { type ChildProcess, execFile, spawn } from "child_process";
 import CDP from "chrome-remote-interface";
+import * as crypto from "crypto";
 import * as fs from "fs";
 import { createRequire } from "module";
 import * as net from "net";
@@ -8,6 +9,11 @@ import * as path from "path";
 import { promisify } from "util";
 import { processEvents } from "./events.js";
 import { log } from "./log.js";
+
+/** Default budget for a single CDP command / connect / target list fetch. */
+export const CDP_COMMAND_TIMEOUT_MS = 20_000;
+export const CDP_CONNECT_TIMEOUT_MS = 10_000;
+export const CDP_TARGET_LIST_TIMEOUT_MS = 5_000;
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
@@ -59,6 +65,20 @@ export interface NetworkEntry {
 	errorText?: string;
 }
 
+export interface IpcEntry {
+	timestamp: string;
+	direction: "renderer->main" | "main->renderer" | "handle" | "unknown";
+	channel: string;
+	argsPreview: string;
+}
+
+export interface AuditIssue {
+	timestamp: string;
+	targetId: string;
+	code: string;
+	details?: unknown;
+}
+
 export interface ElectronProcess {
 	id: string;
 	process?: ChildProcess;
@@ -74,6 +94,8 @@ export interface ElectronProcess {
 	appPath: string;
 	consoleMessages: ConsoleMessage[];
 	networkEntries: NetworkEntry[];
+	ipcEntries: IpcEntry[];
+	auditIssues: AuditIssue[];
 	cdpClient?: CDP.Client;
 	cdpTargetId?: string;
 	monitorClients: Map<string, CDP.Client>;
@@ -530,6 +552,8 @@ export function createProcessRecord(
 		ElectronProcess,
 		| "consoleMessages"
 		| "networkEntries"
+		| "ipcEntries"
+		| "auditIssues"
 		| "monitorClients"
 		| "unmonitorableTargets"
 		| "inFlightMonitorTargets"
@@ -543,6 +567,8 @@ export function createProcessRecord(
 		logs: partial.logs ?? [],
 		consoleMessages: [],
 		networkEntries: [],
+		ipcEntries: [],
+		auditIssues: [],
 		monitorClients: new Map(),
 		unmonitorableTargets: new Set(),
 		inFlightMonitorTargets: new Set(),
@@ -634,9 +660,10 @@ export async function startElectronApp(
 		throw new Error(`App path does not exist: ${resolvedAppPath}`);
 	}
 
-	const id = `electron-${Date.now()}`;
-	const port =
-		debugPort ?? Math.floor(Math.random() * (9999 - 9222 + 1)) + 9222;
+	const id = `electron-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
+	// Bind a real free port when the caller did not pin one (avoids random
+	// collisions with Hyper-V excluded ranges / concurrent starts).
+	const port = debugPort ?? (await allocateLocalPort());
 
 	const autoArgs: string[] = [];
 	if (
@@ -839,7 +866,7 @@ export async function stopElectronApp(id: string): Promise<boolean> {
 		return true;
 	}
 
-	abandonTracingSession(id);
+	runProcessCleanup(id);
 	await closeAllClients(electronProcess);
 
 	if (electronProcess.attached) {
@@ -905,7 +932,8 @@ export async function updateCDPTargets(
 	const updatePromise = (async () => {
 		try {
 			const response = await fetch(
-				`http://127.0.0.1:${electronProcess.debugPort}/json/list`
+				`http://127.0.0.1:${electronProcess.debugPort}/json/list`,
+				{ signal: AbortSignal.timeout(CDP_TARGET_LIST_TIMEOUT_MS) },
 			);
 			if (!response.ok) {
 				throw new Error(`Failed to get targets: ${response.statusText}`);
@@ -924,6 +952,7 @@ export async function updateCDPTargets(
 				try {
 					const inspectRes = await fetch(
 						`http://127.0.0.1:${electronProcess.inspectPort}/json/list`,
+						{ signal: AbortSignal.timeout(CDP_TARGET_LIST_TIMEOUT_MS) },
 					);
 					if (inspectRes.ok) {
 						inspectTargets = ((await inspectRes.json()) as CDPTarget[]).map(
@@ -1169,6 +1198,49 @@ function wireMonitorEvents(
 			);
 		}
 	});
+
+	client.on("Network.loadingFinished", (params) => {
+		try {
+			const p = (params ?? {}) as { requestId?: string; type?: string };
+			if (!p.requestId) return;
+			pushCapped(
+				electronProcess.networkEntries,
+				{
+					timestamp: new Date().toISOString(),
+					targetId,
+					requestId: p.requestId,
+					type: p.type,
+					event: "finished",
+				},
+				MAX_NETWORK,
+			);
+		} catch (err) {
+			log.warn(
+				`[${electronProcess.id}] Error handling Network.loadingFinished:`,
+				err,
+			);
+		}
+	});
+
+	client.on("Audits.issueAdded", (params) => {
+		try {
+			const issue = (params as { issue?: { code?: string; details?: unknown } })
+				?.issue;
+			if (!issue?.code) return;
+			pushCapped(
+				electronProcess.auditIssues,
+				{
+					timestamp: new Date().toISOString(),
+					targetId,
+					code: String(issue.code),
+					details: issue.details,
+				},
+				MAX_CONSOLE,
+			);
+		} catch (err) {
+			log.warn(`[${electronProcess.id}] Error handling Audits.issueAdded:`, err);
+		}
+	});
 }
 
 /**
@@ -1271,6 +1343,15 @@ export async function ensureMonitoring(
 				}
 				try {
 					await withTimeout(
+						client.send("Audits.enable"),
+						MONITOR_STEP_TIMEOUT_MS,
+						`Audits.enable on target ${target.id}`,
+					);
+				} catch {
+					// optional — older Chromium may lack Audits
+				}
+				try {
+					await withTimeout(
 						client.send("Page.enable"),
 						MONITOR_STEP_TIMEOUT_MS,
 						`Page.enable on target ${target.id}`,
@@ -1347,15 +1428,60 @@ export async function connectToCDPTarget(
 	}
 
 	const targetPort = target.port ?? electronProcess.debugPort;
-	const client = await CDP({
+	// Race connect against a deadline. CDP cannot cancel an in-flight
+	// handshake, so a late winner must be closed to avoid leaking sockets.
+	const connection = CDP({
 		target: targetId,
 		port: targetPort,
 		host: "127.0.0.1",
 	});
+	let client: CDP.Client;
+	try {
+		client = await withTimeout(
+			connection,
+			CDP_CONNECT_TIMEOUT_MS,
+			`CDP connect to target ${targetId}`,
+		);
+	} catch (err) {
+		void connection.then((late) => closeClient(late)).catch(() => {
+			/* ignore */
+		});
+		throw err;
+	}
 
 	electronProcess.cdpClient = client;
 	electronProcess.cdpTargetId = targetId;
 	return client;
+}
+
+/** True when a CDP failure looks like a dropped socket / closed connection. */
+export function isCdpTransportError(err: unknown): boolean {
+	const msg = err instanceof Error ? err.message : String(err);
+	return /ECONNRESET|ECONNREFUSED|ENOTFOUND|EPIPE|socket|WebSocket|disconnected|connection closed|not open|TIMEDOUT|timed out|ETIMEDOUT/i.test(
+		msg,
+	);
+}
+
+/** Drop a possibly-wedged CDP client for `targetId` so the next call reconnects. */
+function invalidateCdpClient(
+	electronProcess: ElectronProcess,
+	targetId: string,
+): void {
+	const oldMonitor = electronProcess.monitorClients.get(targetId);
+	electronProcess.monitorClients.delete(targetId);
+	if (oldMonitor) {
+		void closeClient(oldMonitor);
+	}
+	if (electronProcess.cdpTargetId === targetId) {
+		if (
+			electronProcess.cdpClient &&
+			electronProcess.cdpClient !== oldMonitor
+		) {
+			void closeClient(electronProcess.cdpClient);
+		}
+		electronProcess.cdpClient = undefined;
+		electronProcess.cdpTargetId = undefined;
+	}
 }
 
 export async function executeCDPCommand(
@@ -1363,37 +1489,44 @@ export async function executeCDPCommand(
 	targetId: string,
 	method: string,
 	params: Record<string, unknown> = {},
+	timeoutMs = CDP_COMMAND_TIMEOUT_MS,
 ): Promise<unknown> {
 	const client = await connectToCDPTarget(electronProcess, targetId);
 	try {
-		return await client.send(method, params);
+		return await withTimeout(
+			client.send(method, params),
+			timeoutMs,
+			`CDP ${method}`,
+		);
 	} catch (err) {
-		// One reconnect attempt for dropped sockets
+		if (!isCdpTransportError(err)) {
+			throw err;
+		}
+		// One reconnect attempt for dropped sockets / timed-out commands only
 		log.warn(
 			`[${electronProcess.id}] CDP ${method} failed, reconnecting:`,
 			err,
 		);
-		const oldMonitor = electronProcess.monitorClients.get(targetId);
-		electronProcess.monitorClients.delete(targetId);
-		if (oldMonitor) {
-			void closeClient(oldMonitor);
-		}
-		if (electronProcess.cdpTargetId === targetId) {
-			if (
-				electronProcess.cdpClient &&
-				electronProcess.cdpClient !== oldMonitor
-			) {
-				void closeClient(electronProcess.cdpClient);
-			}
-			electronProcess.cdpClient = undefined;
-			electronProcess.cdpTargetId = undefined;
-		}
+		invalidateCdpClient(electronProcess, targetId);
 		const retry = await connectToCDPTarget(electronProcess, targetId);
-		return retry.send(method, params);
+		try {
+			return await withTimeout(
+				retry.send(method, params),
+				timeoutMs,
+				`CDP ${method} (retry)`,
+			);
+		} catch (retryErr) {
+			// Timed-out / dead sockets leave chrome-remote-interface wedged —
+			// drop the client so the next tool call opens a fresh session.
+			if (isCdpTransportError(retryErr)) {
+				invalidateCdpClient(electronProcess, targetId);
+			}
+			throw retryErr;
+		}
 	}
 }
 
-async function withTimeout<T>(
+export async function withTimeout<T>(
 	promise: Promise<T>,
 	ms: number,
 	label: string,
@@ -2012,7 +2145,11 @@ export function pickTargetByRole(
 
 export function clearProcessBuffers(
 	electronProcess: ElectronProcess,
-	what: Array<"console" | "network" | "logs"> = ["console", "network", "logs"],
+	what: Array<"console" | "network" | "logs" | "ipc" | "audits"> = [
+		"console",
+		"network",
+		"logs",
+	],
 ): { cleared: string[] } {
 	const cleared: string[] = [];
 	if (what.includes("console")) {
@@ -2026,6 +2163,14 @@ export function clearProcessBuffers(
 	if (what.includes("logs")) {
 		electronProcess.logs = [];
 		cleared.push("logs");
+	}
+	if (what.includes("ipc")) {
+		electronProcess.ipcEntries = [];
+		cleared.push("ipc");
+	}
+	if (what.includes("audits")) {
+		electronProcess.auditIssues = [];
+		cleared.push("audits");
 	}
 	return { cleared };
 }
@@ -2762,13 +2907,36 @@ function abandonTracingSession(processId: string): void {
 	traceSessions.delete(processId);
 }
 
+const processCleanupHooks: Array<(processId: string) => void> = [];
+
+/**
+ * Register a best-effort cleanup hook invoked when a managed session is
+ * forgotten or stopped (CPU profiles, etc.). Hooks must not throw.
+ */
+export function registerProcessCleanup(
+	hook: (processId: string) => void,
+): void {
+	processCleanupHooks.push(hook);
+}
+
+function runProcessCleanup(processId: string): void {
+	abandonTracingSession(processId);
+	for (const hook of processCleanupHooks) {
+		try {
+			hook(processId);
+		} catch (err) {
+			log.warn(`[${processId}] process cleanup hook failed:`, err);
+		}
+	}
+}
+
 /**
  * Finalize a session that has stopped or crashed: abandon tracing, close CDP
  * sockets, and remove it from the managed map so list_apps / resources don't
  * accumulate forever.
  */
 function forgetProcess(id: string): void {
-	abandonTracingSession(id);
+	runProcessCleanup(id);
 	const proc = electronProcesses.get(id);
 	if (proc) {
 		void closeAllClients(proc);

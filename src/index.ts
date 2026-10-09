@@ -49,6 +49,23 @@ import {
 	updateCDPTargets,
 	waitForCondition,
 } from "./process-manager.js";
+import {
+	blockUrls,
+	diffScreenshot,
+	enableIpcTap,
+	findInstalledElectronApps,
+	getAccessibilitySnapshot,
+	getAppVision,
+	getAuditIssues,
+	getIpcLog,
+	getMainState,
+	getPerformanceMetrics,
+	getResponseBody,
+	setExtraHeaders,
+	startCpuProfile,
+	stopCpuProfile,
+	takeHeapSnapshot,
+} from "./power-tools.js";
 
 const require = createRequire(import.meta.url);
 const SERVER_VERSION = (
@@ -1397,14 +1414,16 @@ server.tool(
 
 server.tool(
 	"clear_buffers",
-	"Clear buffered console messages, network events, and/or process logs",
+	"Clear buffered console messages, network events, process logs, ipc, and/or audits",
 	{
 		processId: z.string(),
 		console: z.boolean().optional(),
 		network: z.boolean().optional(),
 		logs: z.boolean().optional(),
+		ipc: z.boolean().optional(),
+		audits: z.boolean().optional(),
 	},
-	async ({ processId, console: clearConsole, network, logs }) => {
+	async ({ processId, console: clearConsole, network, logs, ipc, audits }) => {
 		try {
 			const proc = getProcess(processId);
 			if (!proc) {
@@ -1413,13 +1432,18 @@ server.tool(
 			const hasExplicitFlag =
 				clearConsole !== undefined ||
 				network !== undefined ||
-				logs !== undefined;
+				logs !== undefined ||
+				ipc !== undefined ||
+				audits !== undefined;
 
-			const what: Array<"console" | "network" | "logs"> = [];
+			const what: Array<"console" | "network" | "logs" | "ipc" | "audits"> =
+				[];
 			if (hasExplicitFlag) {
 				if (clearConsole) what.push("console");
 				if (network) what.push("network");
 				if (logs) what.push("logs");
+				if (ipc) what.push("ipc");
+				if (audits) what.push("audits");
 			} else {
 				what.push("console", "network", "logs");
 			}
@@ -1428,6 +1452,309 @@ server.tool(
 				processId,
 				...clearProcessBuffers(proc, what),
 			});
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+// --- Creative power tools (v1.6) ---
+
+server.tool(
+	"snapshot",
+	"Accessibility tree snapshot (roles/names) via CDP Accessibility.getFullAXTree — agent-friendly UI map",
+	{
+		processId: z.string(),
+		depth: z.number().int().positive().optional(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, depth, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			const result = await getAccessibilitySnapshot(proc, { depth, targetId });
+			return textResult({ processId, ...result });
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"vision",
+	"One-shot app state: screenshot + page_info + recent console errors + network failures + windows",
+	{
+		processId: z.string(),
+		targetId: z.string().optional(),
+		includeScreenshot: z
+			.boolean()
+			.optional()
+			.describe("Include base64 PNG (default true)"),
+	},
+	async ({ processId, targetId, includeScreenshot }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			const result = await getAppVision(proc, { targetId, includeScreenshot });
+			const shot = result.screenshot as
+				| { mimeType?: string; data?: string }
+				| undefined;
+			if (shot?.data) {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: JSON.stringify(
+								{ ...result, screenshot: { ...shot, data: "[see image]" } },
+								null,
+								2,
+							),
+						},
+						{
+							type: "image" as const,
+							data: shot.data,
+							mimeType: shot.mimeType ?? "image/png",
+						},
+					],
+				};
+			}
+			return textResult(result);
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"get_response_body",
+	"Fetch body for a buffered network requestId (call after Network.loadingFinished)",
+	{
+		processId: z.string(),
+		requestId: z.string(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, requestId, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			const result = await getResponseBody(proc, requestId, targetId);
+			return textResult({ processId, ...result });
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"block_urls",
+	"Block URL patterns via Network.setBlockedURLs (e.g. *.analytics.com/*)",
+	{
+		processId: z.string(),
+		urls: z.array(z.string()).describe("URL patterns to block"),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, urls, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			const result = await blockUrls(proc, urls, targetId);
+			return textResult({ processId, ...result });
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"set_extra_headers",
+	"Set extra HTTP headers for subsequent requests (Network.setExtraHTTPHeaders)",
+	{
+		processId: z.string(),
+		headers: z.record(z.string()),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, headers, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			const result = await setExtraHeaders(proc, headers, targetId);
+			return textResult({ processId, ...result });
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"get_performance_metrics",
+	"Renderer Performance.getMetrics (JS heap, layout count, task duration, …)",
+	{
+		processId: z.string(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			const result = await getPerformanceMetrics(proc, targetId);
+			return textResult({ processId, ...result });
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"start_cpu_profile",
+	"Start V8 CPU profiler on a page target (pair with stop_cpu_profile)",
+	{
+		processId: z.string(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await startCpuProfile(proc, targetId));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"stop_cpu_profile",
+	"Stop CPU profiler and write a .cpuprofile JSON file",
+	{
+		processId: z.string(),
+		path: z.string().optional().describe("Output path (default: OS temp)"),
+	},
+	async ({ processId, path: filePath }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await stopCpuProfile(proc, filePath));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"heap_snapshot",
+	"Take a V8 heap snapshot (.heapsnapshot) for leak investigation",
+	{
+		processId: z.string(),
+		path: z.string().optional(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, path: filePath, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await takeHeapSnapshot(proc, filePath, targetId));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"main_state",
+	"Electron main-process nervous system: windows, app paths, versions, metrics (requires inspectMain / node target)",
+	{
+		processId: z.string(),
+	},
+	async ({ processId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await getMainState(proc));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"ipc_tap",
+	"Install main-process IPC tap (ipcMain.handle wrap + webContents send/ipc-message). Requires inspectMain.",
+	{
+		processId: z.string(),
+	},
+	async ({ processId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await enableIpcTap(proc));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"get_ipc_log",
+	"Drain / read captured IPC entries after ipc_tap",
+	{
+		processId: z.string(),
+		tail: z.number().int().positive().optional(),
+		refreshFromMain: z.boolean().optional(),
+	},
+	async ({ processId, tail, refreshFromMain }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await getIpcLog(proc, { tail, refreshFromMain }));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"diff_screenshot",
+	"Capture (or compare) a screenshot against a baseline PNG; reports identical + byte similarity",
+	{
+		processId: z.string(),
+		baselinePath: z.string(),
+		currentPath: z
+			.string()
+			.optional()
+			.describe("Existing PNG to compare; if omitted, captures fresh"),
+		selector: z.string().optional(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, baselinePath, currentPath, selector, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(
+				await diffScreenshot(proc, {
+					baselinePath,
+					currentPath,
+					selector,
+					targetId,
+				}),
+			);
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"get_audit_issues",
+	"Buffered Chromium Audits issues (cookie/CORS/mixed-content/deprecations) captured since attach",
+	{
+		processId: z.string(),
+		tail: z.number().int().positive().optional(),
+	},
+	async ({ processId, tail }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(getAuditIssues(proc, tail));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"find_installed_apps",
+	"Scan common install locations for packaged Electron apps (.app / exe / .desktop)",
+	{},
+	async () => {
+		try {
+			const apps = await findInstalledElectronApps();
+			return textResult({ count: apps.length, apps });
 		} catch (err) {
 			return textResult(err instanceof Error ? err.message : String(err), true);
 		}
@@ -1578,7 +1905,8 @@ server.resource(
 						managedProcessCount: listProcesses().length,
 						consoleLiveLogging: isConsoleLiveLoggingEnabled(),
 						capabilities: {
-							tools: "see tools/list (includes doctor)",
+							tools:
+								"see tools/list (52 tools: lifecycle, inspect, vision/snapshot, profiling, IPC, audits…)",
 							prompts: [
 								"debug_blank_window",
 								"find_renderer_exception",
