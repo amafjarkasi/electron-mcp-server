@@ -290,6 +290,20 @@ async function main() {
       "diff_screenshot",
       "get_audit_issues",
       "find_installed_apps",
+      // v1.7
+      "start_coverage",
+      "stop_coverage",
+      "set_file_input",
+      "emulate",
+      "start_screencast",
+      "stop_screencast",
+      "set_breakpoint",
+      "remove_breakpoint",
+      "resolve_stack",
+      "perf_audit",
+      "capture_mhtml",
+      "virtual_clock",
+      "webcontents_topology",
     ];
     const tools = await client.request("tools/list");
     const names = new Set((tools.tools ?? []).map((t) => t.name));
@@ -320,13 +334,14 @@ async function main() {
       "find_renderer_exception",
       "ui_smoke_check",
       "attach_and_screenshot",
+      "vision_then_act",
     ]) {
       assert(promptNames.has(required), `missing prompt ${required}`);
     }
     // Allow additive prompts but never drop required ones.
     assert(
-      promptNames.size >= 4,
-      `expected at least 4 prompts, got ${promptNames.size}`
+      promptNames.size >= 5,
+      `expected at least 5 prompts, got ${promptNames.size}`
     );
     pass(`prompts/list (${promptNames.size})`);
 
@@ -913,6 +928,136 @@ async function main() {
           }
         }
       }
+    });
+
+    // --- v1.7 creative tools (soft) ---
+    await soft("start/stop_coverage", async () => {
+      const start = await client.request("tools/call", {
+        name: "start_coverage",
+        arguments: { processId },
+      });
+      assert(!start.isError, `start_coverage: ${start.content?.[0]?.text}`);
+      const stop = await client.request("tools/call", {
+        name: "stop_coverage",
+        arguments: { processId },
+      });
+      assert(!stop.isError, `stop_coverage: ${stop.content?.[0]?.text}`);
+      pass("start/stop_coverage");
+    });
+
+    await soft("emulate", async () => {
+      const emu = await client.request("tools/call", {
+        name: "emulate",
+        arguments: {
+          processId,
+          metrics: { width: 800, height: 600, deviceScaleFactor: 1, mobile: false },
+        },
+      });
+      assert(!emu.isError, `emulate: ${emu.content?.[0]?.text}`);
+      await client.request("tools/call", {
+        name: "emulate",
+        arguments: { processId, clear: true },
+      });
+      pass("emulate");
+    });
+
+    await soft("start/stop_screencast", async () => {
+      let started = false;
+      try {
+        const start = await client.request("tools/call", {
+          name: "start_screencast",
+          arguments: { processId, maxFrames: 2, everyNthFrame: 1 },
+        });
+        assert(!start.isError, `start_screencast: ${start.content?.[0]?.text}`);
+        started = true;
+        await new Promise((r) => setTimeout(r, 200));
+        const stop = await client.request("tools/call", {
+          name: "stop_screencast",
+          arguments: { processId },
+        });
+        started = false;
+        assert(!stop.isError, `stop_screencast: ${stop.content?.[0]?.text}`);
+        pass("start/stop_screencast");
+      } finally {
+        if (started) {
+          try {
+            await client.request(
+              "tools/call",
+              { name: "stop_screencast", arguments: { processId } },
+              15_000,
+            );
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    });
+
+    await soft("perf_audit", async () => {
+      const audit = await client.request("tools/call", {
+        name: "perf_audit",
+        arguments: { processId },
+      });
+      assert(!audit.isError, `perf_audit: ${audit.content?.[0]?.text}`);
+      const data = parseToolText(audit);
+      assert(data.metrics && typeof data.metrics === "object", "perf_audit missing metrics");
+      pass("perf_audit");
+    });
+
+    await soft("capture_mhtml", async () => {
+      let mhtmlPath;
+      try {
+        const mhtml = await client.request("tools/call", {
+          name: "capture_mhtml",
+          arguments: { processId },
+        });
+        assert(!mhtml.isError, `capture_mhtml: ${mhtml.content?.[0]?.text}`);
+        const data = parseToolText(mhtml);
+        assert(data.path && data.bytes > 0, `capture_mhtml missing file: ${JSON.stringify(data)}`);
+        mhtmlPath = data.path;
+        pass("capture_mhtml");
+      } finally {
+        if (mhtmlPath) {
+          try {
+            fs.unlinkSync(mhtmlPath);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    });
+
+    await soft("virtual_clock", async () => {
+      const pause = await client.request("tools/call", {
+        name: "virtual_clock",
+        arguments: { processId, policy: "advance", budget: 50 },
+      });
+      assert(!pause.isError, `virtual_clock: ${pause.content?.[0]?.text}`);
+      pass("virtual_clock");
+    });
+
+    await soft("webcontents_topology", async () => {
+      const topo = await client.request("tools/call", {
+        name: "webcontents_topology",
+        arguments: { processId },
+      });
+      assert(!topo.isError, `webcontents_topology: ${topo.content?.[0]?.text}`);
+      const data = parseToolText(topo);
+      assert(Array.isArray(data.cdpTargets), "webcontents_topology missing cdpTargets");
+      pass("webcontents_topology");
+    });
+
+    await soft("resolve_stack", async () => {
+      const stack = await client.request("tools/call", {
+        name: "resolve_stack",
+        arguments: {
+          processId,
+          frames: [{ url: "file:///nonexistent.js", lineNumber: 0 }],
+          contextLines: 1,
+        },
+      });
+      assert(!stack.isError, `resolve_stack: ${stack.content?.[0]?.text}`);
+      pass("resolve_stack");
     });
 
     // Soft: get_response_body needs a finished requestId — use latest if any.

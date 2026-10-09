@@ -19,6 +19,7 @@ import {
 	pickPageTarget,
 	pushCapped,
 	registerProcessCleanup,
+	listTargetsByRole,
 	saveScreenshot,
 	updateCDPTargets,
 	validateOutputPath,
@@ -941,4 +942,907 @@ export async function findInstalledElectronApps(): Promise<
 	}
 
 	return found.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// ---------------------------------------------------------------------------
+// v1.7 creative tools — coverage, file input, emulate, screencast, breakpoints,
+// resolve_stack, perf_audit, mhtml, virtual_clock, webcontents_topology
+// ---------------------------------------------------------------------------
+
+type CoverageSession = {
+	targetId: string;
+	css: boolean;
+	startedAt: number;
+};
+
+const coverageSessions = new Map<string, CoverageSession>();
+
+registerProcessCleanup((processId) => {
+	const session = coverageSessions.get(processId);
+	coverageSessions.delete(processId);
+	if (!session) return;
+	void (async () => {
+		try {
+			const proc = getProcess(processId);
+			if (!proc || proc.status !== "running") return;
+			await executeCDPCommand(
+				proc,
+				session.targetId,
+				"Profiler.stopPreciseCoverage",
+				{},
+				5_000,
+			).catch(() => undefined);
+			await executeCDPCommand(
+				proc,
+				session.targetId,
+				"Profiler.disable",
+				{},
+				5_000,
+			).catch(() => undefined);
+			if (session.css) {
+				await executeCDPCommand(
+					proc,
+					session.targetId,
+					"CSS.stopRuleUsageTracking",
+					{},
+					5_000,
+				).catch(() => undefined);
+			}
+		} catch {
+			/* ignore */
+		}
+	})();
+});
+
+export async function startCoverage(
+	electronProcess: ElectronProcess,
+	options: { targetId?: string; css?: boolean } = {},
+): Promise<{ processId: string; targetId: string; css: boolean }> {
+	if (coverageSessions.has(electronProcess.id)) {
+		throw new Error(
+			`Coverage already active for ${electronProcess.id}. Call stop_coverage first.`,
+		);
+	}
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, options.targetId);
+	const css = Boolean(options.css);
+	await cdpTimed(electronProcess, target.id, "Profiler.enable", {});
+	await cdpTimed(electronProcess, target.id, "Profiler.startPreciseCoverage", {
+		callCount: true,
+		detailed: true,
+	});
+	if (css) {
+		await cdpTimed(electronProcess, target.id, "CSS.enable", {});
+		await cdpTimed(electronProcess, target.id, "CSS.startRuleUsageTracking", {});
+	}
+	coverageSessions.set(electronProcess.id, {
+		targetId: target.id,
+		css,
+		startedAt: Date.now(),
+	});
+	return { processId: electronProcess.id, targetId: target.id, css };
+}
+
+export async function stopCoverage(
+	electronProcess: ElectronProcess,
+	filePath?: string,
+): Promise<{
+	processId: string;
+	targetId: string;
+	path?: string;
+	js: unknown;
+	css?: unknown;
+	durationMs: number;
+}> {
+	const session = coverageSessions.get(electronProcess.id);
+	if (!session) {
+		throw new Error(`No active coverage session for ${electronProcess.id}`);
+	}
+	let js: unknown;
+	let cssResult: unknown;
+	try {
+		js = await cdpTimed(
+			electronProcess,
+			session.targetId,
+			"Profiler.takePreciseCoverage",
+			{},
+			30_000,
+		);
+		if (session.css) {
+			cssResult = await cdpTimed(
+				electronProcess,
+				session.targetId,
+				"CSS.takeCoverageDelta",
+				{},
+				15_000,
+			);
+		}
+	} catch (err) {
+		throw err;
+	}
+	coverageSessions.delete(electronProcess.id);
+	try {
+		await cdpTimed(
+			electronProcess,
+			session.targetId,
+			"Profiler.stopPreciseCoverage",
+			{},
+			5_000,
+		);
+		await cdpTimed(electronProcess, session.targetId, "Profiler.disable", {}, 5_000);
+		if (session.css) {
+			await cdpTimed(
+				electronProcess,
+				session.targetId,
+				"CSS.stopRuleUsageTracking",
+				{},
+				5_000,
+			);
+		}
+	} catch {
+		/* ignore */
+	}
+	const durationMs = Date.now() - session.startedAt;
+	const payload = { js, css: cssResult, durationMs };
+	let outPath: string | undefined;
+	if (filePath?.trim()) {
+		outPath = validateOutputPath(filePath);
+		fs.mkdirSync(path.dirname(outPath), { recursive: true });
+		fs.writeFileSync(outPath, JSON.stringify(payload, null, 2));
+	}
+	return {
+		processId: electronProcess.id,
+		targetId: session.targetId,
+		path: outPath,
+		js,
+		...(cssResult !== undefined ? { css: cssResult } : {}),
+		durationMs,
+	};
+}
+
+export async function setFileInput(
+	electronProcess: ElectronProcess,
+	options: { selector: string; files: string[]; targetId?: string },
+): Promise<{ targetId: string; files: string[]; selector: string }> {
+	if (!options.selector?.trim()) throw new Error("selector is required");
+	if (!Array.isArray(options.files) || options.files.length === 0) {
+		throw new Error("files must be a non-empty array of paths");
+	}
+	const resolvedFiles = options.files.map((f) => {
+		const abs = path.resolve(f);
+		if (!fs.existsSync(abs)) {
+			throw new Error(`File not found: ${abs}`);
+		}
+		return abs;
+	});
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, options.targetId);
+	await cdpTimed(electronProcess, target.id, "DOM.enable", {});
+	const doc = (await cdpTimed(electronProcess, target.id, "DOM.getDocument", {
+		depth: 0,
+	})) as { root?: { nodeId?: number } };
+	const rootId = doc.root?.nodeId;
+	if (rootId == null) throw new Error("DOM.getDocument returned no root");
+	const q = (await cdpTimed(electronProcess, target.id, "DOM.querySelector", {
+		nodeId: rootId,
+		selector: options.selector,
+	})) as { nodeId?: number };
+	if (!q.nodeId) {
+		throw new Error(`No element matched selector: ${options.selector}`);
+	}
+	await cdpTimed(electronProcess, target.id, "DOM.setFileInputFiles", {
+		nodeId: q.nodeId,
+		files: resolvedFiles,
+	});
+	return {
+		targetId: target.id,
+		files: resolvedFiles,
+		selector: options.selector,
+	};
+}
+
+export async function emulate(
+	electronProcess: ElectronProcess,
+	options: {
+		targetId?: string;
+		clear?: boolean;
+		metrics?: {
+			width: number;
+			height: number;
+			deviceScaleFactor?: number;
+			mobile?: boolean;
+		};
+		userAgent?: string;
+		geolocation?: {
+			latitude: number;
+			longitude: number;
+			accuracy?: number;
+		};
+		media?: string;
+	} = {},
+): Promise<{ targetId: string; applied: string[] }> {
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, options.targetId);
+	const applied: string[] = [];
+	if (options.clear) {
+		await cdpTimed(
+			electronProcess,
+			target.id,
+			"Emulation.clearDeviceMetricsOverride",
+			{},
+		).catch(() => undefined);
+		applied.push("clearDeviceMetricsOverride");
+		await cdpTimed(
+			electronProcess,
+			target.id,
+			"Emulation.clearGeolocationOverride",
+			{},
+		).catch(() => undefined);
+		applied.push("clearGeolocationOverride");
+		await cdpTimed(electronProcess, target.id, "Emulation.setUserAgentOverride", {
+			userAgent: "",
+		}).catch(() => undefined);
+		applied.push("clearUserAgentOverride");
+		await cdpTimed(electronProcess, target.id, "Emulation.setEmulatedMedia", {
+			media: "",
+		}).catch(() => undefined);
+		applied.push("clearEmulatedMedia");
+		return { targetId: target.id, applied };
+	}
+	if (options.metrics) {
+		await cdpTimed(
+			electronProcess,
+			target.id,
+			"Emulation.setDeviceMetricsOverride",
+			{
+				width: options.metrics.width,
+				height: options.metrics.height,
+				deviceScaleFactor: options.metrics.deviceScaleFactor ?? 1,
+				mobile: Boolean(options.metrics.mobile),
+			},
+		);
+		applied.push("setDeviceMetricsOverride");
+	}
+	if (options.userAgent != null) {
+		await cdpTimed(electronProcess, target.id, "Emulation.setUserAgentOverride", {
+			userAgent: options.userAgent,
+		});
+		applied.push("setUserAgentOverride");
+	}
+	if (options.geolocation) {
+		await cdpTimed(
+			electronProcess,
+			target.id,
+			"Emulation.setGeolocationOverride",
+			{
+				latitude: options.geolocation.latitude,
+				longitude: options.geolocation.longitude,
+				accuracy: options.geolocation.accuracy ?? 1,
+			},
+		);
+		applied.push("setGeolocationOverride");
+	}
+	if (options.media != null) {
+		await cdpTimed(electronProcess, target.id, "Emulation.setEmulatedMedia", {
+			media: options.media,
+		});
+		applied.push("setEmulatedMedia");
+	}
+	if (applied.length === 0) {
+		throw new Error(
+			"emulate requires clear=true or at least one of metrics/userAgent/geolocation/media",
+		);
+	}
+	return { targetId: target.id, applied };
+}
+
+type ScreencastSession = {
+	targetId: string;
+	frames: Array<{ data: string; metadata?: unknown; sessionId?: number }>;
+	maxFrames: number;
+	startedAt: number;
+};
+
+const screencastSessions = new Map<string, ScreencastSession>();
+
+registerProcessCleanup((processId) => {
+	const session = screencastSessions.get(processId);
+	screencastSessions.delete(processId);
+	if (!session) return;
+	void (async () => {
+		try {
+			const proc = getProcess(processId);
+			if (!proc || proc.status !== "running") return;
+			await executeCDPCommand(
+				proc,
+				session.targetId,
+				"Page.stopScreencast",
+				{},
+				5_000,
+			).catch(() => undefined);
+		} catch {
+			/* ignore */
+		}
+	})();
+});
+
+export async function startScreencast(
+	electronProcess: ElectronProcess,
+	options: {
+		targetId?: string;
+		maxFrames?: number;
+		everyNthFrame?: number;
+		format?: "png" | "jpeg";
+		quality?: number;
+	} = {},
+): Promise<{ processId: string; targetId: string; maxFrames: number }> {
+	if (screencastSessions.has(electronProcess.id)) {
+		throw new Error(
+			`Screencast already active for ${electronProcess.id}. Call stop_screencast first.`,
+		);
+	}
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, options.targetId);
+	const maxFrames = Math.min(Math.max(options.maxFrames ?? 5, 1), 30);
+	const session: ScreencastSession = {
+		targetId: target.id,
+		frames: [],
+		maxFrames,
+		startedAt: Date.now(),
+	};
+	screencastSessions.set(electronProcess.id, session);
+
+	const client = await connectToCDPTarget(electronProcess, target.id);
+	const onFrame = (params: unknown) => {
+		const p = params as {
+			data?: string;
+			metadata?: unknown;
+			sessionId?: number;
+		};
+		if (!p.data) return;
+		session.frames.push({
+			data: p.data,
+			metadata: p.metadata,
+			sessionId: p.sessionId,
+		});
+		if (session.frames.length > maxFrames) {
+			session.frames.splice(0, session.frames.length - maxFrames);
+		}
+		if (p.sessionId != null) {
+			void client
+				.send("Page.screencastFrameAck", { sessionId: p.sessionId })
+				.catch(() => undefined);
+		}
+	};
+	client.on("Page.screencastFrame", onFrame);
+	(session as ScreencastSession & { _onFrame?: typeof onFrame; _client?: typeof client })._onFrame =
+		onFrame;
+	(session as ScreencastSession & { _client?: typeof client })._client = client;
+
+	try {
+		await withTimeout(
+			client.send("Page.startScreencast", {
+				format: options.format ?? "png",
+				quality: options.quality ?? 80,
+				everyNthFrame: options.everyNthFrame ?? 2,
+			}),
+			CDP_TIMEOUT_MS,
+			"Page.startScreencast",
+		);
+	} catch (err) {
+		screencastSessions.delete(electronProcess.id);
+		try {
+			client.removeListener("Page.screencastFrame", onFrame);
+		} catch {
+			/* ignore */
+		}
+		throw err;
+	}
+	return {
+		processId: electronProcess.id,
+		targetId: target.id,
+		maxFrames,
+	};
+}
+
+export async function stopScreencast(
+	electronProcess: ElectronProcess,
+	filePath?: string,
+): Promise<{
+	processId: string;
+	targetId: string;
+	frames: number;
+	path?: string;
+	lastFrameBase64?: string;
+	durationMs: number;
+}> {
+	const session = screencastSessions.get(electronProcess.id) as
+		| (ScreencastSession & {
+				_onFrame?: (p: unknown) => void;
+				_client?: Awaited<ReturnType<typeof connectToCDPTarget>>;
+		  })
+		| undefined;
+	if (!session) {
+		throw new Error(`No active screencast for ${electronProcess.id}`);
+	}
+	try {
+		if (session._client) {
+			await withTimeout(
+				session._client.send("Page.stopScreencast", {}),
+				5_000,
+				"Page.stopScreencast",
+			);
+		} else {
+			await cdpTimed(
+				electronProcess,
+				session.targetId,
+				"Page.stopScreencast",
+				{},
+				5_000,
+			);
+		}
+	} catch {
+		/* ignore */
+	}
+	if (session._client && session._onFrame) {
+		try {
+			session._client.removeListener("Page.screencastFrame", session._onFrame);
+		} catch {
+			/* ignore */
+		}
+	}
+	screencastSessions.delete(electronProcess.id);
+	const last = session.frames[session.frames.length - 1];
+	let outPath: string | undefined;
+	if (filePath?.trim() && last?.data) {
+		outPath = validateOutputPath(filePath);
+		fs.mkdirSync(path.dirname(outPath), { recursive: true });
+		fs.writeFileSync(outPath, Buffer.from(last.data, "base64"));
+	}
+	return {
+		processId: electronProcess.id,
+		targetId: session.targetId,
+		frames: session.frames.length,
+		path: outPath,
+		lastFrameBase64: last?.data,
+		durationMs: Date.now() - session.startedAt,
+	};
+}
+
+type BreakpointEntry = { breakpointId: string; targetId: string };
+
+const breakpointSessions = new Map<string, BreakpointEntry[]>();
+
+registerProcessCleanup((processId) => {
+	const entries = breakpointSessions.get(processId);
+	breakpointSessions.delete(processId);
+	if (!entries?.length) return;
+	void (async () => {
+		try {
+			const proc = getProcess(processId);
+			if (!proc || proc.status !== "running") return;
+			for (const e of entries) {
+				await executeCDPCommand(
+					proc,
+					e.targetId,
+					"Debugger.removeBreakpoint",
+					{ breakpointId: e.breakpointId },
+					5_000,
+				).catch(() => undefined);
+			}
+		} catch {
+			/* ignore */
+		}
+	})();
+});
+
+export async function setBreakpointByUrl(
+	electronProcess: ElectronProcess,
+	options: {
+		lineNumber: number;
+		url?: string;
+		urlRegex?: string;
+		columnNumber?: number;
+		targetId?: string;
+	},
+): Promise<{
+	targetId: string;
+	breakpointId: string;
+	locations?: unknown;
+}> {
+	if (options.lineNumber == null || options.lineNumber < 0) {
+		throw new Error("lineNumber is required (>= 0, 0-based)");
+	}
+	if (!options.url && !options.urlRegex) {
+		throw new Error("Provide url or urlRegex");
+	}
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, options.targetId);
+	await cdpTimed(electronProcess, target.id, "Debugger.enable", {});
+	const params: Record<string, unknown> = {
+		lineNumber: options.lineNumber,
+	};
+	if (options.url) params.url = options.url;
+	if (options.urlRegex) params.urlRegex = options.urlRegex;
+	if (options.columnNumber != null) params.columnNumber = options.columnNumber;
+	const result = (await cdpTimed(
+		electronProcess,
+		target.id,
+		"Debugger.setBreakpointByUrl",
+		params,
+	)) as { breakpointId?: string; locations?: unknown };
+	if (!result.breakpointId) {
+		throw new Error("Debugger.setBreakpointByUrl returned no breakpointId");
+	}
+	const list = breakpointSessions.get(electronProcess.id) ?? [];
+	list.push({ breakpointId: result.breakpointId, targetId: target.id });
+	breakpointSessions.set(electronProcess.id, list);
+	return {
+		targetId: target.id,
+		breakpointId: result.breakpointId,
+		locations: result.locations,
+	};
+}
+
+export async function removeBreakpoint(
+	electronProcess: ElectronProcess,
+	breakpointId: string,
+	targetId?: string,
+): Promise<{ ok: boolean; breakpointId: string }> {
+	if (!breakpointId?.trim()) throw new Error("breakpointId is required");
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, targetId);
+	await cdpTimed(electronProcess, target.id, "Debugger.removeBreakpoint", {
+		breakpointId,
+	});
+	const list = breakpointSessions.get(electronProcess.id);
+	if (list) {
+		breakpointSessions.set(
+			electronProcess.id,
+			list.filter((e) => e.breakpointId !== breakpointId),
+		);
+	}
+	return { ok: true, breakpointId };
+}
+
+export async function resolveStack(
+	electronProcess: ElectronProcess,
+	options: {
+		frames: Array<{
+			url?: string;
+			scriptId?: string;
+			lineNumber: number;
+			columnNumber?: number;
+			functionName?: string;
+		}>;
+		contextLines?: number;
+		targetId?: string;
+	},
+): Promise<{
+	targetId: string;
+	frames: Array<Record<string, unknown>>;
+}> {
+	if (!Array.isArray(options.frames) || options.frames.length === 0) {
+		throw new Error("frames must be a non-empty array");
+	}
+	const contextLines = Math.min(Math.max(options.contextLines ?? 3, 0), 20);
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, options.targetId);
+	await cdpTimed(electronProcess, target.id, "Debugger.enable", {});
+
+	const sourceCache = new Map<string, string>();
+	const loadSource = async (frame: {
+		url?: string;
+		scriptId?: string;
+	}): Promise<string | undefined> => {
+		const key = frame.scriptId
+			? `id:${frame.scriptId}`
+			: frame.url
+				? `url:${frame.url}`
+				: "";
+		if (!key) return undefined;
+		if (sourceCache.has(key)) return sourceCache.get(key);
+		if (frame.scriptId) {
+			try {
+				const res = (await cdpTimed(
+					electronProcess,
+					target.id,
+					"Debugger.getScriptSource",
+					{ scriptId: frame.scriptId },
+				)) as { scriptSource?: string };
+				if (res.scriptSource != null) {
+					sourceCache.set(key, res.scriptSource);
+					return res.scriptSource;
+				}
+			} catch {
+				/* fall through */
+			}
+		}
+		if (frame.url?.startsWith("file://")) {
+			try {
+				const filePath = decodeURIComponent(frame.url.replace(/^file:\/\//, ""));
+				if (fs.existsSync(filePath)) {
+					const body = fs.readFileSync(filePath, "utf8");
+					sourceCache.set(key, body);
+					return body;
+				}
+			} catch {
+				/* ignore */
+			}
+		}
+		return undefined;
+	};
+
+	const out: Array<Record<string, unknown>> = [];
+	for (const frame of options.frames.slice(0, 50)) {
+		const source = await loadSource(frame);
+		let snippet: string | undefined;
+		let resolved = false;
+		if (source) {
+			const lines = source.split(/\r?\n/);
+			const line = frame.lineNumber; // 0-based in CDP stacks often; accept as given
+			const start = Math.max(0, line - contextLines);
+			const end = Math.min(lines.length, line + contextLines + 1);
+			snippet = lines
+				.slice(start, end)
+				.map((text, i) => {
+					const n = start + i;
+					const mark = n === line ? ">" : " ";
+					return `${mark} ${n}: ${text}`;
+				})
+				.join("\n");
+			resolved = true;
+		}
+		out.push({
+			...frame,
+			resolved,
+			snippet,
+		});
+	}
+	return { targetId: target.id, frames: out };
+}
+
+export async function runPerfAudit(
+	electronProcess: ElectronProcess,
+	options: {
+		targetId?: string;
+		includeAudits?: boolean;
+		includeNavTiming?: boolean;
+	} = {},
+): Promise<Record<string, unknown>> {
+	await ensureMonitoring(electronProcess);
+	const metrics = await getPerformanceMetrics(
+		electronProcess,
+		options.targetId,
+	);
+	const out: Record<string, unknown> = {
+		processId: electronProcess.id,
+		targetId: metrics.targetId,
+		metrics: metrics.metrics,
+		note: "CDP performance + audits proxy (not full Lighthouse)",
+	};
+	if (options.includeAudits !== false) {
+		out.auditIssues = electronProcess.auditIssues.slice(-30);
+		out.auditIssueCount = electronProcess.auditIssues.length;
+	}
+	if (options.includeNavTiming !== false) {
+		try {
+			const evalResult = (await cdpTimed(
+				electronProcess,
+				metrics.targetId,
+				"Runtime.evaluate",
+				{
+					expression: `(() => {
+						const nav = performance.getEntriesByType('navigation')[0];
+						const paint = performance.getEntriesByType('paint').map((e) => ({ name: e.name, startTime: e.startTime }));
+						return {
+							navigation: nav ? {
+								type: nav.type,
+								domContentLoaded: nav.domContentLoadedEventEnd,
+								loadEventEnd: nav.loadEventEnd,
+								duration: nav.duration,
+								transferSize: nav.transferSize,
+								encodedBodySize: nav.encodedBodySize,
+							} : null,
+							paint,
+							memory: performance.memory ? {
+								usedJSHeapSize: performance.memory.usedJSHeapSize,
+								totalJSHeapSize: performance.memory.totalJSHeapSize,
+							} : null,
+						};
+					})()`,
+					returnByValue: true,
+					awaitPromise: true,
+				},
+			)) as { result?: { value?: unknown } };
+			out.navigationTiming = evalResult.result?.value ?? null;
+		} catch (err) {
+			out.navigationTimingError =
+				err instanceof Error ? err.message : String(err);
+		}
+	}
+	return out;
+}
+
+export async function captureMhtml(
+	electronProcess: ElectronProcess,
+	filePath?: string,
+	targetId?: string,
+): Promise<{ processId: string; targetId: string; path: string; bytes: number }> {
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, targetId);
+	const result = (await cdpTimed(
+		electronProcess,
+		target.id,
+		"Page.captureSnapshot",
+		{ format: "mhtml" },
+		60_000,
+	)) as { data?: string };
+	if (!result.data) {
+		throw new Error("Page.captureSnapshot returned no MHTML data");
+	}
+	const out =
+		filePath?.trim() ||
+		path.join(
+			os.tmpdir(),
+			`electron-mcp-mhtml-${electronProcess.id}-${Date.now()}.mhtml`,
+		);
+	const resolved = validateOutputPath(out);
+	fs.mkdirSync(path.dirname(resolved), { recursive: true });
+	fs.writeFileSync(resolved, result.data);
+	return {
+		processId: electronProcess.id,
+		targetId: target.id,
+		path: resolved,
+		bytes: Buffer.byteLength(result.data),
+	};
+}
+
+export async function setVirtualClock(
+	electronProcess: ElectronProcess,
+	options: {
+		policy: "pause" | "advance" | "pauseIfNetworkFetchesPending";
+		budget?: number;
+		targetId?: string;
+	},
+): Promise<{ targetId: string; policy: string; expired?: boolean }> {
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, options.targetId);
+	const params: Record<string, unknown> = { policy: options.policy };
+	if (options.budget != null) params.budget = options.budget;
+
+	if (options.policy !== "pause" && options.budget != null) {
+		const client = await connectToCDPTarget(electronProcess, target.id);
+		let expired = false;
+		const onExpired = () => {
+			expired = true;
+		};
+		client.on("Emulation.virtualTimeBudgetExpired", onExpired);
+		try {
+			await withTimeout(
+				client.send("Emulation.setVirtualTimePolicy", params),
+				CDP_TIMEOUT_MS,
+				"Emulation.setVirtualTimePolicy",
+			);
+			const deadline = Date.now() + Math.min((options.budget ?? 0) + 5_000, 30_000);
+			while (!expired && Date.now() < deadline) {
+				await new Promise((r) => setTimeout(r, 25));
+			}
+			return { targetId: target.id, policy: options.policy, expired };
+		} finally {
+			try {
+				client.removeListener("Emulation.virtualTimeBudgetExpired", onExpired);
+			} catch {
+				/* ignore */
+			}
+		}
+	}
+
+	await cdpTimed(
+		electronProcess,
+		target.id,
+		"Emulation.setVirtualTimePolicy",
+		params,
+	);
+	return { targetId: target.id, policy: options.policy };
+}
+
+export async function getWebContentsTopology(
+	electronProcess: ElectronProcess,
+): Promise<Record<string, unknown>> {
+	await updateCDPTargets(electronProcess);
+	const cdpTargets = listTargetsByRole(electronProcess);
+
+	const expression = `(() => {
+		try {
+			const electron = (${LOAD_ELECTRON})();
+			const { app, BrowserWindow } = electron;
+			const wcBinding = (() => {
+				try { return process._linkedBinding('electron_browser_web_contents'); } catch { return null; }
+			})();
+			const windows = BrowserWindow.getAllWindows().map((w) => {
+				try {
+					const wc = w.webContents;
+					return {
+						id: w.id,
+						title: w.getTitle(),
+						bounds: w.getBounds(),
+						isVisible: w.isVisible(),
+						isDestroyed: w.isDestroyed(),
+						webContentsId: wc.id,
+						url: (() => { try { return wc.getURL(); } catch { return null; } })(),
+						osProcessId: (() => { try { return wc.getOSProcessId(); } catch { return null; } })(),
+						type: (() => { try { return wc.getType(); } catch { return null; } })(),
+						hostWebContentsId: (() => {
+							try { return wc.hostWebContents ? wc.hostWebContents.id : null; } catch { return null; }
+						})(),
+					};
+				} catch (err) {
+					return { error: err && err.message ? err.message : String(err) };
+				}
+			});
+			let webContents = [];
+			if (wcBinding && typeof wcBinding.getAllWebContents === 'function') {
+				webContents = wcBinding.getAllWebContents().map((wc) => {
+					try {
+						return {
+							id: wc.id,
+							url: (() => { try { return wc.getURL(); } catch { return null; } })(),
+							type: (() => { try { return wc.getType(); } catch { return null; } })(),
+							osProcessId: (() => { try { return wc.getOSProcessId(); } catch { return null; } })(),
+							hostWebContentsId: (() => {
+								try { return wc.hostWebContents ? wc.hostWebContents.id : null; } catch { return null; }
+							})(),
+						};
+					} catch (err) {
+						return { error: err && err.message ? err.message : String(err) };
+					}
+				});
+			}
+			return { ok: true, appName: app.getName(), windows, webContents };
+		} catch (err) {
+			return { ok: false, error: err && err.message ? err.message : String(err) };
+		}
+	})()`;
+
+	let main: Record<string, unknown> | undefined;
+	try {
+		const result = await withTimeout(
+			evaluateMain(electronProcess, expression, undefined, true),
+			CDP_TIMEOUT_MS,
+			"webcontents_topology",
+		);
+		main = (result.result as { result?: { value?: unknown } })?.result
+			?.value as Record<string, unknown> | undefined;
+		if (main && main.ok === false) {
+			main = { ok: false, error: main.error };
+		}
+	} catch (err) {
+		main = {
+			ok: false,
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+
+	const windows = Array.isArray(main?.windows) ? main!.windows : [];
+	const links: Array<{ webContentsId?: number; cdpTargetId?: string; url?: string }> =
+		[];
+	for (const w of windows as Array<Record<string, unknown>>) {
+		const url = typeof w.url === "string" ? w.url : undefined;
+		const match = cdpTargets.find(
+			(t) => url && t.url && (t.url === url || t.url.startsWith(url) || url.startsWith(t.url)),
+		);
+		links.push({
+			webContentsId: typeof w.webContentsId === "number" ? w.webContentsId : undefined,
+			cdpTargetId: match?.id,
+			url,
+		});
+	}
+
+	return {
+		processId: electronProcess.id,
+		cdpTargets,
+		main,
+		links,
+	};
 }

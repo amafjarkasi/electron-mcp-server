@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.7.0
+
+### Features — next creative ten
+- **`start_coverage` / `stop_coverage`** — V8 precise JS coverage (+ optional CSS rule usage).
+- **`set_file_input`** — `DOM.setFileInputFiles` for `<input type=file>`.
+- **`emulate`** — device metrics / UA / geolocation / media (or `clear`).
+- **`start_screencast` / `stop_screencast`** — bounded `Page.startScreencast` frame buffer.
+- **`set_breakpoint` / `remove_breakpoint`** — `Debugger.setBreakpointByUrl`.
+- **`resolve_stack`** — map frames to source snippets.
+- **`perf_audit`** — Lighthouse-lite (metrics + nav/paint timing + Audits buffer).
+- **`capture_mhtml`** — `Page.captureSnapshot` MHTML artifact.
+- **`virtual_clock`** — `Emulation.setVirtualTimePolicy`.
+- **`webcontents_topology`** — BrowserWindow / webContents ↔ CDP target map.
+- Prompt **`vision_then_act`** — vision → snapshot → act → verify agent loop.
+- Surface: **65 tools · 7 resources · 5 prompts**.
+
+### Docs
+- npm install / `npx electron-debug-mcp` quick start; cheatsheet for vision loop + new tools.
+
 ## 1.6.0
 
 ### Features — creative power tools
