@@ -126,31 +126,7 @@ jobs:
               sleep 10
               continue
             fi
-            cat > /tmp/stage-status.mjs <<'EOF'
-let raw = "";
-process.stdin.on("data", (d) => {
-  raw += d;
-});
-process.stdin.on("end", () => {
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  const fromText = () => {
-    const match = raw.match(/status:\s*(\S+)/i);
-    console.log(match ? match[1] : "");
-  };
-  if (start < 0 || end < start) {
-    fromText();
-    return;
-  }
-  try {
-    const parsed = JSON.parse(raw.slice(start, end + 1));
-    console.log(parsed.status || parsed.state || "");
-  } catch {
-    fromText();
-  }
-});
-EOF
-            STATE="$(printf '%s\n' "$OUTPUT" | node /tmp/stage-status.mjs)"
+            STATE="$(printf '%s\n' "$OUTPUT" | grep -Eio '"status"[[:space:]]*:[[:space:]]*"[^"]+"|status:[[:space:]]*[A-Za-z0-9_-]+' | head -1 | grep -Eio '[A-Za-z0-9_-]+$' || true)"
             echo "attempt ${i} status=${STATE}"
             if [[ "$STATE" == "staged" || "$STATE" == "ready" ]]; then
               echo "stage_status=$STATE" >> "$GITHUB_OUTPUT"
