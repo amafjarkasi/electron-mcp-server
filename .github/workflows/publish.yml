@@ -96,9 +96,10 @@ jobs:
             ' "$PKG_VERSION" "$REGISTRY_LATEST")"
             if [[ "$OLDER" == "yes" ]]; then
               # 1.7.0 is older than published latest, so it must not take the latest tag.
-              TAG_ARGS=(--tag "v${PKG_VERSION}")
-              echo "stage_tag=v${PKG_VERSION}" >> "$GITHUB_OUTPUT"
-              echo "Version ${PKG_VERSION} is older than latest ${REGISTRY_LATEST}; staging with tag v${PKG_VERSION}"
+              # Dist-tags cannot be semver ranges; "v1.7.0" is rejected.
+              TAG_ARGS=(--tag "release-${PKG_VERSION}")
+              echo "stage_tag=release-${PKG_VERSION}" >> "$GITHUB_OUTPUT"
+              echo "Version ${PKG_VERSION} is older than latest ${REGISTRY_LATEST}; staging with tag release-${PKG_VERSION}"
             fi
           fi
           set +e
