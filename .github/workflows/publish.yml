@@ -79,8 +79,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          REGISTRY_LATEST="$(npm view electron-debug-mcp version 2>/dev/null || true)"
+          TAG_ARGS=()
+          if [[ -n "$REGISTRY_LATEST" ]]; then
+            OLDER="$(node -e '
+              const [pkg, latest] = process.argv.slice(1);
+              const parse = (v) => v.split(".").map((n) => parseInt(n, 10) || 0);
+              const a = parse(pkg);
+              const b = parse(latest);
+              let older = false;
+              for (let i = 0; i < 3; i++) {
+                if (a[i] !== b[i]) { older = a[i] < b[i]; break; }
+              }
+              process.stdout.write(older ? "yes" : "no");
+            ' "$PKG_VERSION" "$REGISTRY_LATEST")"
+            if [[ "$OLDER" == "yes" ]]; then
+              # 1.7.0 is older than published latest, so it must not take the latest tag.
+              TAG_ARGS=(--tag "v${PKG_VERSION}")
+              echo "stage_tag=v${PKG_VERSION}" >> "$GITHUB_OUTPUT"
+              echo "Version ${PKG_VERSION} is older than latest ${REGISTRY_LATEST}; staging with tag v${PKG_VERSION}"
+            fi
+          fi
           set +e
-          OUTPUT="$(npm stage publish --access public 2>&1)"
+          OUTPUT="$(npm stage publish --access public "${TAG_ARGS[@]}" 2>&1)"
           STATUS=$?
           set -e
           echo "$OUTPUT"
@@ -149,6 +171,9 @@ jobs:
         run: |
           echo "::notice title=npm stage ready::Package staged. On your machine (logged into npm as amafjarkasi):"
           echo "  npm stage list"
+          if [[ -n "${{ steps.stage.outputs.stage_tag }}" ]]; then
+            echo "  dist-tag: ${{ steps.stage.outputs.stage_tag }} (does not move latest)"
+          fi
           if [[ -n "${{ steps.stage.outputs.stage_id }}" ]]; then
             echo "  npm stage approve ${{ steps.stage.outputs.stage_id }} --otp=<authenticator-code>"
           else
