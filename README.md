@@ -17,7 +17,40 @@
   <a href="./LICENSE">ISC</a>
 </p>
 
-The server keeps stdout clean for JSON-RPC. Logs go to stderr. Tool schemas live on the MCP tools; this page is the map.
+The server keeps stdout clean for JSON-RPC. Logs go to stderr.
+
+This page is the human guide: what the server is for, how you use it, and which tool does which job. Once Cursor or Claude has started it, each tool also publishes its arguments. You do not need this file to learn every field.
+
+## What it is for
+
+An agent that can only read your repo cannot see an Electron window. This server is the debugger it is missing. It launches the app, or attaches to one you already started, then lets the agent look, click, and read DevTools on your machine.
+
+| You are trying to… | What the agent can do |
+| --- | --- |
+| Explain a blank or crashed window | Screenshot it, read console errors, exceptions, and the process log |
+| Check that a button or form works | Wait until the control is there, click or type, then assert the result |
+| See why a request failed | Read the network log and response body, or stub the URL |
+| Catch a visual regression | Compare a screenshot to a PNG baseline |
+| Inspect main-process or IPC bugs | List windows, evaluate in main, record IPC, deliver a deep link |
+| Debug an app that is already open | Find its PID or debug port and attach, without killing it |
+| Investigate a slow or leaky screen | Trace, CPU profile, heap snapshot, coverage, or a short performance audit |
+| Move a window, the clipboard, or a download | Focus a window, read or write clipboard text, and report the path a file was saved to |
+
+It is a local debugger, not a hosted service. The agent and the Electron app both run on your computer.
+
+## How you use it
+
+You do not call the tools yourself. You add the server to Cursor or Claude, then ask in normal language. The client shows the agent the tool list and fills in arguments.
+
+Things you can type:
+
+- “Start `D:/apps/my-app` and tell me if the window is blank.”
+- “Click Go, type Ada in the name field, and tell me if the status says saved.”
+- “What failed on the network, and what did the response body say?”
+- “Attach to the Electron app I already launched and screenshot it.”
+- “Profile the settings screen while I click through it, then save a heap snapshot.”
+
+A session has an id, usually `electron-…`. Later tool calls pass that id as `processId`. `stop_app` ends the session. If this server started the app, stop kills it. If you only attached, stop detaches and leaves your app running.
 
 ## Install
 
@@ -172,19 +205,19 @@ Page targets get Runtime, Log, Network, Page, and Audits enabled, so console, ne
 | `electron://console/{id}` | Buffered console. |
 | `electron://cdp/{processId}/{targetId}` | One target. |
 
-## A loop that works
+## A session, end to end
 
-1. `doctor` if the environment is new.
-2. `start_app` (with `inspectMain` if you will touch main) or `find_apps` then `attach`.
-3. `vision` or `snapshot`.
-4. `get_console_messages` with `level: "error"`, plus `get_audit_issues` and `get_logs`.
-5. `wait_for`, then `click` / `click_ax` / `type_text` / `type_ax`, then `assert_ui`.
-6. `get_network_log`, `get_response_body`, or `network_stub` when the bug is a request.
-7. `stop_app` when you are done.
+Ask the agent to start the app. Under the hood that is `start_app`. Set `inspectMain` when the bug is in the main process, IPC, clipboard, downloads, or deep links.
 
 ```json
 { "appPath": "/path/to/your-app", "inspectMain": true }
 ```
+
+The reply includes `id`. That is `processId` for everything after.
+
+Ask what the window shows. `vision` returns a screenshot plus the page URL, console errors, and failed requests. `snapshot` returns the accessibility tree (role and name) when a CSS selector is the wrong handle.
+
+Ask it to act, then check:
 
 ```json
 { "processId": "electron-…", "name": "Submit", "role": "button" }
@@ -193,6 +226,14 @@ Page targets get Runtime, Log, Network, Page, and Audits enabled, so console, ne
 ```json
 { "processId": "electron-…", "textIncludes": "Saved", "maxConsoleErrors": 0 }
 ```
+
+`click_ax` clicks the button named Submit. `assert_ui` returns `pass: true` or `pass: false` with one line per check. A failed check is not a crashed tool.
+
+When the question is a request, `get_network_log` lists what was sent. `get_response_body` needs a finished `requestId` from that log. `network_stub` can fulfill or fail a URL pattern so the UI can be exercised without the real API.
+
+`stop_app` with the same `processId` removes the session.
+
+`doctor` is the first call when the environment itself is suspect: missing Electron binary, no display, sandbox flags. The same checklist is in [`examples/doctor-checklist.md`](./examples/doctor-checklist.md).
 
 ## Configuration
 
@@ -222,7 +263,7 @@ This is a local debugger. It can start binaries, evaluate JavaScript, and read p
 | `Electron failed to install correctly` | `npm run ensure-electron`, or `scripts/fix-electron.cmd` on Windows. |
 | `allowScripts` warning | Expected on newer npm. Run the ensure script. |
 | Terminal hangs on `node build/index.js` | The process is waiting for an MCP client. Configure Cursor or Claude to spawn it. |
-| `evaluate_main`, `main_state`, `ipc_tap`, or `open_deep_link` fails | Restart with `inspectMain: true`, or pass a node `targetId` from `list_targets`. |
+| `evaluate_main`, `main_state`, `ipc_tap`, `open_deep_link`, `focus_window`, clipboard, or `get_downloads` fails | Restart with `inspectMain: true`, or pass a node `targetId` from `list_targets`. |
 | Screenshot fails after `pause` | Call `resume`. It disables the debugger. |
 | `set_cookie` fails on `file://` | Pass an `http(s)` `url` or `domain`. |
 | `wait_for` or `click` cannot find the node | Wait for it, then screenshot. |
