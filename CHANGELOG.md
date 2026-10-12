@@ -7,8 +7,12 @@
 - **`hover`** — move the pointer over a CSS selector without clicking.
 - **`focus_window`** — show and focus a `BrowserWindow` (`inspectMain`). `show: false` focuses without showing a hidden window.
 - **`get_clipboard` / `set_clipboard`** — OS clipboard text (`inspectMain`).
-- **`get_downloads`** — arm `will-download`, save into a directory, and report `savePath` (`inspectMain`). Optional `url` starts a download on that session.
-- Surface: **81 tools · 7 resources · 6 prompts**.
+- **`get_downloads`** — arm `will-download` on every webContents session, save into a directory, and report `savePath` (`inspectMain`). Optional `url` starts a download on the first session.
+- **`scroll`** — wheel a page or element, or scroll a selector into view.
+- **`drag`** — press, move, and release between two selectors.
+- **`set_permission`** — allow or deny Electron permission prompts (`notifications`, `media`, `geolocation`, …) on every session (`inspectMain`). Unlisted permissions are denied once the handler is installed.
+- Prompts `debug_blank_window`, `find_renderer_exception`, `ui_smoke_check`, and `attach_and_screenshot` now start from `vision` / `assert_ui` instead of a screenshot-only loop.
+- Surface: **84 tools · 7 resources · 6 prompts**.
 
 ## 1.8.0
 

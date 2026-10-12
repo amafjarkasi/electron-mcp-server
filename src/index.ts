@@ -19,6 +19,7 @@ import {
 	connectToCDPTarget,
 	deleteCookie,
 	diagnoseProcess,
+	dragSelector,
 	discoverDebugPorts,
 	ensureMonitoring,
 	evaluateMain,
@@ -40,6 +41,7 @@ import {
 	pickTargetByRole,
 	pressKey,
 	saveScreenshot,
+	scrollTarget,
 	setConsoleLiveLogging,
 	setCookie,
 	setStorage,
@@ -83,6 +85,7 @@ import {
 	runPerfAudit,
 	setBreakpointByUrl,
 	setExtraHeaders,
+	setPermission,
 	setFileInput,
 	setVirtualClock,
 	startCoverage,
@@ -194,10 +197,10 @@ const server = new McpServer(
 			"Electron Debug MCP controls and inspects Electron apps over Chrome DevTools Protocol.",
 			"Start with doctor when the environment is unknown (Electron binary, DISPLAY, sandbox flags, free port sample).",
 			"Preferred workflow: start_app (inspectMain:true if you will touch main) or find_apps/attach → vision or snapshot → get_console_messages(level=error) → wait_for → click_ax/type_ax or click/hover/type_text → assert_ui.",
-			"vision is the one-shot look (screenshot, page, console errors, network failures). snapshot is the accessibility tree. Use click_ax/type_ax when you have an accessible name; use CSS click/hover/type_text otherwise.",
+			"vision is the one-shot look (screenshot, page, console errors, network failures). snapshot is the accessibility tree. Use click_ax/type_ax when you have an accessible name; use CSS click/hover/drag/scroll/type_text otherwise.",
 			"assert_ui returns pass:false with per-check detail. That is a failed check, not a tool error.",
 			"For a failed request use get_network_log, then get_response_body with a finished requestId. network_stub fulfills or fails a urlPattern (* wildcard). export_har has no bodies.",
-			"inspectMain on start_app opens a pinned --inspect port. These tools need it: evaluate_main, main_state, ipc_tap, get_ipc_log, webcontents_topology, open_deep_link, focus_window, get_clipboard, set_clipboard, get_downloads.",
+			"inspectMain on start_app opens a pinned --inspect port. These tools need it: evaluate_main, main_state, ipc_tap, get_ipc_log, webcontents_topology, open_deep_link, focus_window, get_clipboard, set_clipboard, get_downloads, set_permission.",
 			"get_downloads must be called before the download (or pass url to start one). It returns savePath. delete_cookie removes a cookie set with set_cookie. file:// pages need an http(s) url or domain for cookies.",
 			"screenshot/save_screenshot accept selector to clip an element. resume after pause or later screenshots fail. stop_app kills an owned app and only detaches an attached one, then drops the processId.",
 			"Read electron://server for package version, uptime, and capability counts without calling a tool.",
@@ -254,7 +257,7 @@ server.tool(
 			.boolean()
 			.optional()
 			.describe(
-				"If true, open a pinned --inspect port for main-process tools: evaluate_main, main_state, ipc_tap, get_ipc_log, webcontents_topology, open_deep_link, focus_window, get_clipboard, set_clipboard, get_downloads",
+				"If true, open a pinned --inspect port for main-process tools: evaluate_main, main_state, ipc_tap, get_ipc_log, webcontents_topology, open_deep_link, focus_window, get_clipboard, set_clipboard, get_downloads, set_permission",
 			),
 	},
 	async ({ appPath, debugPort, extraArgs, inspectMain }) => {
@@ -1216,6 +1219,47 @@ server.tool(
 );
 
 server.tool(
+	"scroll",
+	"Scroll the page or an element. With a selector and no deltas, scrolls that element into view. With deltaY/deltaX, sends a mouse wheel at the element (or the viewport).",
+	{
+		processId: z.string(),
+		selector: z.string().optional().describe("Element to scroll into view, or the wheel target"),
+		deltaX: z.number().optional().describe("Horizontal wheel delta. Positive scrolls right."),
+		deltaY: z.number().optional().describe("Vertical wheel delta. Positive scrolls down. Default 400 when no selector."),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, selector, deltaX, deltaY, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			const result = await scrollTarget(proc, { selector, deltaX, deltaY, targetId });
+			return textResult({ processId, ...result });
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"drag",
+	"Press on fromSelector, move to toSelector, and release. Use for drag-and-drop and sliders that follow the pointer.",
+	{
+		processId: z.string(),
+		fromSelector: z.string(),
+		toSelector: z.string(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, fromSelector, toSelector, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			const result = await dragSelector(proc, fromSelector, toSelector, targetId);
+			return textResult({ processId, ...result });
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
 	"type_text",
 	"Type text into the focused element (optionally click a selector first)",
 	{
@@ -1789,7 +1833,7 @@ server.tool(
 
 server.tool(
 	"get_ipc_log",
-	"Drain / read captured IPC entries after ipc_tap",
+	"Drain / read captured IPC entries after ipc_tap. Requires inspectMain.",
 	{
 		processId: z.string(),
 		tail: z.number().int().positive().optional(),
@@ -2173,7 +2217,7 @@ server.tool(
 
 server.tool(
 	"webcontents_topology",
-	"Map BrowserWindows / webContents (main) to CDP targets — agent topology for multi-window apps",
+	"Map BrowserWindows / webContents (main) to CDP targets. Requires inspectMain.",
 	{
 		processId: z.string(),
 	},
@@ -2537,6 +2581,30 @@ server.tool(
 	},
 );
 
+server.tool(
+	"set_permission",
+	"Answer Electron permission prompts for this app. Requires inspectMain. Installs a handler on every webContents session. Listed permissions use grant; anything not listed is denied after the handler is installed.",
+	{
+		processId: z.string(),
+		permission: z
+			.string()
+			.describe('Electron permission name, e.g. "notifications", "media", "geolocation"'),
+		grant: z.boolean().describe("true allows the prompt, false denies it"),
+		probe: z
+			.boolean()
+			.optional()
+			.describe("If true, query the page permission state and return it as checked"),
+	},
+	async ({ processId, permission, grant, probe }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await setPermission(proc, { permission, grant, probe }));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
 // --- Prompts ---
 
 server.prompt(
@@ -2554,12 +2622,11 @@ server.prompt(
 				content: {
 					type: "text",
 					text: `Diagnose a blank/white Electron window for process ${processId}.
-1. Call diagnose with this processId.
-2. Call list_targets and identify page targets.
-3. Call get_console_messages (level=error) and get_logs.
-4. Call screenshot to see the current UI.
-5. Call get_dom / query_selector to inspect #root/app containers.
-6. Summarize likely causes (renderer crash, failed load URL, CSP, route error) and next fixes.`,
+1. Call vision for a screenshot plus console errors and network failures.
+2. Call get_console_messages (level=error), get_audit_issues, and get_logs.
+3. Call snapshot if the accessibility tree explains an empty shell.
+4. Call get_dom / query_selector only if you still need raw markup.
+5. Summarize likely causes (renderer crash, failed load URL, CSP, route error) and next fixes.`,
 				},
 			},
 		],
@@ -2579,9 +2646,9 @@ server.prompt(
 				content: {
 					type: "text",
 					text: `Find renderer exceptions for process ${processId}.
-1. ensure monitoring by calling get_console_messages.
-2. Filter errors/exceptions; if empty, evaluate a canary then reproduce the user bug.
-3. Use get_network_log for failed requests.
+1. Call vision, then get_console_messages (level=error).
+2. If the buffer is empty, reproduce the bug and call get_console_messages again.
+3. Use get_network_log and get_response_body for failed requests.
 4. Report stack/text, targetId, and suggested fix.`,
 				},
 			},
@@ -2605,12 +2672,11 @@ server.prompt(
 				content: {
 					type: "text",
 					text: `Run a quick UI smoke check for process ${processId}.
-1. page_info to confirm URL/title.
+1. vision to see the window, console errors, and failed requests.
 2. wait_for selector=${selector}.
-3. screenshot before interaction.
-4. If selector is an input, type_text a sample value; if a button, click it.
-5. wait_for a visible status/text change, then screenshot again.
-6. get_console_messages(level=error) and summarize pass/fail.`,
+3. If selector is an input, type_text a sample value; if a button, click or click_ax it. Use hover or drag when the control needs them.
+4. assert_ui for the expected text or selector. screenshot only if the assertion is unclear.
+5. get_console_messages(level=error) and summarize pass/fail.`,
 				},
 			},
 		],
@@ -2645,9 +2711,9 @@ server.prompt(
 						type: "text",
 						text: `Attach to a running Electron app and capture its UI + errors.${hints ? ` ${hints}` : ""}
 1. If processId is given, use list_apps / diagnose to confirm it is running; otherwise if debugPort is given, call attach with that port; else call find_apps (and discover_apps if needed) then attach or attach_by_pid.
-2. Call screenshot (or save_screenshot) on a page target.
+2. Call vision on a page target.
 3. Call get_console_messages(level=error) and summarize any exceptions.
-4. Report processId, debugPort, screenshot result, and error summary.`,
+4. Report processId, debugPort, what the window shows, and the error summary.`,
 					},
 				},
 			],
@@ -2742,7 +2808,7 @@ server.resource(
 						consoleLiveLogging: isConsoleLiveLoggingEnabled(),
 						capabilities: {
 							tools:
-								"see tools/list (81 tools: lifecycle, inspect, hover, clipboard, downloads, vision/snapshot, a11y act, network stub, profiling, coverage, emulate, screencast, IPC, audits…)",
+								"see tools/list (84 tools: lifecycle, inspect, hover, scroll, drag, permissions, clipboard, downloads, vision/snapshot, a11y act, network stub, profiling, coverage, emulate, screencast, IPC, audits…)",
 							prompts: [
 								"debug_blank_window",
 								"find_renderer_exception",

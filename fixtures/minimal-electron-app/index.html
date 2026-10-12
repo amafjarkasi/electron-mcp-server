@@ -11,6 +11,11 @@
       <input id="name" type="text" placeholder="name" aria-label="name" />
       <button id="go" type="button" aria-label="Go">Go</button>
     </div>
+    <div id="scroller" style="height: 80px; overflow: auto; border: 1px solid #ccc">
+      <div id="scroll-tall" style="height: 600px">scroll-tall</div>
+    </div>
+    <div id="drag-source" style="width: 80px; height: 24px">drag-source</div>
+    <div id="drag-target" style="width: 120px; height: 24px; margin-top: 40px">drag-target</div>
     <script>
       window.__FIXTURE__ = {
         name: "minimal-electron-app",
@@ -29,6 +34,15 @@
       });
       document.getElementById("go").addEventListener("mouseover", () => {
         window.__FIXTURE__.hovered = true;
+      });
+      const source = document.getElementById("drag-source");
+      const target = document.getElementById("drag-target");
+      let dragging = false;
+      source.addEventListener("mousedown", () => {
+        dragging = true;
+      });
+      target.addEventListener("mouseup", () => {
+        if (dragging) window.__FIXTURE__.dropped = true;
       });
     </script>
   </body>

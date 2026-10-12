@@ -329,6 +329,9 @@ async function main() {
       "get_clipboard",
       "set_clipboard",
       "get_downloads",
+      "scroll",
+      "drag",
+      "set_permission",
     ];
     const tools = await client.request("tools/list");
     const names = new Set((tools.tools ?? []).map((t) => t.name));
@@ -553,6 +556,36 @@ async function main() {
       `hover did not fire mouseover: ${JSON.stringify(hoveredValue)}`,
     );
     pass("hover");
+
+    const scrollResult = await client.request("tools/call", {
+      name: "scroll",
+      arguments: { processId, selector: "#scroller", deltaY: 240 },
+    });
+    assert(!scrollResult.isError, `scroll error: ${scrollResult.content?.[0]?.text}`);
+    const scrolled = await client.request("tools/call", {
+      name: "evaluate",
+      arguments: { processId, expression: "document.getElementById('scroller').scrollTop" },
+    });
+    assert(!scrolled.isError, `scroll evaluate error: ${scrolled.content?.[0]?.text}`);
+    const scrollTop = parseToolText(scrolled)?.result?.result?.value;
+    assert(typeof scrollTop === "number" && scrollTop > 0, `scrollTop stayed ${scrollTop}`);
+    pass("scroll");
+
+    const dragResult = await client.request("tools/call", {
+      name: "drag",
+      arguments: { processId, fromSelector: "#drag-source", toSelector: "#drag-target" },
+    });
+    assert(!dragResult.isError, `drag error: ${dragResult.content?.[0]?.text}`);
+    const dropped = await client.request("tools/call", {
+      name: "evaluate",
+      arguments: { processId, expression: "window.__FIXTURE__.dropped === true" },
+    });
+    assert(!dropped.isError, `drag evaluate error: ${dropped.content?.[0]?.text}`);
+    assert(
+      parseToolText(dropped)?.result?.result?.value === true,
+      `drag did not land on the target: ${dropped.content?.[0]?.text}`,
+    );
+    pass("drag");
 
     const waitResult = await client.request("tools/call", {
       name: "wait_for",
@@ -1278,6 +1311,18 @@ async function main() {
         `download did not land: ${JSON.stringify(lastDownloads)}`,
       );
       pass("get_downloads");
+
+    const perm = await client.request("tools/call", {
+      name: "set_permission",
+      arguments: { processId, permission: "notifications", grant: true },
+    });
+    assert(!perm.isError, `set_permission: ${perm.content?.[0]?.text}`);
+    const decision = parseToolText(perm);
+    assert(
+      decision.grants?.notifications === true && decision.sessions >= 1,
+      `permission handler was not installed: ${JSON.stringify(decision)}`,
+    );
+    pass("set_permission");
     } finally {
       await new Promise((resolve) => downloadServer.close(resolve));
     }

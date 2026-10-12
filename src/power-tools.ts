@@ -3067,12 +3067,24 @@ export async function getDownloads(
 		try {
 			const electron = (${LOAD_ELECTRON})();
 			const { BrowserWindow } = electron;
-			const win = BrowserWindow.getAllWindows().find((w) => w && !w.isDestroyed() && w.webContents);
-			if (!win) {
-				return { ok: false, error: "No BrowserWindow. start_app with inspectMain: true." };
+			const sessions = [];
+			const seen = new Set();
+			function addSession(session) {
+				if (!session || seen.has(session)) return;
+				seen.add(session);
+				sessions.push(session);
 			}
-			const session = win.webContents.session;
-			if (!session) {
+			for (const w of BrowserWindow.getAllWindows()) {
+				try { if (w && !w.isDestroyed() && w.webContents) addSession(w.webContents.session); } catch (err) { /* */ }
+			}
+			try {
+				const wcBinding = process._linkedBinding("electron_browser_web_contents");
+				const all = wcBinding && wcBinding.getAllWebContents ? wcBinding.getAllWebContents() : [];
+				for (const wc of all) {
+					try { addSession(wc.session); } catch (err) { /* partition sessions */ }
+				}
+			} catch (err) { /* binding missing */ }
+			if (!sessions.length) {
 				return { ok: false, error: "Electron session is unavailable. start_app with inspectMain: true." };
 			}
 			const dir = ${JSON.stringify(directory)};
@@ -3089,8 +3101,10 @@ export async function getDownloads(
 			}
 			if (!global.__EDM_DOWNLOADS__) global.__EDM_DOWNLOADS__ = [];
 			if (!global.__EDM_DOWNLOAD_DIR__) global.__EDM_DOWNLOAD_DIR__ = dir;
-			if (!global.__EDM_DOWNLOADS_ARMED__) {
-				global.__EDM_DOWNLOADS_ARMED__ = true;
+			if (!global.__EDM_DOWNLOAD_SESSIONS__) global.__EDM_DOWNLOAD_SESSIONS__ = new Set();
+			function arm(session) {
+				if (global.__EDM_DOWNLOAD_SESSIONS__.has(session)) return;
+				global.__EDM_DOWNLOAD_SESSIONS__.add(session);
 				session.on("will-download", (_event, item) => {
 					const filename = safeName(item.getFilename());
 					const savePath = joinDir(global.__EDM_DOWNLOAD_DIR__, filename);
@@ -3118,11 +3132,12 @@ export async function getDownloads(
 					});
 				});
 			}
+			for (const session of sessions) arm(session);
 			let started = false;
 			let startError = null;
 			if (startUrl) {
 				try {
-					session.downloadURL(startUrl);
+					sessions[0].downloadURL(startUrl);
 					started = true;
 				} catch (err) {
 					startError = err && err.message ? err.message : String(err);
@@ -3132,6 +3147,7 @@ export async function getDownloads(
 				ok: startError ? false : true,
 				error: startError || undefined,
 				directory: global.__EDM_DOWNLOAD_DIR__,
+				sessions: sessions.length,
 				started,
 				downloads: global.__EDM_DOWNLOADS__.slice(),
 			};
@@ -3140,5 +3156,91 @@ export async function getDownloads(
 		}
 	})()`;
 	const value = await evalMainOk(electronProcess, expression, "get_downloads");
+	return { processId: electronProcess.id, ...value };
+}
+
+export async function setPermission(
+	electronProcess: ElectronProcess,
+	options: { permission: string; grant: boolean; probe?: boolean },
+): Promise<Record<string, unknown>> {
+	const permission = options.permission.trim();
+	if (!permission) throw new Error("permission is required");
+	const expression = `(async () => {
+		try {
+			const electron = (${LOAD_ELECTRON})();
+			const { BrowserWindow } = electron;
+			const permission = ${JSON.stringify(permission)};
+			const grant = ${options.grant ? "true" : "false"};
+			const probe = ${options.probe ? "true" : "false"};
+			if (!global.__EDM_PERMS__) global.__EDM_PERMS__ = {};
+			global.__EDM_PERMS__[permission] = grant;
+			const sessions = [];
+			const seen = new Set();
+			function addSession(session) {
+				if (!session || seen.has(session)) return;
+				seen.add(session);
+				sessions.push(session);
+			}
+			for (const w of BrowserWindow.getAllWindows()) {
+				try { if (w && !w.isDestroyed() && w.webContents) addSession(w.webContents.session); } catch (err) { /* */ }
+			}
+			try {
+				const wcBinding = process._linkedBinding("electron_browser_web_contents");
+				const all = wcBinding && wcBinding.getAllWebContents ? wcBinding.getAllWebContents() : [];
+				for (const wc of all) {
+					try { addSession(wc.session); } catch (err) { /* */ }
+				}
+			} catch (err) { /* */ }
+			try {
+				const req = process.mainModule && process.mainModule.require;
+				if (typeof req === "function") addSession(req("electron").session.defaultSession);
+			} catch (err) { /* */ }
+			if (!sessions.length) {
+				return { ok: false, error: "Electron session is unavailable. start_app with inspectMain: true." };
+			}
+			function decide(name) {
+				const grants = global.__EDM_PERMS__ || {};
+				if (Object.prototype.hasOwnProperty.call(grants, name)) return !!grants[name];
+				return false;
+			}
+			for (const session of sessions) {
+				if (session.__edmPermArmed) continue;
+				session.__edmPermArmed = true;
+				if (typeof session.setPermissionCheckHandler === "function") {
+					session.setPermissionCheckHandler((_wc, name) => {
+						global.__EDM_LAST_PERM__ = name;
+						return decide(name);
+					});
+				}
+				if (typeof session.setPermissionRequestHandler === "function") {
+					session.setPermissionRequestHandler((_wc, name, callback) => {
+						global.__EDM_LAST_PERM__ = name;
+						const allow = decide(name);
+						try { if (typeof callback === "function") callback(allow); } catch (err) { /* */ }
+					});
+				}
+			}
+			let checked = null;
+			if (probe) {
+				checked = await new Promise((resolve) => {
+					let settled = false;
+					const done = (value) => { if (!settled) { settled = true; resolve(String(value)); } };
+					setTimeout(() => done("timeout"), 2000);
+					try {
+						const wc = BrowserWindow.getAllWindows().find((w) => w && !w.isDestroyed() && w.webContents).webContents;
+						wc.executeJavaScript('navigator.permissions.query({name:' + JSON.stringify(permission) + '}).then((s) => s.state).catch((err) => "query:" + (err && err.message))')
+							.then((state) => done(state))
+							.catch((err) => done("js:" + (err && err.message)));
+					} catch (err) {
+						done("main:" + (err && err.message));
+					}
+				});
+			}
+			return { ok: true, permission, grant, grants: global.__EDM_PERMS__, sessions: sessions.length, checked };
+		} catch (err) {
+			return { ok: false, error: err && err.message ? err.message : String(err) };
+		}
+	})()`;
+	const value = await evalMainOk(electronProcess, expression, "set_permission");
 	return { processId: electronProcess.id, ...value };
 }
