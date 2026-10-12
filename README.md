@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.9.1-0F766E?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-1.9.2-0F766E?style=flat-square" />
   <img alt="84 tools" src="https://img.shields.io/badge/84_tools-47848F?style=flat-square" />
   <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D18-339933?style=flat-square&logo=nodedotjs&logoColor=white" />
   <img alt="Electron" src="https://img.shields.io/badge/Electron-CDP-2B2E3A?style=flat-square&logo=electron&logoColor=white" />
@@ -27,6 +27,19 @@
 An agent that can only read your repo cannot see an Electron window. This server is that debugger. It runs locally, speaks MCP over stdio, and drives the app through the Chrome DevTools Protocol.
 
 You add it to Cursor or Claude and ask in normal language. The client shows the agent every tool and its arguments. This page is the map of what those tools are for.
+
+## Changelog
+
+Full history, including 1.6 and 1.5, is in [`CHANGELOG.md` on GitHub](https://github.com/amafjarkasi/electron-mcp-server/blob/master/CHANGELOG.md). The same file ships in the npm package.
+
+| Version | What landed |
+| --- | --- |
+| 1.9.2 | This README. Headed tool sections, logo, and the release table below, so npm and GitHub show the same notes. |
+| 1.9.1 | README layout fix for the npm page: no empty table rows. |
+| 1.9.0 | `delete_cookie`, `hover`, `scroll`, `drag`, `focus_window`, clipboard, `get_downloads`, `set_permission`. 84 tools. Prompts start from `vision` and `assert_ui`. |
+| 1.8.0 | `click_ax` / `type_ax`, network stub, HAR, `assert_ui`, dialogs, deep links. |
+| 1.7.0 | Coverage, file input, emulation, screencast, breakpoints, MHTML, virtual clock, window topology. |
+| 1.6.0 | `vision`, `snapshot`, response bodies, CPU profile, heap snapshot, IPC tap, screenshot diff. |
 
 ## What you can ask it to do
 

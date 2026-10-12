@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.9.2
+
+### Docs
+- README has a Changelog section that lists 1.9.2 through 1.6.0 and links to this file on GitHub.
+
 ## 1.9.1
 
 ### Docs
