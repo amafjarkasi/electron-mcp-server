@@ -234,6 +234,12 @@ async function main() {
     assert(init?.serverInfo?.name === "electron-debug-mcp", "bad serverInfo");
     assert(init?.capabilities?.tools, "tools capability missing");
     assert(init?.capabilities?.prompts, "prompts capability missing");
+    assert(
+      /vision/.test(init?.instructions || "") &&
+        /click_ax/.test(init?.instructions || "") &&
+        /assert_ui/.test(init?.instructions || ""),
+      "initialize instructions are missing the current look/act/assert loop",
+    );
     client.notify("notifications/initialized");
     pass("initialize");
 

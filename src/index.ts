@@ -193,15 +193,13 @@ const server = new McpServer(
 		instructions: [
 			"Electron Debug MCP controls and inspects Electron apps over Chrome DevTools Protocol.",
 			"Start with doctor when the environment is unknown (Electron binary, DISPLAY, sandbox flags, free port sample).",
-			"Preferred workflow: start_app / attach / attach_by_pid / find_apps → diagnose → get_console_messages(level=error) → screenshot/save_screenshot → get_dom/evaluate.",
-			"Use wait_for (selector/hidden/enabled/count/text) before interacting with UI that may still be loading.",
-			"Use click/hover/type_text/press_key/navigate/reload for UI automation. delete_cookie removes a cookie set with set_cookie.",
-			"focus_window, get_clipboard, set_clipboard, and get_downloads need start_app({ inspectMain: true }). get_downloads saves files under the OS temp directory and returns savePath.",
-			"For main-process JS use start_app({ inspectMain: true }) then evaluate_main — inspectMain opens a pinned --inspect port and merges the node target into list_targets.",
-			"screenshot/save_screenshot accept selector to clip an element. Use get/set_cookies and get/set_storage for web state; start_tracing/stop_tracing for perf traces; get_logs for stdout/stderr.",
-			"Enable set_console_live for streaming console events as MCP log notifications.",
-			"Console and network events are buffered automatically for monitored page targets.",
-			"stop_app removes the session from list_apps (owned processes are killed; attached sessions detach only). Do not retry tools against a stopped processId — start or attach again.",
+			"Preferred workflow: start_app (inspectMain:true if you will touch main) or find_apps/attach → vision or snapshot → get_console_messages(level=error) → wait_for → click_ax/type_ax or click/hover/type_text → assert_ui.",
+			"vision is the one-shot look (screenshot, page, console errors, network failures). snapshot is the accessibility tree. Use click_ax/type_ax when you have an accessible name; use CSS click/hover/type_text otherwise.",
+			"assert_ui returns pass:false with per-check detail. That is a failed check, not a tool error.",
+			"For a failed request use get_network_log, then get_response_body with a finished requestId. network_stub fulfills or fails a urlPattern (* wildcard). export_har has no bodies.",
+			"inspectMain on start_app opens a pinned --inspect port. These tools need it: evaluate_main, main_state, ipc_tap, get_ipc_log, webcontents_topology, open_deep_link, focus_window, get_clipboard, set_clipboard, get_downloads.",
+			"get_downloads must be called before the download (or pass url to start one). It returns savePath. delete_cookie removes a cookie set with set_cookie. file:// pages need an http(s) url or domain for cookies.",
+			"screenshot/save_screenshot accept selector to clip an element. resume after pause or later screenshots fail. stop_app kills an owned app and only detaches an attached one, then drops the processId.",
 			"Read electron://server for package version, uptime, and capability counts without calling a tool.",
 		].join(" "),
 	},
@@ -256,7 +254,7 @@ server.tool(
 			.boolean()
 			.optional()
 			.describe(
-				"If true, pass --inspect so the Electron main process appears as a CDP node target for evaluate_main",
+				"If true, open a pinned --inspect port for main-process tools: evaluate_main, main_state, ipc_tap, get_ipc_log, webcontents_topology, open_deep_link, focus_window, get_clipboard, set_clipboard, get_downloads",
 			),
 	},
 	async ({ appPath, debugPort, extraArgs, inspectMain }) => {
@@ -1321,7 +1319,7 @@ server.tool(
 
 server.tool(
 	"set_cookie",
-	"Set a cookie on the page (provide url or domain; defaults to current location.href)",
+	"Set a cookie on the page (provide url or domain; defaults to current location.href). file:// pages usually reject cookies unless you pass an http(s) url or domain.",
 	{
 		processId: z.string(),
 		name: z.string(),
