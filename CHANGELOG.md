@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.9.1
+
+### Docs
+- README renders on npm as headed sections instead of one table with empty category rows. Adds the logo, a short badge row, and the full tool list under Connect, See, Act, Page state, Network, Profile, and Main process.
+
 ## 1.9.0
 
 ### Features — session quick wins
