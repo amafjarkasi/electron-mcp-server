@@ -2006,7 +2006,7 @@ export function networkEntriesToHar(entries: NetworkEntry[]): {
 	return {
 		log: {
 			version: "1.2",
-			creator: { name: "electron-debug-mcp", version: "1.8.0" },
+			creator: { name: "electron-debug-mcp", version: "1.9.0" },
 			entries: harEntries,
 		},
 	};
@@ -2932,4 +2932,213 @@ export async function openDeepLink(
 		renderer = { error: err instanceof Error ? err.message : String(err) };
 	}
 	return { processId: electronProcess.id, ...value, renderer };
+}
+
+// ---------------------------------------------------------------------------
+// Session quick wins — hover is in process-manager; these need main or cookies
+// ---------------------------------------------------------------------------
+
+/** Basename safe to join onto a download directory. */
+export function safeDownloadFilename(name: string): string {
+	const base = name.split(/[\\/]/).pop() ?? "";
+	const cleaned = base
+		.replace(/[^A-Za-z0-9._ -]+/g, "_")
+		.replace(/^\.+/, "")
+		.trim()
+		.slice(0, 180);
+	if (!cleaned || !/[A-Za-z0-9]/.test(cleaned)) return "download.bin";
+	return cleaned;
+}
+
+async function evalMainOk(
+	electronProcess: ElectronProcess,
+	expression: string,
+	label: string,
+): Promise<Record<string, unknown>> {
+	const result = await withTimeout(
+		evaluateMain(electronProcess, expression, undefined, true),
+		CDP_TIMEOUT_MS,
+		label,
+	);
+	const value = (result.result as { result?: { value?: Record<string, unknown> } })
+		?.result?.value;
+	if (!value || value.ok === false) {
+		throw new Error(
+			typeof value?.error === "string" ? value.error : `${label} failed`,
+		);
+	}
+	return value;
+}
+
+export async function focusWindow(
+	electronProcess: ElectronProcess,
+	options: { windowId?: number; show?: boolean } = {},
+): Promise<Record<string, unknown>> {
+	const show = options.show !== false;
+	const expression = `(() => {
+		try {
+			const electron = (${LOAD_ELECTRON})();
+			const { BrowserWindow } = electron;
+			const want = ${options.windowId == null ? "null" : JSON.stringify(options.windowId)};
+			const wins = BrowserWindow.getAllWindows().filter((w) => w && !w.isDestroyed());
+			const win = want == null ? wins[0] : BrowserWindow.fromId(want);
+			if (!win || win.isDestroyed()) {
+				return { ok: false, error: "No matching BrowserWindow", windowCount: wins.length };
+			}
+			if (${show ? "true" : "false"}) {
+				try { win.show(); } catch (err) { /* hidden windows still accept focus */ }
+			}
+			try { win.focus(); } catch (err) { /* headless may refuse focus */ }
+			try { if (typeof win.moveTop === "function") win.moveTop(); } catch (err) { /* */ }
+			return {
+				ok: true,
+				id: win.id,
+				title: (() => { try { return win.getTitle(); } catch { return ""; } })(),
+				focused: (() => { try { return win.isFocused(); } catch { return null; } })(),
+				visible: (() => { try { return win.isVisible(); } catch { return null; } })(),
+				windowCount: wins.length,
+			};
+		} catch (err) {
+			return { ok: false, error: err && err.message ? err.message : String(err) };
+		}
+	})()`;
+	const value = await evalMainOk(electronProcess, expression, "focus_window");
+	return { processId: electronProcess.id, ...value };
+}
+
+function clipboardExpression(writeText?: string): string {
+	const write = writeText == null ? "null" : JSON.stringify(writeText);
+	return `(() => {
+		try {
+			let clipboard = null;
+			try { clipboard = require("electron").clipboard; } catch (err) { /* inspect context */ }
+			if (!clipboard || typeof clipboard.readText !== "function") {
+				try {
+					const binding = process._linkedBinding("electron_common_clipboard");
+					clipboard = binding && (binding.clipboard || binding);
+				} catch (err) { /* */ }
+			}
+			if (!clipboard || typeof clipboard.readText !== "function") {
+				return { ok: false, error: "Electron clipboard is unavailable. start_app with inspectMain: true." };
+			}
+			const next = ${write};
+			if (typeof next === "string") {
+				clipboard.writeText(next);
+			}
+			return { ok: true, text: clipboard.readText() };
+		} catch (err) {
+			return { ok: false, error: err && err.message ? err.message : String(err) };
+		}
+	})()`;
+}
+
+export async function readClipboard(
+	electronProcess: ElectronProcess,
+): Promise<Record<string, unknown>> {
+	const value = await evalMainOk(
+		electronProcess,
+		clipboardExpression(),
+		"get_clipboard",
+	);
+	return { processId: electronProcess.id, ...value };
+}
+
+export async function writeClipboard(
+	electronProcess: ElectronProcess,
+	text: string,
+): Promise<Record<string, unknown>> {
+	const value = await evalMainOk(
+		electronProcess,
+		clipboardExpression(text),
+		"set_clipboard",
+	);
+	return { processId: electronProcess.id, ...value };
+}
+
+export async function getDownloads(
+	electronProcess: ElectronProcess,
+	options: { directory?: string; url?: string } = {},
+): Promise<Record<string, unknown>> {
+	const directory = options.directory
+		? validateOutputPath(options.directory)
+		: validateOutputPath(path.join(os.tmpdir(), "electron-debug-mcp-downloads"));
+	fs.mkdirSync(directory, { recursive: true });
+	const expression = `(() => {
+		try {
+			const electron = (${LOAD_ELECTRON})();
+			const { BrowserWindow } = electron;
+			const win = BrowserWindow.getAllWindows().find((w) => w && !w.isDestroyed() && w.webContents);
+			if (!win) {
+				return { ok: false, error: "No BrowserWindow. start_app with inspectMain: true." };
+			}
+			const session = win.webContents.session;
+			if (!session) {
+				return { ok: false, error: "Electron session is unavailable. start_app with inspectMain: true." };
+			}
+			const dir = ${JSON.stringify(directory)};
+			const startUrl = ${JSON.stringify(options.url ?? "")};
+			function safeName(name) {
+				const base = String(name || "").split(/[\\\\/]/).pop() || "";
+				const cleaned = base.replace(/[^A-Za-z0-9._ -]+/g, "_").replace(/^\\.+/, "").trim().slice(0, 180);
+				if (!cleaned || !/[A-Za-z0-9]/.test(cleaned)) return "download.bin";
+				return cleaned;
+			}
+			function joinDir(dir, filename) {
+				const slash = dir.indexOf("\\\\") !== -1 && dir.indexOf("/") === -1 ? "\\\\" : "/";
+				return String(dir).replace(/[\\\\/]+$/, "") + slash + filename;
+			}
+			if (!global.__EDM_DOWNLOADS__) global.__EDM_DOWNLOADS__ = [];
+			if (!global.__EDM_DOWNLOAD_DIR__) global.__EDM_DOWNLOAD_DIR__ = dir;
+			if (!global.__EDM_DOWNLOADS_ARMED__) {
+				global.__EDM_DOWNLOADS_ARMED__ = true;
+				session.on("will-download", (_event, item) => {
+					const filename = safeName(item.getFilename());
+					const savePath = joinDir(global.__EDM_DOWNLOAD_DIR__, filename);
+					try { item.setSavePath(savePath); } catch (err) { /* dialog may still show */ }
+					const record = {
+						filename,
+						url: (() => { try { return item.getURL(); } catch { return ""; } })(),
+						mimeType: (() => { try { return item.getMimeType(); } catch { return ""; } })(),
+						savePath,
+						state: "progressing",
+						receivedBytes: 0,
+						totalBytes: (() => { try { return item.getTotalBytes(); } catch { return 0; } })(),
+					};
+					global.__EDM_DOWNLOADS__.push(record);
+					if (global.__EDM_DOWNLOADS__.length > 50) global.__EDM_DOWNLOADS__.shift();
+					item.on("updated", () => {
+						try { record.receivedBytes = item.getReceivedBytes(); } catch (err) { /* */ }
+						try { record.state = item.getState(); } catch (err) { /* */ }
+						try { record.savePath = item.getSavePath() || savePath; } catch (err) { /* */ }
+					});
+					item.on("done", (_e, state) => {
+						record.state = state;
+						try { record.receivedBytes = item.getReceivedBytes(); } catch (err) { /* */ }
+						try { record.savePath = item.getSavePath() || savePath; } catch (err) { /* */ }
+					});
+				});
+			}
+			let started = false;
+			let startError = null;
+			if (startUrl) {
+				try {
+					session.downloadURL(startUrl);
+					started = true;
+				} catch (err) {
+					startError = err && err.message ? err.message : String(err);
+				}
+			}
+			return {
+				ok: startError ? false : true,
+				error: startError || undefined,
+				directory: global.__EDM_DOWNLOAD_DIR__,
+				started,
+				downloads: global.__EDM_DOWNLOADS__.slice(),
+			};
+		} catch (err) {
+			return { ok: false, error: err && err.message ? err.message : String(err) };
+		}
+	})()`;
+	const value = await evalMainOk(electronProcess, expression, "get_downloads");
+	return { processId: electronProcess.id, ...value };
 }

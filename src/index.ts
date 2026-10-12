@@ -17,6 +17,7 @@ import {
 	clearProcessBuffers,
 	clickSelector,
 	connectToCDPTarget,
+	deleteCookie,
 	diagnoseProcess,
 	discoverDebugPorts,
 	ensureMonitoring,
@@ -26,6 +27,7 @@ import {
 	getAllProcesses,
 	getCookies,
 	getElectronDebugInfo,
+	hoverSelector,
 	getOuterHtml,
 	getPageInfo,
 	getProcess,
@@ -61,9 +63,11 @@ import {
 	enableIpcTap,
 	exportHar,
 	findInstalledElectronApps,
+	focusWindow,
 	getAccessibilitySnapshot,
 	getAppVision,
 	getAuditIssues,
+	getDownloads,
 	getIpcLog,
 	getMainState,
 	getPerformanceMetrics,
@@ -74,6 +78,7 @@ import {
 	networkStub,
 	openDeepLink,
 	removeBreakpoint,
+	readClipboard,
 	resolveStack,
 	runPerfAudit,
 	setBreakpointByUrl,
@@ -87,6 +92,7 @@ import {
 	stopCpuProfile,
 	stopScreencast,
 	takeHeapSnapshot,
+	writeClipboard,
 	typeByAx,
 	waitNetworkIdle,
 } from "./power-tools.js";
@@ -189,7 +195,8 @@ const server = new McpServer(
 			"Start with doctor when the environment is unknown (Electron binary, DISPLAY, sandbox flags, free port sample).",
 			"Preferred workflow: start_app / attach / attach_by_pid / find_apps → diagnose → get_console_messages(level=error) → screenshot/save_screenshot → get_dom/evaluate.",
 			"Use wait_for (selector/hidden/enabled/count/text) before interacting with UI that may still be loading.",
-			"Use click/type_text/press_key/navigate/reload for UI automation.",
+			"Use click/hover/type_text/press_key/navigate/reload for UI automation. delete_cookie removes a cookie set with set_cookie.",
+			"focus_window, get_clipboard, set_clipboard, and get_downloads need start_app({ inspectMain: true }). get_downloads saves files under the OS temp directory and returns savePath.",
 			"For main-process JS use start_app({ inspectMain: true }) then evaluate_main — inspectMain opens a pinned --inspect port and merges the node target into list_targets.",
 			"screenshot/save_screenshot accept selector to clip an element. Use get/set_cookies and get/set_storage for web state; start_tracing/stop_tracing for perf traces; get_logs for stdout/stderr.",
 			"Enable set_console_live for streaming console events as MCP log notifications.",
@@ -1192,6 +1199,25 @@ server.tool(
 );
 
 server.tool(
+	"hover",
+	"Move the pointer over a CSS selector (mouseover / hover menus). Does not click.",
+	{
+		processId: z.string(),
+		selector: z.string().describe("CSS selector to hover"),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, selector, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			const result = await hoverSelector(proc, selector, targetId);
+			return textResult({ processId, ...result });
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
 	"type_text",
 	"Type text into the focused element (optionally click a selector first)",
 	{
@@ -1337,6 +1363,32 @@ server.tool(
 					sameSite,
 					expires,
 				},
+				targetId,
+			);
+			return textResult({ processId, ...result });
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"delete_cookie",
+	"Delete a cookie by name. Provide url or domain, same as set_cookie. Defaults url to the page location.",
+	{
+		processId: z.string(),
+		name: z.string(),
+		url: z.string().optional(),
+		domain: z.string().optional(),
+		path: z.string().optional(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, name, url, domain, path: cookiePath, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			const result = await deleteCookie(
+				proc,
+				{ name, url, domain, path: cookiePath },
 				targetId,
 			);
 			return textResult({ processId, ...result });
@@ -2407,6 +2459,86 @@ server.tool(
 	},
 );
 
+server.tool(
+	"focus_window",
+	"Bring an Electron BrowserWindow forward (show, focus, moveTop). Requires inspectMain. Omit windowId to use the first window. Pass show:false to focus without showing a hidden window.",
+	{
+		processId: z.string(),
+		windowId: z
+			.number()
+			.int()
+			.optional()
+			.describe("BrowserWindow.id from webcontents_topology"),
+		show: z
+			.boolean()
+			.optional()
+			.describe("Call show() before focus. Default true."),
+	},
+	async ({ processId, windowId, show }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await focusWindow(proc, { windowId, show }));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"get_clipboard",
+	"Read the OS clipboard as text. Requires inspectMain.",
+	{ processId: z.string() },
+	async ({ processId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await readClipboard(proc));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"set_clipboard",
+	"Write text to the OS clipboard. Requires inspectMain.",
+	{
+		processId: z.string(),
+		text: z.string(),
+	},
+	async ({ processId, text }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await writeClipboard(proc, text));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"get_downloads",
+	"Arm download capture and list files saved by the app. Requires inspectMain. The first call installs a will-download listener that writes into directory (default: OS temp) and suppresses the save dialog. Call it before the download starts, then call again for savePath.",
+	{
+		processId: z.string(),
+		directory: z
+			.string()
+			.optional()
+			.describe("Directory for saved files. Used when the listener is first armed."),
+		url: z
+			.string()
+			.optional()
+			.describe("Optional URL to start downloading on the app session after the listener is armed"),
+	},
+	async ({ processId, directory, url }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await getDownloads(proc, { directory, url }));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
 // --- Prompts ---
 
 server.prompt(
@@ -2612,7 +2744,7 @@ server.resource(
 						consoleLiveLogging: isConsoleLiveLoggingEnabled(),
 						capabilities: {
 							tools:
-								"see tools/list (75 tools: lifecycle, inspect, vision/snapshot, a11y act, network stub, profiling, coverage, emulate, screencast, IPC, audits…)",
+								"see tools/list (81 tools: lifecycle, inspect, hover, clipboard, downloads, vision/snapshot, a11y act, network stub, profiling, coverage, emulate, screencast, IPC, audits…)",
 							prompts: [
 								"debug_blank_window",
 								"find_renderer_exception",

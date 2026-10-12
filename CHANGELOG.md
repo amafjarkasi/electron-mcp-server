@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.9.0
+
+### Features — session quick wins
+- **`delete_cookie`** — remove a cookie by name (`Network.deleteCookies`).
+- **`hover`** — move the pointer over a CSS selector without clicking.
+- **`focus_window`** — show and focus a `BrowserWindow` (`inspectMain`). `show: false` focuses without showing a hidden window.
+- **`get_clipboard` / `set_clipboard`** — OS clipboard text (`inspectMain`).
+- **`get_downloads`** — arm `will-download`, save into a directory, and report `savePath` (`inspectMain`). Optional `url` starts a download on that session.
+- Surface: **81 tools · 7 resources · 6 prompts**.
+
 ## 1.8.0
 
 ### Features — accessibility act + network control

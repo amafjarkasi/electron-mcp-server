@@ -2332,6 +2332,31 @@ export async function clickSelector(
 	return { targetId: target.id, selector, x, y };
 }
 
+export async function hoverSelector(
+	electronProcess: ElectronProcess,
+	selector: string,
+	targetId?: string,
+): Promise<{ targetId: string; selector: string; x: number; y: number }> {
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, targetId);
+	const { x, y } = await elementCenter(electronProcess, target.id, selector);
+	// A move from elsewhere is what fires mouseover. A single move onto the
+	// point can be ignored if the pointer was already considered to be there.
+	await executeCDPCommand(
+		electronProcess,
+		target.id,
+		"Input.dispatchMouseEvent",
+		{ type: "mouseMoved", x: 0, y: 0, button: "none" },
+	);
+	await executeCDPCommand(
+		electronProcess,
+		target.id,
+		"Input.dispatchMouseEvent",
+		{ type: "mouseMoved", x, y, button: "none" },
+	);
+	return { targetId: target.id, selector, x, y };
+}
+
 export async function typeText(
 	electronProcess: ElectronProcess,
 	text: string,
@@ -2819,6 +2844,33 @@ export async function setCookie(
 		cookie,
 	)) as { success?: boolean };
 	return { targetId: target.id, success: Boolean(result.success) };
+}
+
+export async function deleteCookie(
+	electronProcess: ElectronProcess,
+	cookie: { name: string; url?: string; domain?: string; path?: string },
+	targetId?: string,
+): Promise<{ targetId: string; name: string }> {
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, targetId);
+	await executeCDPCommand(electronProcess, target.id, "Network.enable", {});
+	let params = cookie;
+	if (!params.url && !params.domain) {
+		const href = String(
+			(await evalValue(electronProcess, target.id, "location.href")) ?? "",
+		);
+		if (!href || href === "about:blank") {
+			throw new Error("Provide cookie.url or cookie.domain (page has no URL)");
+		}
+		params = { ...params, url: href };
+	}
+	await executeCDPCommand(
+		electronProcess,
+		target.id,
+		"Network.deleteCookies",
+		params,
+	);
+	return { targetId: target.id, name: cookie.name };
 }
 
 export async function getStorage(

@@ -27,6 +27,9 @@
         document.getElementById("status").textContent = "clicked:" + name;
         console.log("fixture-clicked:" + name);
       });
+      document.getElementById("go").addEventListener("mouseover", () => {
+        window.__FIXTURE__.hovered = true;
+      });
     </script>
   </body>
 </html>

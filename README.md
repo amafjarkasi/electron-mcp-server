@@ -6,7 +6,7 @@
 
 <p align="center">
   Launch or attach to an Electron app and let an agent see the window, drive it, and read DevTools.<br/>
-  MCP over stdio · Chrome DevTools Protocol · 75 tools · 7 resources · 6 prompts
+  MCP over stdio · Chrome DevTools Protocol · 81 tools · 7 resources · 6 prompts
 </p>
 
 <p align="center">
@@ -62,7 +62,7 @@ Requires Node 18 or newer.
 
 `stop_app` kills a process this server started. On an attached session it only detaches. Either way the session leaves `list_apps`.
 
-Pass `inspectMain: true` to `start_app` when you need the main process. That opens a separate `--inspect` port and merges the Node target into `list_targets`. These tools need it: `evaluate_main`, `main_state`, `ipc_tap`, `get_ipc_log`, `webcontents_topology`, `open_deep_link`.
+Pass `inspectMain: true` to `start_app` when you need the main process. That opens a separate `--inspect` port and merges the Node target into `list_targets`. These tools need it: `evaluate_main`, `main_state`, `ipc_tap`, `get_ipc_log`, `webcontents_topology`, `open_deep_link`, `focus_window`, `get_clipboard`, `set_clipboard`, `get_downloads`.
 
 Page targets get Runtime, Log, Network, Page, and Audits enabled, so console, network, and audit issues keep buffering between calls.
 
@@ -98,6 +98,7 @@ Page targets get Runtime, Log, Network, Page, and Audits enabled, so console, ne
 | `reload` | Page targets only. Never the Node inspect target. |
 | `wait_for` | Selector, hidden, enabled, text, URL, console text, or node count. |
 | `click` | Click the center of a CSS selector. |
+| `hover` | Move the pointer over a selector. Does not click. |
 | `click_ax` | Click by accessibility name and optional role. |
 | `type_text` | Insert text. Optional focus, clear, and Enter. |
 | `type_ax` | Focus by accessibility name, then insert text. |
@@ -115,6 +116,8 @@ Page targets get Runtime, Log, Network, Page, and Audits enabled, so console, ne
 | `set_console_live` | Also stream non-error console lines as MCP logs. Errors always notify. |
 | `get_logs` | Process stdout and stderr. |
 | `get_cookies` / `set_cookie` | Read or write cookies. `file://` pages usually need an explicit `http(s)` url or domain. |
+| `delete_cookie` | Remove a cookie by name. Same url or domain rules as `set_cookie`. |
+| `get_clipboard` / `set_clipboard` | OS clipboard text. Needs `inspectMain`. |
 | `get_storage` / `set_storage` | `localStorage` or `sessionStorage`. |
 | `clear_buffers` | Drop console, network, logs, ipc, and audit buffers. |
 | **Network** | |
@@ -126,6 +129,7 @@ Page targets get Runtime, Log, Network, Page, and Audits enabled, so console, ne
 | `network_stub` | Fulfill or fail URLs that match a pattern. The same pattern replaces the previous rule. |
 | `clear_network_stubs` | Turn Fetch interception off. |
 | `wait_network_idle` | Wait until nothing is in flight and the log has been quiet. |
+| `get_downloads` | Arm `will-download`, save files into a directory (default OS temp), and return `savePath`. Call it before the download, or pass `url` to start one. Needs `inspectMain`. |
 | **Profile** | |
 | `get_performance_metrics` | `Performance.getMetrics`. |
 | `perf_audit` | Metrics, navigation and paint timing, recent Audits issues. Not full Lighthouse. |
@@ -142,6 +146,7 @@ Page targets get Runtime, Log, Network, Page, and Audits enabled, so console, ne
 | `resolve_stack` | Map stack frames to source snippets. |
 | **Main process and escape hatch** | |
 | `ipc_tap` / `get_ipc_log` | Record IPC in the main process, then read it. Needs `inspectMain`. |
+| `focus_window` | Show and focus a `BrowserWindow`. `windowId` comes from `webcontents_topology`. `show: false` skips `show()`. Needs `inspectMain`. |
 | `cdp_command` | Any `Domain.method` the wrappers above do not cover. |
 
 ## Prompts
