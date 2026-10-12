@@ -17,7 +17,9 @@ import {
 	clearProcessBuffers,
 	clickSelector,
 	connectToCDPTarget,
+	deleteCookie,
 	diagnoseProcess,
+	dragSelector,
 	discoverDebugPorts,
 	ensureMonitoring,
 	evaluateMain,
@@ -26,6 +28,7 @@ import {
 	getAllProcesses,
 	getCookies,
 	getElectronDebugInfo,
+	hoverSelector,
 	getOuterHtml,
 	getPageInfo,
 	getProcess,
@@ -38,6 +41,7 @@ import {
 	pickTargetByRole,
 	pressKey,
 	saveScreenshot,
+	scrollTarget,
 	setConsoleLiveLogging,
 	setCookie,
 	setStorage,
@@ -61,9 +65,11 @@ import {
 	enableIpcTap,
 	exportHar,
 	findInstalledElectronApps,
+	focusWindow,
 	getAccessibilitySnapshot,
 	getAppVision,
 	getAuditIssues,
+	getDownloads,
 	getIpcLog,
 	getMainState,
 	getPerformanceMetrics,
@@ -74,10 +80,12 @@ import {
 	networkStub,
 	openDeepLink,
 	removeBreakpoint,
+	readClipboard,
 	resolveStack,
 	runPerfAudit,
 	setBreakpointByUrl,
 	setExtraHeaders,
+	setPermission,
 	setFileInput,
 	setVirtualClock,
 	startCoverage,
@@ -87,6 +95,7 @@ import {
 	stopCpuProfile,
 	stopScreencast,
 	takeHeapSnapshot,
+	writeClipboard,
 	typeByAx,
 	waitNetworkIdle,
 } from "./power-tools.js";
@@ -187,14 +196,13 @@ const server = new McpServer(
 		instructions: [
 			"Electron Debug MCP controls and inspects Electron apps over Chrome DevTools Protocol.",
 			"Start with doctor when the environment is unknown (Electron binary, DISPLAY, sandbox flags, free port sample).",
-			"Preferred workflow: start_app / attach / attach_by_pid / find_apps → diagnose → get_console_messages(level=error) → screenshot/save_screenshot → get_dom/evaluate.",
-			"Use wait_for (selector/hidden/enabled/count/text) before interacting with UI that may still be loading.",
-			"Use click/type_text/press_key/navigate/reload for UI automation.",
-			"For main-process JS use start_app({ inspectMain: true }) then evaluate_main — inspectMain opens a pinned --inspect port and merges the node target into list_targets.",
-			"screenshot/save_screenshot accept selector to clip an element. Use get/set_cookies and get/set_storage for web state; start_tracing/stop_tracing for perf traces; get_logs for stdout/stderr.",
-			"Enable set_console_live for streaming console events as MCP log notifications.",
-			"Console and network events are buffered automatically for monitored page targets.",
-			"stop_app removes the session from list_apps (owned processes are killed; attached sessions detach only). Do not retry tools against a stopped processId — start or attach again.",
+			"Preferred workflow: start_app (inspectMain:true if you will touch main) or find_apps/attach → vision or snapshot → get_console_messages(level=error) → wait_for → click_ax/type_ax or click/hover/type_text → assert_ui.",
+			"vision is the one-shot look (screenshot, page, console errors, network failures). snapshot is the accessibility tree. Use click_ax/type_ax when you have an accessible name; use CSS click/hover/drag/scroll/type_text otherwise.",
+			"assert_ui returns pass:false with per-check detail. That is a failed check, not a tool error.",
+			"For a failed request use get_network_log, then get_response_body with a finished requestId. network_stub fulfills or fails a urlPattern (* wildcard). export_har has no bodies.",
+			"inspectMain on start_app opens a pinned --inspect port. These tools need it: evaluate_main, main_state, ipc_tap, get_ipc_log, webcontents_topology, open_deep_link, focus_window, get_clipboard, set_clipboard, get_downloads, set_permission.",
+			"get_downloads must be called before the download (or pass url to start one). It returns savePath. delete_cookie removes a cookie set with set_cookie. file:// pages need an http(s) url or domain for cookies.",
+			"screenshot/save_screenshot accept selector to clip an element. resume after pause or later screenshots fail. stop_app kills an owned app and only detaches an attached one, then drops the processId.",
 			"Read electron://server for package version, uptime, and capability counts without calling a tool.",
 		].join(" "),
 	},
@@ -249,7 +257,7 @@ server.tool(
 			.boolean()
 			.optional()
 			.describe(
-				"If true, pass --inspect so the Electron main process appears as a CDP node target for evaluate_main",
+				"If true, open a pinned --inspect port for main-process tools: evaluate_main, main_state, ipc_tap, get_ipc_log, webcontents_topology, open_deep_link, focus_window, get_clipboard, set_clipboard, get_downloads, set_permission",
 			),
 	},
 	async ({ appPath, debugPort, extraArgs, inspectMain }) => {
@@ -1192,6 +1200,66 @@ server.tool(
 );
 
 server.tool(
+	"hover",
+	"Move the pointer over a CSS selector (mouseover / hover menus). Does not click.",
+	{
+		processId: z.string(),
+		selector: z.string().describe("CSS selector to hover"),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, selector, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			const result = await hoverSelector(proc, selector, targetId);
+			return textResult({ processId, ...result });
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"scroll",
+	"Scroll the page or an element. With a selector and no deltas, scrolls that element into view. With deltaY/deltaX, sends a mouse wheel at the element (or the viewport).",
+	{
+		processId: z.string(),
+		selector: z.string().optional().describe("Element to scroll into view, or the wheel target"),
+		deltaX: z.number().optional().describe("Horizontal wheel delta. Positive scrolls right."),
+		deltaY: z.number().optional().describe("Vertical wheel delta. Positive scrolls down. Default 400 when no selector."),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, selector, deltaX, deltaY, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			const result = await scrollTarget(proc, { selector, deltaX, deltaY, targetId });
+			return textResult({ processId, ...result });
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"drag",
+	"Press on fromSelector, move to toSelector, and release. Use for drag-and-drop and sliders that follow the pointer.",
+	{
+		processId: z.string(),
+		fromSelector: z.string(),
+		toSelector: z.string(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, fromSelector, toSelector, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			const result = await dragSelector(proc, fromSelector, toSelector, targetId);
+			return textResult({ processId, ...result });
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
 	"type_text",
 	"Type text into the focused element (optionally click a selector first)",
 	{
@@ -1295,7 +1363,7 @@ server.tool(
 
 server.tool(
 	"set_cookie",
-	"Set a cookie on the page (provide url or domain; defaults to current location.href)",
+	"Set a cookie on the page (provide url or domain; defaults to current location.href). file:// pages usually reject cookies unless you pass an http(s) url or domain.",
 	{
 		processId: z.string(),
 		name: z.string(),
@@ -1337,6 +1405,32 @@ server.tool(
 					sameSite,
 					expires,
 				},
+				targetId,
+			);
+			return textResult({ processId, ...result });
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"delete_cookie",
+	"Delete a cookie by name. Provide url or domain, same as set_cookie. Defaults url to the page location.",
+	{
+		processId: z.string(),
+		name: z.string(),
+		url: z.string().optional(),
+		domain: z.string().optional(),
+		path: z.string().optional(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, name, url, domain, path: cookiePath, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			const result = await deleteCookie(
+				proc,
+				{ name, url, domain, path: cookiePath },
 				targetId,
 			);
 			return textResult({ processId, ...result });
@@ -1739,7 +1833,7 @@ server.tool(
 
 server.tool(
 	"get_ipc_log",
-	"Drain / read captured IPC entries after ipc_tap",
+	"Drain / read captured IPC entries after ipc_tap. Requires inspectMain.",
 	{
 		processId: z.string(),
 		tail: z.number().int().positive().optional(),
@@ -2123,7 +2217,7 @@ server.tool(
 
 server.tool(
 	"webcontents_topology",
-	"Map BrowserWindows / webContents (main) to CDP targets — agent topology for multi-window apps",
+	"Map BrowserWindows / webContents (main) to CDP targets. Requires inspectMain.",
 	{
 		processId: z.string(),
 	},
@@ -2407,6 +2501,110 @@ server.tool(
 	},
 );
 
+server.tool(
+	"focus_window",
+	"Bring an Electron BrowserWindow forward (show, focus, moveTop). Requires inspectMain. Omit windowId to use the first window. Pass show:false to focus without showing a hidden window.",
+	{
+		processId: z.string(),
+		windowId: z
+			.number()
+			.int()
+			.optional()
+			.describe("BrowserWindow.id from webcontents_topology"),
+		show: z
+			.boolean()
+			.optional()
+			.describe("Call show() before focus. Default true."),
+	},
+	async ({ processId, windowId, show }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await focusWindow(proc, { windowId, show }));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"get_clipboard",
+	"Read the OS clipboard as text. Requires inspectMain.",
+	{ processId: z.string() },
+	async ({ processId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await readClipboard(proc));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"set_clipboard",
+	"Write text to the OS clipboard. Requires inspectMain.",
+	{
+		processId: z.string(),
+		text: z.string(),
+	},
+	async ({ processId, text }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await writeClipboard(proc, text));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"get_downloads",
+	"Arm download capture and list files saved by the app. Requires inspectMain. The first call installs a will-download listener that writes into directory (default: OS temp) and suppresses the save dialog. Call it before the download starts, then call again for savePath.",
+	{
+		processId: z.string(),
+		directory: z
+			.string()
+			.optional()
+			.describe("Directory for saved files. Used when the listener is first armed."),
+		url: z
+			.string()
+			.optional()
+			.describe("Optional URL to start downloading on the app session after the listener is armed"),
+	},
+	async ({ processId, directory, url }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await getDownloads(proc, { directory, url }));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"set_permission",
+	"Answer Electron permission prompts for this app. Requires inspectMain. Installs a handler on every webContents session. Listed permissions use grant; anything not listed is denied after the handler is installed.",
+	{
+		processId: z.string(),
+		permission: z
+			.string()
+			.describe('Electron permission name, e.g. "notifications", "media", "geolocation"'),
+		grant: z.boolean().describe("true allows the prompt, false denies it"),
+		probe: z
+			.boolean()
+			.optional()
+			.describe("If true, query the page permission state and return it as checked"),
+	},
+	async ({ processId, permission, grant, probe }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await setPermission(proc, { permission, grant, probe }));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
 // --- Prompts ---
 
 server.prompt(
@@ -2424,12 +2622,11 @@ server.prompt(
 				content: {
 					type: "text",
 					text: `Diagnose a blank/white Electron window for process ${processId}.
-1. Call diagnose with this processId.
-2. Call list_targets and identify page targets.
-3. Call get_console_messages (level=error) and get_logs.
-4. Call screenshot to see the current UI.
-5. Call get_dom / query_selector to inspect #root/app containers.
-6. Summarize likely causes (renderer crash, failed load URL, CSP, route error) and next fixes.`,
+1. Call vision for a screenshot plus console errors and network failures.
+2. Call get_console_messages (level=error), get_audit_issues, and get_logs.
+3. Call snapshot if the accessibility tree explains an empty shell.
+4. Call get_dom / query_selector only if you still need raw markup.
+5. Summarize likely causes (renderer crash, failed load URL, CSP, route error) and next fixes.`,
 				},
 			},
 		],
@@ -2449,9 +2646,9 @@ server.prompt(
 				content: {
 					type: "text",
 					text: `Find renderer exceptions for process ${processId}.
-1. ensure monitoring by calling get_console_messages.
-2. Filter errors/exceptions; if empty, evaluate a canary then reproduce the user bug.
-3. Use get_network_log for failed requests.
+1. Call vision, then get_console_messages (level=error).
+2. If the buffer is empty, reproduce the bug and call get_console_messages again.
+3. Use get_network_log and get_response_body for failed requests.
 4. Report stack/text, targetId, and suggested fix.`,
 				},
 			},
@@ -2475,12 +2672,11 @@ server.prompt(
 				content: {
 					type: "text",
 					text: `Run a quick UI smoke check for process ${processId}.
-1. page_info to confirm URL/title.
+1. vision to see the window, console errors, and failed requests.
 2. wait_for selector=${selector}.
-3. screenshot before interaction.
-4. If selector is an input, type_text a sample value; if a button, click it.
-5. wait_for a visible status/text change, then screenshot again.
-6. get_console_messages(level=error) and summarize pass/fail.`,
+3. If selector is an input, type_text a sample value; if a button, click or click_ax it. Use hover or drag when the control needs them.
+4. assert_ui for the expected text or selector. screenshot only if the assertion is unclear.
+5. get_console_messages(level=error) and summarize pass/fail.`,
 				},
 			},
 		],
@@ -2515,9 +2711,9 @@ server.prompt(
 						type: "text",
 						text: `Attach to a running Electron app and capture its UI + errors.${hints ? ` ${hints}` : ""}
 1. If processId is given, use list_apps / diagnose to confirm it is running; otherwise if debugPort is given, call attach with that port; else call find_apps (and discover_apps if needed) then attach or attach_by_pid.
-2. Call screenshot (or save_screenshot) on a page target.
+2. Call vision on a page target.
 3. Call get_console_messages(level=error) and summarize any exceptions.
-4. Report processId, debugPort, screenshot result, and error summary.`,
+4. Report processId, debugPort, what the window shows, and the error summary.`,
 					},
 				},
 			],
@@ -2612,7 +2808,7 @@ server.resource(
 						consoleLiveLogging: isConsoleLiveLoggingEnabled(),
 						capabilities: {
 							tools:
-								"see tools/list (75 tools: lifecycle, inspect, vision/snapshot, a11y act, network stub, profiling, coverage, emulate, screencast, IPC, audits…)",
+								"see tools/list (84 tools: lifecycle, inspect, hover, scroll, drag, permissions, clipboard, downloads, vision/snapshot, a11y act, network stub, profiling, coverage, emulate, screencast, IPC, audits…)",
 							prompts: [
 								"debug_blank_window",
 								"find_renderer_exception",

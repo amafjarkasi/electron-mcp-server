@@ -2332,6 +2332,173 @@ export async function clickSelector(
 	return { targetId: target.id, selector, x, y };
 }
 
+export async function hoverSelector(
+	electronProcess: ElectronProcess,
+	selector: string,
+	targetId?: string,
+): Promise<{ targetId: string; selector: string; x: number; y: number }> {
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, targetId);
+	const { x, y } = await elementCenter(electronProcess, target.id, selector);
+	// A move from elsewhere is what fires mouseover. A single move onto the
+	// point can be ignored if the pointer was already considered to be there.
+	await executeCDPCommand(
+		electronProcess,
+		target.id,
+		"Input.dispatchMouseEvent",
+		{ type: "mouseMoved", x: 0, y: 0, button: "none" },
+	);
+	await executeCDPCommand(
+		electronProcess,
+		target.id,
+		"Input.dispatchMouseEvent",
+		{ type: "mouseMoved", x, y, button: "none" },
+	);
+	return { targetId: target.id, selector, x, y };
+}
+
+export async function scrollTarget(
+	electronProcess: ElectronProcess,
+	options: {
+		selector?: string;
+		deltaX?: number;
+		deltaY?: number;
+		targetId?: string;
+	} = {},
+): Promise<{
+	targetId: string;
+	selector?: string;
+	deltaX: number;
+	deltaY: number;
+	x: number;
+	y: number;
+}> {
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, options.targetId);
+	const deltaX = options.deltaX ?? 0;
+	const deltaY = options.deltaY ?? (options.selector ? 0 : 400);
+	if (options.selector && deltaX === 0 && deltaY === 0) {
+		await evalValue(
+			electronProcess,
+			target.id,
+			`(() => {
+				const el = document.querySelector(${JSON.stringify(options.selector)});
+				if (!el) return false;
+				el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+				return true;
+			})()`,
+		);
+		const center = await elementCenter(electronProcess, target.id, options.selector);
+		return {
+			targetId: target.id,
+			selector: options.selector,
+			deltaX: 0,
+			deltaY: 0,
+			x: center.x,
+			y: center.y,
+		};
+	}
+	let x = 200;
+	let y = 200;
+	if (options.selector) {
+		const center = await elementCenter(electronProcess, target.id, options.selector);
+		x = center.x;
+		y = center.y;
+		await evalValue(
+			electronProcess,
+			target.id,
+			`(() => {
+				const el = document.querySelector(${JSON.stringify(options.selector)});
+				if (!el) return false;
+				if (typeof el.scrollBy === "function") {
+					el.scrollBy({ left: ${deltaX}, top: ${deltaY}, behavior: "instant" });
+				}
+				return el.scrollTop;
+			})()`,
+		);
+	}
+	await executeCDPCommand(
+		electronProcess,
+		target.id,
+		"Input.dispatchMouseEvent",
+		{
+			type: "mouseWheel",
+			x,
+			y,
+			deltaX,
+			deltaY,
+		},
+	);
+	return {
+		targetId: target.id,
+		selector: options.selector,
+		deltaX,
+		deltaY,
+		x,
+		y,
+	};
+}
+
+export async function dragSelector(
+	electronProcess: ElectronProcess,
+	fromSelector: string,
+	toSelector: string,
+	targetId?: string,
+): Promise<{
+	targetId: string;
+	fromSelector: string;
+	toSelector: string;
+	from: { x: number; y: number };
+	to: { x: number; y: number };
+}> {
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, targetId);
+	const from = await elementCenter(electronProcess, target.id, fromSelector);
+	const to = await elementCenter(electronProcess, target.id, toSelector);
+	const steps = 8;
+	await executeCDPCommand(
+		electronProcess,
+		target.id,
+		"Input.dispatchMouseEvent",
+		{
+			type: "mousePressed",
+			x: from.x,
+			y: from.y,
+			button: "left",
+			clickCount: 1,
+		},
+	);
+	for (let i = 1; i <= steps; i++) {
+		const x = from.x + ((to.x - from.x) * i) / steps;
+		const y = from.y + ((to.y - from.y) * i) / steps;
+		await executeCDPCommand(
+			electronProcess,
+			target.id,
+			"Input.dispatchMouseEvent",
+			{ type: "mouseMoved", x, y, button: "left" },
+		);
+	}
+	await executeCDPCommand(
+		electronProcess,
+		target.id,
+		"Input.dispatchMouseEvent",
+		{
+			type: "mouseReleased",
+			x: to.x,
+			y: to.y,
+			button: "left",
+			clickCount: 1,
+		},
+	);
+	return {
+		targetId: target.id,
+		fromSelector,
+		toSelector,
+		from,
+		to,
+	};
+}
+
 export async function typeText(
 	electronProcess: ElectronProcess,
 	text: string,
@@ -2819,6 +2986,33 @@ export async function setCookie(
 		cookie,
 	)) as { success?: boolean };
 	return { targetId: target.id, success: Boolean(result.success) };
+}
+
+export async function deleteCookie(
+	electronProcess: ElectronProcess,
+	cookie: { name: string; url?: string; domain?: string; path?: string },
+	targetId?: string,
+): Promise<{ targetId: string; name: string }> {
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, targetId);
+	await executeCDPCommand(electronProcess, target.id, "Network.enable", {});
+	let params = cookie;
+	if (!params.url && !params.domain) {
+		const href = String(
+			(await evalValue(electronProcess, target.id, "location.href")) ?? "",
+		);
+		if (!href || href === "about:blank") {
+			throw new Error("Provide cookie.url or cookie.domain (page has no URL)");
+		}
+		params = { ...params, url: href };
+	}
+	await executeCDPCommand(
+		electronProcess,
+		target.id,
+		"Network.deleteCookies",
+		params,
+	);
+	return { targetId: target.id, name: cookie.name };
 }
 
 export async function getStorage(

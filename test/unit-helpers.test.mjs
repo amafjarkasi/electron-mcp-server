@@ -53,6 +53,7 @@ import {
   hasCpuProfileSession,
   matchAxNode,
   networkEntriesToHar,
+  safeDownloadFilename,
   urlPatternMatches,
 } from "../build/power-tools.js";
 
@@ -1523,4 +1524,13 @@ test("networkEntriesToHar groups events into HAR 1.2 entries", () => {
   assert.equal(har.log.entries[0].request.method, "GET");
   assert.equal(har.log.entries[0].request.url, "https://example.test/a");
   assert.equal(har.log.entries[0].response.status, 200);
+});
+
+test("safeDownloadFilename keeps a basename and strips path and odd characters", () => {
+  assert.equal(safeDownloadFilename("report.pdf"), "report.pdf");
+  assert.equal(safeDownloadFilename("../etc/passwd"), "passwd");
+  assert.equal(safeDownloadFilename("C:\\Users\\a\\notes.txt"), "notes.txt");
+  assert.equal(safeDownloadFilename("..hidden"), "hidden");
+  assert.equal(safeDownloadFilename("***"), "download.bin");
+  assert.equal(safeDownloadFilename(""), "download.bin");
 });

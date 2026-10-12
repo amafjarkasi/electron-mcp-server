@@ -4,6 +4,7 @@
  * Spawns the server over stdio, drives tools against fixtures/minimal-electron-app.
  */
 import { spawn } from "child_process";
+import http from "http";
 import net from "net";
 import os from "os";
 import path from "path";
@@ -233,6 +234,12 @@ async function main() {
     assert(init?.serverInfo?.name === "electron-debug-mcp", "bad serverInfo");
     assert(init?.capabilities?.tools, "tools capability missing");
     assert(init?.capabilities?.prompts, "prompts capability missing");
+    assert(
+      /vision/.test(init?.instructions || "") &&
+        /click_ax/.test(init?.instructions || "") &&
+        /assert_ui/.test(init?.instructions || ""),
+      "initialize instructions are missing the current look/act/assert loop",
+    );
     client.notify("notifications/initialized");
     pass("initialize");
 
@@ -315,6 +322,16 @@ async function main() {
       "highlight",
       "assert_ui",
       "open_deep_link",
+      // session quick wins
+      "hover",
+      "delete_cookie",
+      "focus_window",
+      "get_clipboard",
+      "set_clipboard",
+      "get_downloads",
+      "scroll",
+      "drag",
+      "set_permission",
     ];
     const tools = await client.request("tools/list");
     const names = new Set((tools.tools ?? []).map((t) => t.name));
@@ -523,6 +540,53 @@ async function main() {
     assert(!clickResult.isError, `click error: ${clickResult.content?.[0]?.text}`);
     pass("click");
 
+    const hoverResult = await client.request("tools/call", {
+      name: "hover",
+      arguments: { processId, selector: "#go" },
+    });
+    assert(!hoverResult.isError, `hover error: ${hoverResult.content?.[0]?.text}`);
+    const hovered = await client.request("tools/call", {
+      name: "evaluate",
+      arguments: { processId, expression: "window.__FIXTURE__.hovered === true" },
+    });
+    assert(!hovered.isError, `hover evaluate error: ${hovered.content?.[0]?.text}`);
+    const hoveredValue = parseToolText(hovered)?.result?.result?.value;
+    assert(
+      hoveredValue === true,
+      `hover did not fire mouseover: ${JSON.stringify(hoveredValue)}`,
+    );
+    pass("hover");
+
+    const scrollResult = await client.request("tools/call", {
+      name: "scroll",
+      arguments: { processId, selector: "#scroller", deltaY: 240 },
+    });
+    assert(!scrollResult.isError, `scroll error: ${scrollResult.content?.[0]?.text}`);
+    const scrolled = await client.request("tools/call", {
+      name: "evaluate",
+      arguments: { processId, expression: "document.getElementById('scroller').scrollTop" },
+    });
+    assert(!scrolled.isError, `scroll evaluate error: ${scrolled.content?.[0]?.text}`);
+    const scrollTop = parseToolText(scrolled)?.result?.result?.value;
+    assert(typeof scrollTop === "number" && scrollTop > 0, `scrollTop stayed ${scrollTop}`);
+    pass("scroll");
+
+    const dragResult = await client.request("tools/call", {
+      name: "drag",
+      arguments: { processId, fromSelector: "#drag-source", toSelector: "#drag-target" },
+    });
+    assert(!dragResult.isError, `drag error: ${dragResult.content?.[0]?.text}`);
+    const dropped = await client.request("tools/call", {
+      name: "evaluate",
+      arguments: { processId, expression: "window.__FIXTURE__.dropped === true" },
+    });
+    assert(!dropped.isError, `drag evaluate error: ${dropped.content?.[0]?.text}`);
+    assert(
+      parseToolText(dropped)?.result?.result?.value === true,
+      `drag did not land on the target: ${dropped.content?.[0]?.text}`,
+    );
+    pass("drag");
+
     const waitResult = await client.request("tools/call", {
       name: "wait_for",
       arguments: { processId, text: "clicked:ada", timeoutMs: 5000 },
@@ -641,6 +705,34 @@ async function main() {
       `expected smoke cookie: ${JSON.stringify(cookies)}`
     );
     pass("get/set_cookie");
+
+    const deleteCookieResult = await client.request("tools/call", {
+      name: "delete_cookie",
+      arguments: {
+        processId,
+        name: "smoke",
+        url: "http://127.0.0.1/",
+        path: "/",
+      },
+    });
+    assert(
+      !deleteCookieResult.isError,
+      `delete_cookie error: ${deleteCookieResult.content?.[0]?.text}`,
+    );
+    const cookiesAfterDelete = await client.request("tools/call", {
+      name: "get_cookies",
+      arguments: { processId, urls: ["http://127.0.0.1/"] },
+    });
+    assert(
+      !cookiesAfterDelete.isError,
+      `get_cookies after delete error: ${cookiesAfterDelete.content?.[0]?.text}`,
+    );
+    const remainingCookies = parseToolText(cookiesAfterDelete);
+    assert(
+      !(remainingCookies.cookies ?? []).some((c) => c.name === "smoke"),
+      `smoke cookie still present: ${JSON.stringify(remainingCookies)}`,
+    );
+    pass("delete_cookie");
 
     const traceStart = await client.request("tools/call", {
       name: "start_tracing",
@@ -1147,6 +1239,93 @@ async function main() {
       assert(Array.isArray(data.cdpTargets), "webcontents_topology missing cdpTargets");
       pass("webcontents_topology");
     });
+
+    const focus = await client.request("tools/call", {
+      name: "focus_window",
+      arguments: { processId, show: false },
+    });
+    assert(!focus.isError, `focus_window: ${focus.content?.[0]?.text}`);
+    const focused = parseToolText(focus);
+    assert(
+      typeof focused.id === "number",
+      `focus_window missing id: ${JSON.stringify(focused)}`,
+    );
+    pass("focus_window");
+
+    const clipText = `smoke-clip-${Date.now()}`;
+    const setClip = await client.request("tools/call", {
+      name: "set_clipboard",
+      arguments: { processId, text: clipText },
+    });
+    assert(!setClip.isError, `set_clipboard: ${setClip.content?.[0]?.text}`);
+    const getClip = await client.request("tools/call", {
+      name: "get_clipboard",
+      arguments: { processId },
+    });
+    assert(!getClip.isError, `get_clipboard: ${getClip.content?.[0]?.text}`);
+    const clip = parseToolText(getClip);
+    assert(clip.text === clipText, `clipboard mismatch: ${JSON.stringify(clip)}`);
+    pass("clipboard");
+
+    const downloadDir = path.join(smokeOutDir, "downloads");
+    fs.mkdirSync(downloadDir, { recursive: true });
+    const downloadServer = http.createServer((_req, res) => {
+      res.setHeader("Content-Type", "text/plain");
+      res.setHeader(
+        "Content-Disposition",
+        "attachment; filename=\"smoke-download.txt\"",
+      );
+      res.end("hello-download");
+    });
+    await new Promise((resolve) => downloadServer.listen(0, "127.0.0.1", resolve));
+    try {
+      const downloadPort = downloadServer.address().port;
+      const downloadUrl = `http://127.0.0.1:${downloadPort}/smoke-download.txt`;
+      const armed = await client.request("tools/call", {
+        name: "get_downloads",
+        arguments: { processId, directory: downloadDir, url: downloadUrl },
+      });
+      assert(!armed.isError, `get_downloads arm: ${armed.content?.[0]?.text}`);
+      let landed;
+      let lastDownloads = [];
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+        const listed = await client.request("tools/call", {
+          name: "get_downloads",
+          arguments: { processId },
+        });
+        assert(!listed.isError, `get_downloads: ${listed.content?.[0]?.text}`);
+        lastDownloads = parseToolText(listed).downloads ?? [];
+        landed = lastDownloads.find(
+          (item) => item.savePath && fs.existsSync(item.savePath),
+        );
+        if (
+          landed &&
+          fs.readFileSync(landed.savePath, "utf8").includes("hello-download")
+        ) {
+          break;
+        }
+      }
+      assert(
+        landed && fs.readFileSync(landed.savePath, "utf8").includes("hello-download"),
+        `download did not land: ${JSON.stringify(lastDownloads)}`,
+      );
+      pass("get_downloads");
+
+    const perm = await client.request("tools/call", {
+      name: "set_permission",
+      arguments: { processId, permission: "notifications", grant: true },
+    });
+    assert(!perm.isError, `set_permission: ${perm.content?.[0]?.text}`);
+    const decision = parseToolText(perm);
+    assert(
+      decision.grants?.notifications === true && decision.sessions >= 1,
+      `permission handler was not installed: ${JSON.stringify(decision)}`,
+    );
+    pass("set_permission");
+    } finally {
+      await new Promise((resolve) => downloadServer.close(resolve));
+    }
 
     await soft("resolve_stack", async () => {
       const stack = await client.request("tools/call", {

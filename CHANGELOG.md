@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.9.2
+
+### Docs
+- README has a Changelog section that lists 1.9.2 through 1.6.0 and links to this file on GitHub.
+
+## 1.9.1
+
+### Docs
+- README renders on npm as headed sections instead of one table with empty category rows. Adds the logo, a short badge row, and the full tool list under Connect, See, Act, Page state, Network, Profile, and Main process.
+
+## 1.9.0
+
+### Features — session quick wins
+- **`delete_cookie`** — remove a cookie by name (`Network.deleteCookies`).
+- **`hover`** — move the pointer over a CSS selector without clicking.
+- **`focus_window`** — show and focus a `BrowserWindow` (`inspectMain`). `show: false` focuses without showing a hidden window.
+- **`get_clipboard` / `set_clipboard`** — OS clipboard text (`inspectMain`).
+- **`get_downloads`** — arm `will-download` on every webContents session, save into a directory, and report `savePath` (`inspectMain`). Optional `url` starts a download on the first session.
+- **`scroll`** — wheel a page or element, or scroll a selector into view.
+- **`drag`** — press, move, and release between two selectors.
+- **`set_permission`** — allow or deny Electron permission prompts (`notifications`, `media`, `geolocation`, …) on every session (`inspectMain`). Unlisted permissions are denied once the handler is installed.
+- Prompts `debug_blank_window`, `find_renderer_exception`, `ui_smoke_check`, and `attach_and_screenshot` now start from `vision` / `assert_ui` instead of a screenshot-only loop.
+- Surface: **84 tools · 7 resources · 6 prompts**.
+
 ## 1.8.0
 
 ### Features — accessibility act + network control
