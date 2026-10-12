@@ -2444,12 +2444,15 @@ export async function dragSelector(
 	fromSelector: string,
 	toSelector: string,
 	targetId?: string,
+	data?: string,
 ): Promise<{
 	targetId: string;
 	fromSelector: string;
 	toSelector: string;
 	from: { x: number; y: number };
 	to: { x: number; y: number };
+	data: string;
+	html5: boolean;
 }> {
 	await updateCDPTargets(electronProcess);
 	const target = pickPageTarget(electronProcess, targetId);
@@ -2490,12 +2493,61 @@ export async function dragSelector(
 			clickCount: 1,
 		},
 	);
+	const payload =
+		data ??
+		String(
+			(await evalValue(
+				electronProcess,
+				target.id,
+				`document.querySelector(${JSON.stringify(fromSelector)})?.textContent || ""`,
+			)) ?? "",
+		);
+	const dragData = {
+		items: [{ mimeType: "text/plain", data: payload }],
+		dragOperationsMask: 1,
+	};
+	let html5 = false;
+	try {
+		for (const type of ["dragEnter", "dragOver", "drop"] as const) {
+			await executeCDPCommand(
+				electronProcess,
+				target.id,
+				"Input.dispatchDragEvent",
+				{ type, x: to.x, y: to.y, data: dragData },
+			);
+		}
+	} catch {
+		/* Older targets have no Input.dispatchDragEvent. The DOM events below still deliver dataTransfer. */
+	}
+	html5 = Boolean(
+		await evalValue(
+			electronProcess,
+			target.id,
+			`(() => {
+				const from = document.querySelector(${JSON.stringify(fromSelector)});
+				const to = document.querySelector(${JSON.stringify(toSelector)});
+				if (!from || !to || typeof DataTransfer === "undefined" || typeof DragEvent === "undefined") return false;
+				const dt = new DataTransfer();
+				dt.setData("text/plain", ${JSON.stringify(payload)});
+				dt.effectAllowed = "copy";
+				const fire = (el, type) => el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
+				fire(from, "dragstart");
+				fire(to, "dragenter");
+				fire(to, "dragover");
+				fire(to, "drop");
+				fire(from, "dragend");
+				return true;
+			})()`,
+		),
+	);
 	return {
 		targetId: target.id,
 		fromSelector,
 		toSelector,
 		from,
 		to,
+		data: payload,
+		html5,
 	};
 }
 

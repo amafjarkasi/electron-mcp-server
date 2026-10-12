@@ -573,17 +573,22 @@ async function main() {
 
     const dragResult = await client.request("tools/call", {
       name: "drag",
-      arguments: { processId, fromSelector: "#drag-source", toSelector: "#drag-target" },
+      arguments: {
+        processId,
+        fromSelector: "#drag-source",
+        toSelector: "#drag-target",
+        data: "drag-payload",
+      },
     });
     assert(!dragResult.isError, `drag error: ${dragResult.content?.[0]?.text}`);
     const dropped = await client.request("tools/call", {
       name: "evaluate",
-      arguments: { processId, expression: "window.__FIXTURE__.dropped === true" },
+      arguments: { processId, expression: "window.__FIXTURE__.dropText" },
     });
     assert(!dropped.isError, `drag evaluate error: ${dropped.content?.[0]?.text}`);
     assert(
-      parseToolText(dropped)?.result?.result?.value === true,
-      `drag did not land on the target: ${dropped.content?.[0]?.text}`,
+      parseToolText(dropped)?.result?.result?.value === "drag-payload",
+      `drop did not receive dataTransfer: ${dropped.content?.[0]?.text}`,
     );
     pass("drag");
 
@@ -1265,6 +1270,19 @@ async function main() {
     assert(!getClip.isError, `get_clipboard: ${getClip.content?.[0]?.text}`);
     const clip = parseToolText(getClip);
     assert(clip.text === clipText, `clipboard mismatch: ${JSON.stringify(clip)}`);
+    const png =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    const setImage = await client.request("tools/call", {
+      name: "set_clipboard",
+      arguments: { processId, imageDataUrl: png },
+    });
+    assert(!setImage.isError, `set_clipboard image: ${setImage.content?.[0]?.text}`);
+    const imageClip = parseToolText(setImage);
+    assert(
+      typeof imageClip.imageDataUrl === "string" &&
+        imageClip.imageDataUrl.startsWith("data:image/png"),
+      `clipboard image missing: ${JSON.stringify(imageClip).slice(0, 180)}`,
+    );
     pass("clipboard");
 
     const downloadDir = path.join(smokeOutDir, "downloads");
@@ -1319,8 +1337,8 @@ async function main() {
     assert(!perm.isError, `set_permission: ${perm.content?.[0]?.text}`);
     const decision = parseToolText(perm);
     assert(
-      decision.grants?.notifications === true && decision.sessions >= 1,
-      `permission handler was not installed: ${JSON.stringify(decision)}`,
+      decision.grants?.notifications === true && decision.checked === "granted",
+      `page did not see notifications granted: ${JSON.stringify(decision)}`,
     );
     pass("set_permission");
     } finally {

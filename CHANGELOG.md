@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.9.4
+
+### Fixes
+- **`set_permission`** also calls `Browser.grantPermissions` and returns the page permission state as `checked`.
+- **`set_clipboard` / `get_clipboard`** read and write a PNG via `imageDataUrl`, in addition to text.
+- **`drag`** sends an HTML5 drag with `text/plain` on `dataTransfer`, so a `drop` listener receives the payload.
+
 ## 1.9.3
 
 ### Docs

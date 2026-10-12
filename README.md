@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.9.3-0F766E?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-1.9.4-0F766E?style=flat-square" />
   <img alt="84 tools" src="https://img.shields.io/badge/84_tools-0F766E?style=flat-square" />
   <img alt="7 resources" src="https://img.shields.io/badge/7_resources-115E59?style=flat-square" />
   <img alt="6 prompts" src="https://img.shields.io/badge/6_prompts-134E4A?style=flat-square" />
@@ -60,6 +60,7 @@ Full history, including 1.6 and 1.5, is in [`CHANGELOG.md` on GitHub](https://gi
 
 | Version | What landed |
 | --- | --- |
+| 1.9.4 | `set_permission` is visible to the page as granted. Clipboard reads and writes PNG. `drag` delivers `dataTransfer`. |
 | 1.9.3 | Transparent logo, and a See / Drive / Inspect header so the npm page is not a bare list. |
 | 1.9.2 | Changelog section on the README, linked to this file on GitHub. |
 | 1.9.1 | README layout fix for the npm page: no empty table rows. |
@@ -202,7 +203,7 @@ Page targets keep console, network, and audit events buffered between calls.
 | `click` | Click the center of a CSS selector. |
 | `hover` | Move the pointer over a selector. Does not click. |
 | `scroll` | Wheel the page or an element. A selector and no deltas scrolls it into view. |
-| `drag` | Press on one selector, move to another, and release. |
+| `drag` | Press, move, and release. Also delivers `text/plain` on `dataTransfer` so HTML5 `drop` listeners see the payload. |
 | `click_ax` | Click by accessibility name and optional role. |
 | `type_text` | Insert text. Optional focus, clear, and Enter. |
 | `type_ax` | Focus by accessibility name, then insert text. |
@@ -225,7 +226,7 @@ Page targets keep console, network, and audit events buffered between calls.
 | `get_logs` | Process stdout and stderr. |
 | `get_cookies` / `set_cookie` | Read or write cookies. `file://` pages usually need an explicit `http(s)` url or domain. |
 | `delete_cookie` | Remove a cookie by name. Same url or domain rules as `set_cookie`. |
-| `get_clipboard` / `set_clipboard` | OS clipboard text. Needs `inspectMain`. |
+| `get_clipboard` / `set_clipboard` | OS clipboard text and PNG (`imageDataUrl`). Needs `inspectMain`. |
 | `get_storage` / `set_storage` | `localStorage` or `sessionStorage`. |
 | `clear_buffers` | Drop console, network, logs, ipc, and audit buffers. |
 
@@ -267,7 +268,7 @@ Page targets keep console, network, and audit events buffered between calls.
 | --- | --- |
 | `ipc_tap` / `get_ipc_log` | Record IPC in the main process, then read it. Needs `inspectMain`. |
 | `focus_window` | Show and focus a window. `windowId` comes from `webcontents_topology`. `show: false` skips showing a hidden window. Needs `inspectMain`. |
-| `set_permission` | Allow or deny a permission prompt (`notifications`, `media`, `geolocation`, and others) on every session. Unlisted permissions are denied after this is installed. Needs `inspectMain`. |
+| `set_permission` | Allow or deny a permission prompt and grant it in the page (`checked: "granted"`). Unlisted permissions are denied after this is installed. Needs `inspectMain`. |
 | `cdp_command` | Any DevTools `Domain.method` the wrappers above do not cover. |
 
 ## Prompts

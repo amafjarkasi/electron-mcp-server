@@ -44,6 +44,16 @@
       target.addEventListener("mouseup", () => {
         if (dragging) window.__FIXTURE__.dropped = true;
       });
+      target.addEventListener("dragover", (event) => {
+        event.preventDefault();
+      });
+      target.addEventListener("drop", (event) => {
+        event.preventDefault();
+        window.__FIXTURE__.dropped = true;
+        window.__FIXTURE__.dropText = event.dataTransfer
+          ? event.dataTransfer.getData("text/plain")
+          : "";
+      });
     </script>
   </body>
 </html>
