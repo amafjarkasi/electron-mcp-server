@@ -1,19 +1,22 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Electron Debug MCP" width="128" height="128" />
+  <img src="assets/logo.png" alt="Electron Debug MCP" width="180" height="180" />
 </p>
 
 <h1 align="center">Electron Debug MCP</h1>
 
 <p align="center">
-  Launch or attach to an Electron app and let an agent see the window, drive it, and read DevTools.
+  <b>Eyes, hands, and DevTools for Electron apps.</b><br/>
+  An MCP server your agent uses to launch or attach, see the window, and drive it.
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.9.2-0F766E?style=flat-square" />
-  <img alt="84 tools" src="https://img.shields.io/badge/84_tools-47848F?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-1.9.3-0F766E?style=flat-square" />
+  <img alt="84 tools" src="https://img.shields.io/badge/84_tools-0F766E?style=flat-square" />
+  <img alt="7 resources" src="https://img.shields.io/badge/7_resources-115E59?style=flat-square" />
+  <img alt="6 prompts" src="https://img.shields.io/badge/6_prompts-134E4A?style=flat-square" />
   <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D18-339933?style=flat-square&logo=nodedotjs&logoColor=white" />
-  <img alt="Electron" src="https://img.shields.io/badge/Electron-CDP-2B2E3A?style=flat-square&logo=electron&logoColor=white" />
-  <img alt="license" src="https://img.shields.io/badge/license-ISC-F59E0B?style=flat-square" />
+  <img alt="Electron" src="https://img.shields.io/badge/Electron-CDP-47848F?style=flat-square&logo=electron&logoColor=white" />
+  <img alt="license" src="https://img.shields.io/badge/license-ISC-F5A623?style=flat-square" />
 </p>
 
 <p align="center">
@@ -28,13 +31,37 @@ An agent that can only read your repo cannot see an Electron window. This server
 
 You add it to Cursor or Claude and ask in normal language. The client shows the agent every tool and its arguments. This page is the map of what those tools are for.
 
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <b>See</b><br/>
+      <code>vision</code> screenshot, errors, and failed requests in one call.<br/>
+      <code>snapshot</code> accessibility tree when CSS is the wrong handle.<br/>
+      <code>diff_screenshot</code> compare the window to a PNG baseline.
+    </td>
+    <td width="33%" valign="top">
+      <b>Drive</b><br/>
+      <code>click</code> <code>hover</code> <code>scroll</code> <code>drag</code><br/>
+      <code>click_ax</code> <code>type_ax</code> by accessible name.<br/>
+      <code>assert_ui</code> returns pass or fail, not a crashed tool.
+    </td>
+    <td width="33%" valign="top">
+      <b>Inspect</b><br/>
+      Console, network, HAR, trace, CPU profile, heap, coverage.<br/>
+      Main process, IPC, clipboard, downloads, permissions.<br/>
+      <code>cdp_command</code> for any DevTools method not wrapped above.
+    </td>
+  </tr>
+</table>
+
 ## Changelog
 
 Full history, including 1.6 and 1.5, is in [`CHANGELOG.md` on GitHub](https://github.com/amafjarkasi/electron-mcp-server/blob/master/CHANGELOG.md). The same file ships in the npm package.
 
 | Version | What landed |
 | --- | --- |
-| 1.9.2 | This README. Headed tool sections, logo, and the release table below, so npm and GitHub show the same notes. |
+| 1.9.3 | Transparent logo, and a See / Drive / Inspect header so the npm page is not a bare list. |
+| 1.9.2 | Changelog section on the README, linked to this file on GitHub. |
 | 1.9.1 | README layout fix for the npm page: no empty table rows. |
 | 1.9.0 | `delete_cookie`, `hover`, `scroll`, `drag`, `focus_window`, clipboard, `get_downloads`, `set_permission`. 84 tools. Prompts start from `vision` and `assert_ui`. |
 | 1.8.0 | `click_ax` / `type_ax`, network stub, HAR, `assert_ui`, dialogs, deep links. |

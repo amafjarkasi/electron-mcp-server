@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.3
+
+### Docs
+- Replaced `assets/logo.png`. The old file had a checkerboard painted into the pixels. The new mark is a transparent PNG rendered from `assets/logo.svg`.
+- README header is a logo, badge row, and a See / Drive / Inspect board. Tool lists stay in headed tables so npm does not drop rows.
+
 ## 1.9.2
 
 ### Docs
