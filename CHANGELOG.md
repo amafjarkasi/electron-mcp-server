@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.0
+
+### Features
+- **`emulate_network`** — offline, latency, and download/upload throughput. `clear` restores a normal network.
+- **`select_option`** — choose a `<select>` option by value or visible label.
+- **`set_window_bounds`** — move or resize a `BrowserWindow` (`inspectMain`). Omitted fields stay unchanged. Does not show a hidden window.
+- **`print_pdf`** — write the page to a PDF via `Page.printToPDF`.
+- Surface: **88 tools · 7 resources · 6 prompts**.
+
 ## 1.9.4
 
 ### Fixes

@@ -3336,3 +3336,165 @@ function cdpPermissionNames(permission: string): string[] {
 			return [];
 	}
 }
+
+export async function emulateNetwork(
+	electronProcess: ElectronProcess,
+	options: {
+		offline?: boolean;
+		latencyMs?: number;
+		downloadThroughput?: number;
+		uploadThroughput?: number;
+		clear?: boolean;
+		targetId?: string;
+	} = {},
+): Promise<{ targetId: string; offline: boolean; latencyMs: number }> {
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, options.targetId);
+	await cdpTimed(electronProcess, target.id, "Network.enable", {});
+	const offline = options.clear ? false : Boolean(options.offline);
+	const latencyMs = options.clear ? 0 : Math.max(0, options.latencyMs ?? 0);
+	const downloadThroughput = options.clear ? -1 : (options.downloadThroughput ?? -1);
+	const uploadThroughput = options.clear ? -1 : (options.uploadThroughput ?? -1);
+	await cdpTimed(electronProcess, target.id, "Network.emulateNetworkConditions", {
+		offline,
+		latency: latencyMs,
+		downloadThroughput,
+		uploadThroughput,
+	});
+	return { targetId: target.id, offline, latencyMs };
+}
+
+export async function selectOption(
+	electronProcess: ElectronProcess,
+	options: { selector: string; value?: string; label?: string; targetId?: string },
+): Promise<{ targetId: string; value: string; label: string }> {
+	if (!options.value && !options.label) {
+		throw new Error("select_option needs value or label");
+	}
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, options.targetId);
+	const result = (await cdpTimed(electronProcess, target.id, "Runtime.evaluate", {
+		expression: `(() => {
+			const el = document.querySelector(${JSON.stringify(options.selector)});
+			if (!el || String(el.tagName).toUpperCase() !== "SELECT") {
+				return { ok: false, error: "Selector is not a <select>" };
+			}
+			const wantValue = ${JSON.stringify(options.value ?? "")};
+			const wantLabel = ${JSON.stringify(options.label ?? "")};
+			const option = [...el.options].find((item) =>
+				(wantValue && item.value === wantValue) ||
+				(wantLabel && (item.label === wantLabel || item.text === wantLabel))
+			);
+			if (!option) return { ok: false, error: "No matching option" };
+			el.value = option.value;
+			el.dispatchEvent(new Event("input", { bubbles: true }));
+			el.dispatchEvent(new Event("change", { bubbles: true }));
+			return { ok: true, value: el.value, label: option.label || option.text };
+		})()`,
+		returnByValue: true,
+	})) as { result?: { value?: { ok?: boolean; error?: string; value?: string; label?: string } } };
+	const value = result.result?.value;
+	if (!value?.ok || value.value == null) {
+		throw new Error(value?.error || "select_option failed");
+	}
+	return { targetId: target.id, value: value.value, label: value.label || "" };
+}
+
+export async function setWindowBounds(
+	electronProcess: ElectronProcess,
+	options: { windowId?: number; x?: number; y?: number; width?: number; height?: number },
+): Promise<Record<string, unknown>> {
+	const expression = `(() => {
+		try {
+			const electron = (${LOAD_ELECTRON})();
+			const { BrowserWindow } = electron;
+			const want = ${options.windowId == null ? "null" : JSON.stringify(options.windowId)};
+			const wins = BrowserWindow.getAllWindows().filter((w) => w && !w.isDestroyed());
+			const win = want == null ? wins[0] : BrowserWindow.fromId(want);
+			if (!win || win.isDestroyed()) {
+				return { ok: false, error: "No matching BrowserWindow", windowCount: wins.length };
+			}
+			const next = win.getBounds();
+			const patch = ${JSON.stringify({
+				x: options.x,
+				y: options.y,
+				width: options.width,
+				height: options.height,
+			})};
+			for (const key of ["x", "y", "width", "height"]) {
+				if (typeof patch[key] === "number") next[key] = patch[key];
+			}
+			win.setBounds(next);
+			return { ok: true, id: win.id, bounds: win.getBounds() };
+		} catch (err) {
+			return { ok: false, error: err && err.message ? err.message : String(err) };
+		}
+	})()`;
+	const value = await evalMainOk(electronProcess, expression, "set_window_bounds");
+	return { processId: electronProcess.id, ...value };
+}
+
+export async function printPdf(
+	electronProcess: ElectronProcess,
+	options: { path?: string; landscape?: boolean; printBackground?: boolean; targetId?: string } = {},
+): Promise<{ processId: string; targetId: string; path: string; bytes: number }> {
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, options.targetId);
+	let data: string | undefined;
+	try {
+		await cdpTimed(electronProcess, target.id, "Page.enable", {});
+		const result = (await cdpTimed(
+			electronProcess,
+			target.id,
+			"Page.printToPDF",
+			{
+				landscape: Boolean(options.landscape),
+				printBackground: options.printBackground !== false,
+			},
+			60_000,
+		)) as { data?: string };
+		data = result.data;
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		if (!/wasn't found|not found/i.test(message)) throw err;
+		data = await printPdfFromMain(electronProcess, options);
+	}
+	if (!data) throw new Error("printToPDF returned no data");
+	const out =
+		options.path?.trim() ||
+		path.join(os.tmpdir(), `electron-mcp-page-${electronProcess.id}-${Date.now()}.pdf`);
+	const resolved = validateOutputPath(out);
+	fs.mkdirSync(path.dirname(resolved), { recursive: true });
+	const bytes = Buffer.from(data, "base64");
+	if (bytes.length < 5 || bytes.subarray(0, 5).toString() !== "%PDF-") {
+		throw new Error("Page.printToPDF did not return a PDF");
+	}
+	fs.writeFileSync(resolved, bytes);
+	return { processId: electronProcess.id, targetId: target.id, path: resolved, bytes: bytes.length };
+}
+
+async function printPdfFromMain(
+	electronProcess: ElectronProcess,
+	options: { landscape?: boolean; printBackground?: boolean },
+): Promise<string> {
+	const expression = `(async () => {
+		try {
+			const electron = (${LOAD_ELECTRON})();
+			const { BrowserWindow } = electron;
+			const win = BrowserWindow.getAllWindows().find((w) => w && !w.isDestroyed() && w.webContents);
+			if (!win) return { ok: false, error: "No BrowserWindow. start_app with inspectMain: true." };
+			const buf = await win.webContents.printToPDF({
+				landscape: ${options.landscape ? "true" : "false"},
+				printBackground: ${options.printBackground === false ? "false" : "true"},
+			});
+			return { ok: true, data: Buffer.from(buf).toString("base64") };
+		} catch (err) {
+			return { ok: false, error: err && err.message ? err.message : String(err) };
+		}
+	})()`;
+	const value = await evalMainOk(electronProcess, expression, "print_pdf");
+	if (typeof value.data !== "string" || !value.data) {
+		throw new Error("printToPDF returned no data");
+	}
+	return value.data;
+}

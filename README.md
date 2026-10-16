@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.9.4-0F766E?style=flat-square" />
-  <img alt="84 tools" src="https://img.shields.io/badge/84_tools-0F766E?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-1.10.0-0F766E?style=flat-square" />
+  <img alt="88 tools" src="https://img.shields.io/badge/88_tools-0F766E?style=flat-square" />
   <img alt="7 resources" src="https://img.shields.io/badge/7_resources-115E59?style=flat-square" />
   <img alt="6 prompts" src="https://img.shields.io/badge/6_prompts-134E4A?style=flat-square" />
   <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D18-339933?style=flat-square&logo=nodedotjs&logoColor=white" />
@@ -60,11 +60,12 @@ Full history, including 1.6 and 1.5, is in [`CHANGELOG.md` on GitHub](https://gi
 
 | Version | What landed |
 | --- | --- |
+| 1.10.0 | `emulate_network`, `select_option`, `set_window_bounds`, and `print_pdf`. 88 tools. |
 | 1.9.4 | `set_permission` is visible to the page as granted. Clipboard reads and writes PNG. `drag` delivers `dataTransfer`. |
 | 1.9.3 | Transparent logo, and a See / Drive / Inspect header so the npm page is not a bare list. |
 | 1.9.2 | Changelog section on the README, linked to this file on GitHub. |
 | 1.9.1 | README layout fix for the npm page: no empty table rows. |
-| 1.9.0 | `delete_cookie`, `hover`, `scroll`, `drag`, `focus_window`, clipboard, `get_downloads`, `set_permission`. 84 tools. Prompts start from `vision` and `assert_ui`. |
+| 1.9.0 | `delete_cookie`, `hover`, `scroll`, `drag`, `focus_window`, clipboard, `get_downloads`, `set_permission`. Prompts start from `vision` and `assert_ui`. |
 | 1.8.0 | `click_ax` / `type_ax`, network stub, HAR, `assert_ui`, dialogs, deep links. |
 | 1.7.0 | Coverage, file input, emulation, screencast, breakpoints, MHTML, virtual clock, window topology. |
 | 1.6.0 | `vision`, `snapshot`, response bodies, CPU profile, heap snapshot, IPC tap, screenshot diff. |
@@ -132,7 +133,7 @@ The reply includes an id, usually `electron-…`. Later calls pass that id as `p
 
 `stop_app` kills a process this server started. On an attached session it only detaches. Either way the session leaves `list_apps`.
 
-Pass `inspectMain: true` when the bug is in the main process. That opens a separate `--inspect` port. These tools need it: `evaluate_main`, `main_state`, `ipc_tap`, `get_ipc_log`, `webcontents_topology`, `open_deep_link`, `focus_window`, `get_clipboard`, `set_clipboard`, `get_downloads`, `set_permission`.
+Pass `inspectMain: true` when the bug is in the main process. That opens a separate `--inspect` port. These tools need it: `evaluate_main`, `main_state`, `ipc_tap`, `get_ipc_log`, `webcontents_topology`, `open_deep_link`, `focus_window`, `set_window_bounds`, `get_clipboard`, `set_clipboard`, `get_downloads`, `set_permission`.
 
 Page targets keep console, network, and audit events buffered between calls.
 
@@ -204,6 +205,7 @@ Page targets keep console, network, and audit events buffered between calls.
 | `hover` | Move the pointer over a selector. Does not click. |
 | `scroll` | Wheel the page or an element. A selector and no deltas scrolls it into view. |
 | `drag` | Press, move, and release. Also delivers `text/plain` on `dataTransfer` so HTML5 `drop` listeners see the payload. |
+| `select_option` | Choose a `<select>` option by value or visible label. |
 | `click_ax` | Click by accessibility name and optional role. |
 | `type_text` | Insert text. Optional focus, clear, and Enter. |
 | `type_ax` | Focus by accessibility name, then insert text. |
@@ -243,6 +245,7 @@ Page targets keep console, network, and audit events buffered between calls.
 | `clear_network_stubs` | Turn request interception off. |
 | `wait_network_idle` | Wait until nothing is in flight and the log has been quiet. |
 | `get_downloads` | Save downloads from every webContents session and return `savePath`. Call it before the download, or pass `url` to start one. Needs `inspectMain`. |
+| `emulate_network` | Go offline, or add latency and cap throughput. `clear` restores a normal network. |
 
 ### Profile
 
@@ -259,6 +262,7 @@ Page targets keep console, network, and audit events buffered between calls.
 | `virtual_clock` | Pause or advance virtual time. |
 | `start_screencast` / `stop_screencast` | Bounded frame buffer. Stop can write the last frame. |
 | `capture_mhtml` | Save the page as MHTML. |
+| `print_pdf` | Write the page to a PDF. Uses `Page.printToPDF`, or `webContents.printToPDF` when that method is missing. |
 | `set_breakpoint` / `remove_breakpoint` | Break on a script URL and line. |
 | `resolve_stack` | Map stack frames to source snippets. |
 
@@ -268,6 +272,7 @@ Page targets keep console, network, and audit events buffered between calls.
 | --- | --- |
 | `ipc_tap` / `get_ipc_log` | Record IPC in the main process, then read it. Needs `inspectMain`. |
 | `focus_window` | Show and focus a window. `windowId` comes from `webcontents_topology`. `show: false` skips showing a hidden window. Needs `inspectMain`. |
+| `set_window_bounds` | Move or resize a window. Omitted fields stay as they are. Does not show a hidden window. Needs `inspectMain`. |
 | `set_permission` | Allow or deny a permission prompt and grant it in the page (`checked: "granted"`). Unlisted permissions are denied after this is installed. Needs `inspectMain`. |
 | `cdp_command` | Any DevTools `Domain.method` the wrappers above do not cover. |
 
@@ -322,7 +327,7 @@ This is a local debugger. It can start binaries, evaluate JavaScript, and read p
 | `Electron failed to install correctly` | `npm run ensure-electron`, or `scripts/fix-electron.cmd` on Windows. |
 | `allowScripts` warning | Expected on newer npm. Run the ensure script. |
 | Terminal hangs on `node build/index.js` | The process is waiting for an MCP client. Configure Cursor or Claude to spawn it. |
-| Main-process tools fail | Restart with `inspectMain: true`. That covers `evaluate_main`, `main_state`, `ipc_tap`, `get_ipc_log`, `webcontents_topology`, `open_deep_link`, `focus_window`, clipboard, `get_downloads`, and `set_permission`. |
+| Main-process tools fail | Restart with `inspectMain: true`. That covers `evaluate_main`, `main_state`, `ipc_tap`, `get_ipc_log`, `webcontents_topology`, `open_deep_link`, `focus_window`, `set_window_bounds`, clipboard, `get_downloads`, and `set_permission`. |
 | Screenshot fails after `pause` | Call `resume`. It disables the debugger. |
 | `set_cookie` fails on `file://` | Pass an `http(s)` `url` or `domain`. |
 | `wait_for` or `click` cannot find the node | Wait for it, then screenshot. |
