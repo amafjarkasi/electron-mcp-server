@@ -332,6 +332,10 @@ async function main() {
       "scroll",
       "drag",
       "set_permission",
+      "emulate_network",
+      "select_option",
+      "set_window_bounds",
+      "print_pdf",
     ];
     const tools = await client.request("tools/list");
     const names = new Set((tools.tools ?? []).map((t) => t.name));
@@ -1341,6 +1345,59 @@ async function main() {
       `page did not see notifications granted: ${JSON.stringify(decision)}`,
     );
     pass("set_permission");
+
+    const selected = await client.request("tools/call", {
+      name: "select_option",
+      arguments: { processId, selector: "#color", label: "Blue" },
+    });
+    assert(!selected.isError, `select_option: ${selected.content?.[0]?.text}`);
+    const selectedValue = parseToolText(selected);
+    assert(selectedValue.value === "blue", `select_option value: ${JSON.stringify(selectedValue)}`);
+    pass("select_option");
+
+    const offline = await client.request("tools/call", {
+      name: "emulate_network",
+      arguments: { processId, offline: true },
+    });
+    assert(!offline.isError, `emulate_network: ${offline.content?.[0]?.text}`);
+    const onlineState = await client.request("tools/call", {
+      name: "evaluate",
+      arguments: { processId, expression: "navigator.onLine" },
+    });
+    assert(
+      parseToolText(onlineState)?.result?.result?.value === false,
+      `navigator.onLine stayed true: ${onlineState.content?.[0]?.text}`,
+    );
+    const online = await client.request("tools/call", {
+      name: "emulate_network",
+      arguments: { processId, clear: true },
+    });
+    assert(!online.isError, `emulate_network clear: ${online.content?.[0]?.text}`);
+    pass("emulate_network");
+
+    const bounds = await client.request("tools/call", {
+      name: "set_window_bounds",
+      arguments: { processId, width: 720, height: 480 },
+    });
+    assert(!bounds.isError, `set_window_bounds: ${bounds.content?.[0]?.text}`);
+    const sized = parseToolText(bounds);
+    assert(
+      Math.abs((sized.bounds?.width ?? 0) - 720) <= 16 &&
+        Math.abs((sized.bounds?.height ?? 0) - 480) <= 16,
+      `bounds mismatch: ${JSON.stringify(sized.bounds)}`,
+    );
+    pass("set_window_bounds");
+
+    const pdfPath = path.join(smokeOutDir, "page.pdf");
+    const pdf = await client.request("tools/call", {
+      name: "print_pdf",
+      arguments: { processId, path: pdfPath },
+    });
+    assert(!pdf.isError, `print_pdf: ${pdf.content?.[0]?.text}`);
+    const pdfFile = parseToolText(pdf);
+    const pdfBytes = fs.readFileSync(pdfFile.path || pdfPath);
+    assert(pdfBytes.subarray(0, 5).toString() === "%PDF-", "print_pdf did not write a PDF");
+    pass("print_pdf");
     } finally {
       await new Promise((resolve) => downloadServer.close(resolve));
     }

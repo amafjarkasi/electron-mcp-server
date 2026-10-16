@@ -62,6 +62,7 @@ import {
 	clickByAx,
 	diffScreenshot,
 	emulate,
+	emulateNetwork,
 	enableIpcTap,
 	exportHar,
 	findInstalledElectronApps,
@@ -79,13 +80,16 @@ import {
 	highlightSelector,
 	networkStub,
 	openDeepLink,
+	printPdf,
 	removeBreakpoint,
 	readClipboard,
 	resolveStack,
+	selectOption,
 	runPerfAudit,
 	setBreakpointByUrl,
 	setExtraHeaders,
 	setPermission,
+	setWindowBounds,
 	setFileInput,
 	setVirtualClock,
 	startCoverage,
@@ -200,7 +204,8 @@ const server = new McpServer(
 			"vision is the one-shot look (screenshot, page, console errors, network failures). snapshot is the accessibility tree. Use click_ax/type_ax when you have an accessible name; use CSS click/hover/drag/scroll/type_text otherwise.",
 			"assert_ui returns pass:false with per-check detail. That is a failed check, not a tool error.",
 			"For a failed request use get_network_log, then get_response_body with a finished requestId. network_stub fulfills or fails a urlPattern (* wildcard). export_har has no bodies.",
-			"inspectMain on start_app opens a pinned --inspect port. These tools need it: evaluate_main, main_state, ipc_tap, get_ipc_log, webcontents_topology, open_deep_link, focus_window, get_clipboard, set_clipboard, get_downloads, set_permission.",
+			"inspectMain on start_app opens a pinned --inspect port. These tools need it: evaluate_main, main_state, ipc_tap, get_ipc_log, webcontents_topology, open_deep_link, focus_window, set_window_bounds, get_clipboard, set_clipboard, get_downloads, set_permission.",
+			"emulate_network sets offline, latency, and throughput. select_option sets a <select> by value or label. print_pdf writes the page to a PDF.",
 			"get_downloads must be called before the download (or pass url to start one). It returns savePath. delete_cookie removes a cookie set with set_cookie. file:// pages need an http(s) url or domain for cookies.",
 			"screenshot/save_screenshot accept selector to clip an element. resume after pause or later screenshots fail. stop_app kills an owned app and only detaches an attached one, then drops the processId.",
 			"Read electron://server for package version, uptime, and capability counts without calling a tool.",
@@ -257,7 +262,7 @@ server.tool(
 			.boolean()
 			.optional()
 			.describe(
-				"If true, open a pinned --inspect port for main-process tools: evaluate_main, main_state, ipc_tap, get_ipc_log, webcontents_topology, open_deep_link, focus_window, get_clipboard, set_clipboard, get_downloads, set_permission",
+				"If true, open a pinned --inspect port for main-process tools: evaluate_main, main_state, ipc_tap, get_ipc_log, webcontents_topology, open_deep_link, focus_window, set_window_bounds, get_clipboard, set_clipboard, get_downloads, set_permission",
 			),
 	},
 	async ({ appPath, debugPort, extraArgs, inspectMain }) => {
@@ -2610,6 +2615,98 @@ server.tool(
 	},
 );
 
+server.tool(
+	"emulate_network",
+	"Set the page offline, or slow it with latency and throughput in bytes per second. clear:true restores a normal network. Does not change viewport, user agent, geolocation, or media; use emulate for those.",
+	{
+		processId: z.string(),
+		offline: z.boolean().optional().describe("true makes navigator.onLine false and fails fetches"),
+		latencyMs: z.number().nonnegative().optional().describe("Added round-trip latency in milliseconds"),
+		downloadThroughput: z.number().optional().describe("Max download bytes/sec. -1 means unlimited"),
+		uploadThroughput: z.number().optional().describe("Max upload bytes/sec. -1 means unlimited"),
+		clear: z.boolean().optional(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, offline, latencyMs, downloadThroughput, uploadThroughput, clear, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(
+				await emulateNetwork(proc, {
+					offline,
+					latencyMs,
+					downloadThroughput,
+					uploadThroughput,
+					clear,
+					targetId,
+				}),
+			);
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"select_option",
+	"Choose an option in a <select> by value or visible label, then fire input and change.",
+	{
+		processId: z.string(),
+		selector: z.string(),
+		value: z.string().optional().describe("Option value attribute"),
+		label: z.string().optional().describe("Visible option label"),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, selector, value, label, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await selectOption(proc, { selector, value, label, targetId }));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"set_window_bounds",
+	"Move or resize a BrowserWindow. Omit a field to leave it unchanged. Requires inspectMain. Does not show a hidden window.",
+	{
+		processId: z.string(),
+		windowId: z.number().int().optional().describe("BrowserWindow.id from webcontents_topology"),
+		x: z.number().optional(),
+		y: z.number().optional(),
+		width: z.number().int().positive().optional(),
+		height: z.number().int().positive().optional(),
+	},
+	async ({ processId, windowId, x, y, width, height }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await setWindowBounds(proc, { windowId, x, y, width, height }));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
+server.tool(
+	"print_pdf",
+	"Write the page to a PDF. Uses Page.printToPDF, and falls back to webContents.printToPDF when that method is missing (needs inspectMain). printBackground defaults to true.",
+	{
+		processId: z.string(),
+		path: z.string().optional(),
+		landscape: z.boolean().optional(),
+		printBackground: z.boolean().optional(),
+		targetId: z.string().optional(),
+	},
+	async ({ processId, path: filePath, landscape, printBackground, targetId }) => {
+		try {
+			const proc = requireRunningProcess(processId);
+			return textResult(await printPdf(proc, { path: filePath, landscape, printBackground, targetId }));
+		} catch (err) {
+			return textResult(err instanceof Error ? err.message : String(err), true);
+		}
+	},
+);
+
 // --- Prompts ---
 
 server.prompt(
@@ -2813,7 +2910,7 @@ server.resource(
 						consoleLiveLogging: isConsoleLiveLoggingEnabled(),
 						capabilities: {
 							tools:
-								"see tools/list (84 tools: lifecycle, inspect, hover, scroll, drag, permissions, clipboard, downloads, vision/snapshot, a11y act, network stub, profiling, coverage, emulate, screencast, IPC, audits…)",
+								"see tools/list (88 tools: lifecycle, inspect, hover, scroll, drag, select, permissions, clipboard, downloads, network emulation, pdf, vision/snapshot, a11y act, network stub, profiling, coverage, emulate, screencast, IPC, audits…)",
 							prompts: [
 								"debug_blank_window",
 								"find_renderer_exception",
