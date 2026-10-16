@@ -18,6 +18,7 @@ import {
 	getPageInfo,
 	getProcess,
 	pickPageTarget,
+	pickTargetByRole,
 	pushCapped,
 	registerProcessCleanup,
 	listTargetsByRole,
@@ -26,6 +27,7 @@ import {
 	validateOutputPath,
 	withTimeout,
 } from "./process-manager.js";
+import CDP from "chrome-remote-interface";
 import { log } from "./log.js";
 
 const MAX_IPC = 500;
@@ -3006,26 +3008,51 @@ export async function focusWindow(
 	return { processId: electronProcess.id, ...value };
 }
 
-function clipboardExpression(writeText?: string): string {
-	const write = writeText == null ? "null" : JSON.stringify(writeText);
+function clipboardExpression(write?: {
+	text?: string;
+	imageDataUrl?: string;
+}): string {
+	const text = write?.text == null ? "null" : JSON.stringify(write.text);
+	const image = write?.imageDataUrl == null ? "null" : JSON.stringify(write.imageDataUrl);
 	return `(() => {
 		try {
 			let clipboard = null;
-			try { clipboard = require("electron").clipboard; } catch (err) { /* inspect context */ }
+			let nativeImage = null;
+			try {
+				const electron = require("electron");
+				clipboard = electron.clipboard;
+				nativeImage = electron.nativeImage;
+			} catch (err) { /* inspect context */ }
 			if (!clipboard || typeof clipboard.readText !== "function") {
 				try {
 					const binding = process._linkedBinding("electron_common_clipboard");
 					clipboard = binding && (binding.clipboard || binding);
 				} catch (err) { /* */ }
 			}
+			if (!nativeImage || typeof nativeImage.createFromDataURL !== "function") {
+				try {
+					const binding = process._linkedBinding("electron_common_native_image");
+					nativeImage = binding && (binding.nativeImage || binding);
+				} catch (err) { /* */ }
+			}
 			if (!clipboard || typeof clipboard.readText !== "function") {
 				return { ok: false, error: "Electron clipboard is unavailable. start_app with inspectMain: true." };
 			}
-			const next = ${write};
-			if (typeof next === "string") {
-				clipboard.writeText(next);
+			const nextText = ${text};
+			const nextImage = ${image};
+			if (typeof nextText === "string") clipboard.writeText(nextText);
+			if (typeof nextImage === "string") {
+				if (!nativeImage) return { ok: false, error: "Electron nativeImage is unavailable." };
+				clipboard.writeImage(nativeImage.createFromDataURL(nextImage));
 			}
-			return { ok: true, text: clipboard.readText() };
+			let imageDataUrl = "";
+			try {
+				if (typeof clipboard.readImage === "function") {
+					const image = clipboard.readImage();
+					if (image && !image.isEmpty()) imageDataUrl = image.toDataURL();
+				}
+			} catch (err) { /* no image on the clipboard */ }
+			return { ok: true, text: clipboard.readText(), imageDataUrl };
 		} catch (err) {
 			return { ok: false, error: err && err.message ? err.message : String(err) };
 		}
@@ -3045,11 +3072,14 @@ export async function readClipboard(
 
 export async function writeClipboard(
 	electronProcess: ElectronProcess,
-	text: string,
+	write: { text?: string; imageDataUrl?: string },
 ): Promise<Record<string, unknown>> {
+	if (write.text == null && write.imageDataUrl == null) {
+		throw new Error("set_clipboard needs text or imageDataUrl");
+	}
 	const value = await evalMainOk(
 		electronProcess,
-		clipboardExpression(text),
+		clipboardExpression(write),
 		"set_clipboard",
 	);
 	return { processId: electronProcess.id, ...value };
@@ -3242,5 +3272,67 @@ export async function setPermission(
 		}
 	})()`;
 	const value = await evalMainOk(electronProcess, expression, "set_permission");
+	const cdpNames = cdpPermissionNames(permission);
+	if (options.grant && cdpNames.length) {
+		try {
+			if (!electronProcess.debugPort) {
+				throw new Error("Process has no DevTools port");
+			}
+			await grantBrowserPermissions(electronProcess.debugPort, cdpNames);
+			value.cdpGranted = cdpNames;
+			await updateCDPTargets(electronProcess);
+			const page = pickPageTarget(electronProcess);
+			const queryName = permission === "media" ? "camera" : permission;
+			const queried = (await executeCDPCommand(
+				electronProcess,
+				page.id,
+				"Runtime.evaluate",
+				{
+					expression: `(() => { try { return ${JSON.stringify(queryName)} === "notifications" ? Notification.permission : "skip"; } catch (err) { return "err:" + (err && err.message); } })()`,
+					returnByValue: true,
+				},
+				4_000,
+			)) as { result?: { value?: unknown } };
+			value.checked = queried.result?.value ?? null;
+		} catch (err) {
+			value.cdpGrantError = err instanceof Error ? err.message : String(err);
+		}
+	}
 	return { processId: electronProcess.id, ...value };
+}
+
+async function grantBrowserPermissions(
+	port: number,
+	permissions: string[],
+): Promise<void> {
+	const version = (await fetch(`http://127.0.0.1:${port}/json/version`).then(
+		(response) => response.json(),
+	)) as { webSocketDebuggerUrl?: string };
+	if (!version.webSocketDebuggerUrl) {
+		throw new Error("DevTools browser websocket is missing");
+	}
+	const client = await CDP({ target: version.webSocketDebuggerUrl });
+	try {
+		await client.send("Browser.grantPermissions", { permissions });
+	} finally {
+		await client.close();
+	}
+}
+
+function cdpPermissionNames(permission: string): string[] {
+	switch (permission) {
+		case "notifications":
+			return ["notifications"];
+		case "geolocation":
+			return ["geolocation"];
+		case "media":
+			return ["audioCapture", "videoCapture"];
+		case "midi":
+			return ["midi"];
+		case "clipboard-read":
+		case "clipboard-sanitized-write":
+			return ["clipboardReadWrite"];
+		default:
+			return [];
+	}
 }

@@ -1241,17 +1241,18 @@ server.tool(
 
 server.tool(
 	"drag",
-	"Press on fromSelector, move to toSelector, and release. Use for drag-and-drop and sliders that follow the pointer.",
+	"Press on fromSelector, move to toSelector, and release. Also sends an HTML5 drag with text/plain dataTransfer so drop listeners receive the payload. Pass data to override the source text.",
 	{
 		processId: z.string(),
 		fromSelector: z.string(),
 		toSelector: z.string(),
+		data: z.string().optional().describe("text/plain payload. Defaults to the source element's text."),
 		targetId: z.string().optional(),
 	},
-	async ({ processId, fromSelector, toSelector, targetId }) => {
+	async ({ processId, fromSelector, toSelector, data, targetId }) => {
 		try {
 			const proc = requireRunningProcess(processId);
-			const result = await dragSelector(proc, fromSelector, toSelector, targetId);
+			const result = await dragSelector(proc, fromSelector, toSelector, targetId, data);
 			return textResult({ processId, ...result });
 		} catch (err) {
 			return textResult(err instanceof Error ? err.message : String(err), true);
@@ -2528,7 +2529,7 @@ server.tool(
 
 server.tool(
 	"get_clipboard",
-	"Read the OS clipboard as text. Requires inspectMain.",
+	"Read the OS clipboard. Returns text and, when present, imageDataUrl (PNG). Requires inspectMain.",
 	{ processId: z.string() },
 	async ({ processId }) => {
 		try {
@@ -2542,15 +2543,19 @@ server.tool(
 
 server.tool(
 	"set_clipboard",
-	"Write text to the OS clipboard. Requires inspectMain.",
+	"Write the OS clipboard. Pass text, imageDataUrl (a data:image/... URL), or both. Requires inspectMain.",
 	{
 		processId: z.string(),
-		text: z.string(),
+		text: z.string().optional(),
+		imageDataUrl: z
+			.string()
+			.optional()
+			.describe("data:image/png;base64,... or another image data URL"),
 	},
-	async ({ processId, text }) => {
+	async ({ processId, text, imageDataUrl }) => {
 		try {
 			const proc = requireRunningProcess(processId);
-			return textResult(await writeClipboard(proc, text));
+			return textResult(await writeClipboard(proc, { text, imageDataUrl }));
 		} catch (err) {
 			return textResult(err instanceof Error ? err.message : String(err), true);
 		}
@@ -2583,7 +2588,7 @@ server.tool(
 
 server.tool(
 	"set_permission",
-	"Answer Electron permission prompts for this app. Requires inspectMain. Installs a handler on every webContents session. Listed permissions use grant; anything not listed is denied after the handler is installed.",
+	"Allow or deny an Electron permission and grant it to the page via Browser.grantPermissions. Returns checked, the page's Notification.permission or equivalent. Requires inspectMain. Unlisted permissions are denied after the handler is installed.",
 	{
 		processId: z.string(),
 		permission: z
