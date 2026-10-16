@@ -355,7 +355,7 @@ That builds, runs unit tests, and runs the MCP smoke test against `fixtures/mini
 | `npm run doctor` | Build, then call `doctor` and read `electron://server`. |
 | `npm run pack:check` | `npm pack --dry-run`. |
 
-`src/index.ts` registers tools, prompts, and resources. `src/process-manager.ts` owns sessions and DevTools. `src/power-tools.ts` holds the higher-level helpers. Logs go to stderr so stdout stays clean for JSON-RPC.
+`src/index.ts` wires the server and the stdio transport. `src/tools/` registers each group: connect, page, network, profile, main, prompts, and resources. `src/process-manager.ts` owns sessions and DevTools. `src/power-tools.ts` holds the higher-level helpers. Logs go to stderr so stdout stays clean for JSON-RPC.
 
 The npm package contains `build/`, `assets/`, this README, `LICENSE`, and `CHANGELOG.md`.
 
