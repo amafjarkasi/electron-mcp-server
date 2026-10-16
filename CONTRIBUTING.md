@@ -26,7 +26,7 @@ On Linux headless: ensure `DISPLAY` (or use Xvfb) and `ELECTRON_MCP_NO_SANDBOX=1
 
 1. Keep **stdout MCP-clean** — log only to stderr (`src/log.ts`).
 2. Prefer small, focused PRs; add smoke coverage when adding a tool.
-3. After changing tools, resources, or prompts, update the tool description and Zod `.describe()` text in `src/index.ts`, the tool table in `README.md`, and `CHANGELOG.md`. The model reads the schemas from `tools/list` once the server is connected.
+3. After changing tools, resources, or prompts, update the tool description and Zod `.describe()` text in `src/tools/`, the tool table in `README.md`, and `CHANGELOG.md`. The model reads the schemas from `tools/list` once the server is connected.
 4. Path writes go through `validateOutputPath`; session teardown must call `forgetProcess` / delete from the managed map.
 5. Do not commit `build/smoke-*` artifacts (smoke writes to OS temp).
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Internal
+- Tool, prompt, and resource registration moved out of `src/index.ts` into `src/tools/` (`connect`, `page`, `network`, `profile`, `main`, `prompts`, `resources`). Sessions and DevTools stay in `src/process-manager.ts`. Higher-level helpers stay in `src/power-tools.ts`.
+
 ## 1.10.0
 
 ### Features
