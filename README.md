@@ -20,9 +20,10 @@
 <p align="center">
   <a href="#-quick-start"><b>Quick Start</b></a> •
   <a href="#-key-superpowers"><b>Superpowers</b></a> •
-  <a href="#-tool-matrix-96-tools"><b>Tool Matrix</b></a> •
+  <a href="#-tool-matrix-106-tools"><b>Tool Matrix</b></a> •
   <a href="#-agent-recipes"><b>Recipes</b></a> •
   <a href="#-resources--prompts"><b>Resources & Prompts</b></a> •
+  <a href="#-changelog--releases"><b>Changelog</b></a> •
   <a href="#-troubleshooting"><b>Troubleshooting</b></a>
 </p>
 
@@ -393,7 +394,44 @@ Execute complex, multi-action automations server-side in a single MCP roundtrip 
 #### Capabilities & Options
 
 | Feature | Syntax / Option | Purpose |
-| 
+| --- | --- | --- |
+| **Variables & Context** | `{{vars.key}}` | Reference values from the script's `vars` object with preserved primitive types (strings, numbers, booleans, objects). |
+| **Step Dependencies** | `{{steps.id.result.path}}` | Pass outputs, IDs, or tokens computed in earlier steps directly into subsequent tool arguments. |
+| **Environment & Secrets** | `{{env.KEY}}` · `{{secret:KEY}}` | Inject process environment variables; secrets are automatically masked in logs, console events, and outputs as `[REDACTED]`. |
+| **Conditional Branching** | `if: "{{steps.check.result.open}} == true"` | Skips step execution unless condition evaluates to true (`==`, `!=`, `<`, `>`, `&&`, `||`). |
+| **Expectation Assertions** | `expect: { contains, equals, status, js }` | Validates step outcome; custom `js` expressions evaluate against `result` to verify app invariants. |
+| **Automatic Retries** | `retry: { retries: 3, delayMs: 250 }` | Automatically retries flaky operations with exponential backoff before failing. |
+| **Failure Diagnostics** | *Automated* | If a step fails, captures viewport screenshot artifact (`electron://artifact/{id}`), console errors, and network errors. |
+| **Playwright Codegen** | `exportAs: "playwright"` | Generates a standalone, runnable Playwright `_electron` test script (`.spec.ts`) reflecting the executed sequence. |
+
+<details>
+<summary><b>View Generated Playwright Codegen Output</b></summary>
+
+```typescript
+import { test, expect, _electron as electron } from "@playwright/test";
+
+test("executed script workflow", async () => {
+  const electronApp = await electron.launch({ args: ["."] });
+  const window = await electronApp.firstWindow();
+
+  // Step: authenticate
+  await window.locator("input#token").fill(process.env.APP_API_TOKEN || "");
+
+  // Step: switch_workspace
+  await window.locator("button.workspace-switch").click();
+
+  // Step: dismiss_banner
+  await window.locator(".promo-modal .close-btn").click();
+
+  // Step: verify_workspace_state
+  const evalResult = await window.evaluate("({ active: document.querySelector('#current-ws').textContent.trim(), count: document.querySelectorAll('.item').length })");
+  expect(evalResult).toBeDefined();
+
+  await electronApp.close();
+});
+```
+</details>
+
 ### 6. Ref Locators & Set-of-Marks Visual Prompting
 Inspect accessibility targets with compact refs (`e1`, `e2`) and drive interactions without fragile CSS selectors:
 ```json
@@ -471,43 +509,19 @@ Save full session state (cookies, localStorage, sessionStorage) into Playwright-
 }
 ```
 
---- | --- | --- |
-| **Variables & Context** | `{{vars.key}}` | Reference values from the script's `vars` object with preserved primitive types (strings, numbers, booleans, objects). |
-| **Step Dependencies** | `{{steps.id.result.path}}` | Pass outputs, IDs, or tokens computed in earlier steps directly into subsequent tool arguments. |
-| **Environment & Secrets** | `{{env.KEY}}` · `{{secret:KEY}}` | Inject process environment variables; secrets are automatically masked in logs, console events, and outputs as `[REDACTED]`. |
-| **Conditional Branching** | `if: "{{steps.check.result.open}} == true"` | Skips step execution unless condition evaluates to true (`==`, `!=`, `<`, `>`, `&&`, `||`). |
-| **Expectation Assertions** | `expect: { contains, equals, status, js }` | Validates step outcome; custom `js` expressions evaluate against `result` to verify app invariants. |
-| **Automatic Retries** | `retry: { retries: 3, delayMs: 250 }` | Automatically retries flaky operations with exponential backoff before failing. |
-| **Failure Diagnostics** | *Automated* | If a step fails, captures viewport screenshot artifact (`electron://artifact/{id}`), console errors, and network errors. |
-| **Playwright Codegen** | `exportAs: "playwright"` | Generates a standalone, runnable Playwright `_electron` test script (`.spec.ts`) reflecting the executed sequence. |
+---
 
-<details>
-<summary><b>View Generated Playwright Codegen Output</b></summary>
+## 📋 Changelog & Releases
 
-```typescript
-import { test, expect, _electron as electron } from "@playwright/test";
+| Version | Release Highlights | Test Suite |
+| :--- | :--- | :--- |
+| **v1.14.0** | **Ref Locators & Set-of-Marks** (`ref: "e1"`, `markElements: true`), **Native Electron API Mocking** (`mock_electron_api`, `get_mock_calls`, `restore_electron_mocks`), **Native Application Menu Driver** (`get_application_menu`, `click_menu_item`, `trigger_shortcut`), **Process Health Watchdog** (`get_process_health`), **Storage State Save & Load** (`save_storage_state`, `load_storage_state`). **106 tools**. | 135 unit · 106 smoke |
+| **v1.13.0** | **Server-Side Workflow Engine & Codegen** (`run_script` with context variables, conditional branching, expectation assertions, retries, failure diagnostics, and Playwright test codegen). **97 tools**. | 130 unit · 97 smoke |
+| **v1.12.0** | **Runtime Security Audit** (`electron_security_audit`), **Zero-Leak Secret Redaction** (`{{secret:VAR}}`), **IPC Schema Inference** (`ipc_schema_inference`), **Memory Leak Hunter** (`leak_check`), **Source Maps** (`resolve_stack`), **Composite Workflows** (`act_and_verify`, `triage`, `network_failure_report`, `perf_snapshot`). **96 tools**. | 125 unit · 96 smoke |
+| **v1.11.0** | **Tool Annotations** (`readOnlyHint`, `destructiveHint`), **Optional `processId`**, **Artifacts System** (`electron://artifacts`), **Network Log Filtering**, **DOM Guard**, `llms.txt`. **88 tools**. | 120 unit · 88 smoke |
 
-test("executed script workflow", async () => {
-  const electronApp = await electron.launch({ args: ["."] });
-  const window = await electronApp.firstWindow();
-
-  // Step: authenticate
-  await window.locator("input#token").fill(process.env.APP_API_TOKEN || "");
-
-  // Step: switch_workspace
-  await window.locator("button.workspace-switch").click();
-
-  // Step: dismiss_banner
-  await window.locator(".promo-modal .close-btn").click();
-
-  // Step: verify_workspace_state
-  const evalResult = await window.evaluate("({ active: document.querySelector('#current-ws').textContent.trim(), count: document.querySelectorAll('.item').length })");
-  expect(evalResult).toBeDefined();
-
-  await electronApp.close();
-});
-```
-</details>
+> [!TIP]
+> Complete historical release notes, API migration notes, and dependency updates are tracked in [**`CHANGELOG.md`**](./CHANGELOG.md).
 
 ---
 
@@ -526,7 +540,7 @@ test("executed script workflow", async () => {
 ## 📜 Development & Verification
 
 ```bash
-npm test            # Run build, 125 unit tests, and full 96-tool smoke suite
+npm test            # Run build, 135 unit tests, and full 106-tool smoke suite
 npm run doctor      # Verify environment health and port binding
 npm run sync:readme # Automatically synchronize badge counts with registered tools
 ```
