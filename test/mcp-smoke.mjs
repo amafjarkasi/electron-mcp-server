@@ -344,6 +344,7 @@ async function main() {
       "leak_check",
       "act_and_verify",
       "triage",
+      "run_script",
     ];
     const tools = await client.request("tools/list");
     const names = new Set((tools.tools ?? []).map((t) => t.name));
@@ -1826,6 +1827,39 @@ async function main() {
       assert(!logs.content?.[0]?.text.includes("sk_live_smoke_secret_99999"), "secret leaked in logs");
       delete process.env.SMOKE_API_KEY_SECRET;
       pass("secret placeholders & redaction");
+    }
+
+    {
+      // 9. run_script (meta workflow)
+      const scriptRes = await client.request("tools/call", {
+        name: "run_script",
+        arguments: {
+          processId,
+          script: [
+            {
+              name: "Get Page Info",
+              tool: "page_info",
+              assign: "page",
+              expect: { status: "success" },
+            },
+            {
+              name: "Evaluate Title",
+              tool: "evaluate",
+              args: { expression: "document.title" },
+              assign: "title",
+              expect: { status: "success" },
+            },
+          ],
+          exportAs: "playwright",
+        },
+      });
+      assert(!scriptRes.isError, `run_script error: ${scriptRes.content?.[0]?.text}`);
+      const scriptParsed = parseToolText(scriptRes);
+      assert(scriptParsed.success === true, "expected script to succeed");
+      assert(scriptParsed.totalSteps === 2, "expected 2 total steps");
+      assert(scriptParsed.passedSteps === 2, "expected 2 passed steps");
+      assert(scriptParsed.exportedCode.includes('test("automated electron workflow'));
+      pass("run_script (meta workflow + codegen)");
     }
 
     }

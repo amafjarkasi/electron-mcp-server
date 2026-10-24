@@ -9,7 +9,7 @@
 
 <p align="center">
   <img alt="version" src="https://img.shields.io/badge/version-1.12.0-0F766E?style=flat-square" />
-  <img alt="96 tools" src="https://img.shields.io/badge/96_tools-0F766E?style=flat-square" />
+  <img alt="97 tools" src="https://img.shields.io/badge/97_tools-0F766E?style=flat-square" />
   <img alt="9 resources" src="https://img.shields.io/badge/9_resources-115E59?style=flat-square" />
   <img alt="6 prompts" src="https://img.shields.io/badge/6_prompts-134E4A?style=flat-square" />
   <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D20-339933?style=flat-square&logo=nodedotjs&logoColor=white" />
@@ -246,9 +246,10 @@ All tools accept an optional `processId`. When only one app is running, it autom
 | `print_pdf` | Render the page to a PDF document artifact. |
 | `capture_mhtml` | Save the page DOM, stylesheets, and images into an MHTML archive artifact. |
 
-### 🩺 Meta & Diagnostics (10)
+### 🩺 Meta & Diagnostics (11)
 | Tool | Description |
 | --- | --- |
+| `run_script` | **Composite:** Server-side workflow engine with templating (`{{vars}}`, `{{steps[id].result}}`), conditional branching (`if`), step retries, assertions, failure diagnostics, and Playwright codegen. |
 | `triage` | **Composite:** One-shot diagnosis aggregating page state, console errors, network failures, audit issues, log tails, and resolved exception stacks. |
 | `doctor` | Verify environment health, Node/Electron binaries, and test ephemeral port binding. |
 | `diagnose` | Health check across all active sessions, target counts, and buffer sizes. |
@@ -325,6 +326,38 @@ Returns checklist score (0–100), letter grade (A–F), and actionable remediat
 { "name": "ipc_schema_inference", "arguments": {} }
 ```
 Generates ready-to-use TypeScript definitions for your preload APIs directly from observed runtime communication.
+
+### 5. Multi-Step Script Execution & Playwright Codegen
+```json
+{
+  "name": "run_script",
+  "arguments": {
+    "vars": { "searchQuery": "antigravity" },
+    "steps": [
+      {
+        "id": "input_query",
+        "tool": "type_text",
+        "args": { "selector": "input#search", "text": "{{vars.searchQuery}}" }
+      },
+      {
+        "id": "submit_click",
+        "tool": "click",
+        "args": { "selector": "button#submit" },
+        "expect": { "status": "success" }
+      },
+      {
+        "id": "assert_results",
+        "tool": "eval_js",
+        "args": { "expression": "document.querySelector('#results').textContent" },
+        "expect": { "contains": "antigravity" }
+      }
+    ],
+    "exportAs": "playwright"
+  }
+}
+```
+> [!TIP]
+> Runs all steps on the server with deterministic speed, resolves runtime context, auto-captures diagnostics on failure, and compiles the sequence into ready-to-run Playwright `_electron` tests.
 
 ---
 

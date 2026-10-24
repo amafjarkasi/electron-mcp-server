@@ -7,6 +7,7 @@ import { registerPageTools } from "../build/tools/page.js";
 import { registerNetworkTools } from "../build/tools/network.js";
 import { registerProfileTools } from "../build/tools/profile.js";
 import { registerMainTools } from "../build/tools/main.js";
+import { registerScriptTools } from "../build/tools/script.js";
 import { registerPrompts } from "../build/tools/prompts.js";
 import { registerResources } from "../build/tools/resources.js";
 
@@ -16,6 +17,7 @@ registerPageTools(server);
 registerNetworkTools(server);
 registerProfileTools(server);
 registerMainTools(server);
+registerScriptTools(server);
 registerPrompts(server);
 registerResources(server);
 

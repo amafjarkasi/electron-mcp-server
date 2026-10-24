@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+import {
+  interpolateVariables,
+  evaluateCondition,
+  evaluateExpectation,
+  generatePlaywrightCode,
+  runScriptEngine,
+} from "../build/script-runner.js";
 /**
  * Unit tests for pure helpers in process-manager (no Electron GUI required).
  *
@@ -1656,4 +1663,185 @@ test("inferIpcSchemas extracts channel statistics and TypeScript declarations", 
   assert.deepEqual(result.channels["get-profile"].inferredArgTypes, ["number", "Record<string, unknown>"]);
   assert.ok(result.typescriptDeclarations.includes('"get-profile"'));
   assert.ok(result.typescriptDeclarations.includes('"window-minimize"'));
+});
+
+// ===========================================================================
+// Advanced Script Runner & Workflow Engine Tests
+// ===========================================================================
+
+test("interpolateVariables handles types, nested paths, steps, env and secrets", () => {
+  process.env.TEST_SECRET_TOKEN = "secret-pass-999";
+  process.env.TEST_HOST_ENV = "api.internal";
+
+  const ctx = {
+    vars: {
+      user: { id: 101, active: true },
+      settings: { timeout: 5000 },
+    },
+    steps: [
+      {
+        index: 0,
+        tool: "start_app",
+        args: {},
+        status: "passed",
+        durationMs: 50,
+        result: { processId: "electron-test-proc-1" },
+      },
+    ],
+    env: process.env,
+  };
+
+  const capturedSecrets = [];
+  const input = {
+    userId: "{{vars.user.id}}",
+    isActive: "{{vars.user.active}}",
+    proc: "{{steps[0].result.processId}}",
+    secret: "{{secret:TEST_SECRET_TOKEN}}",
+    endpoint: "https://{{env.TEST_HOST_ENV}}/v1/users/{{vars.user.id}}",
+  };
+
+  const output = interpolateVariables(input, ctx, (s) => capturedSecrets.push(s));
+  assert.equal(output.userId, 101); // Preserves number type
+  assert.equal(output.isActive, true); // Preserves boolean type
+  assert.equal(output.proc, "electron-test-proc-1");
+  assert.equal(output.secret, "secret-pass-999");
+  assert.equal(output.endpoint, "https://api.internal/v1/users/101");
+  assert.deepEqual(capturedSecrets, ["secret-pass-999"]);
+
+  delete process.env.TEST_SECRET_TOKEN;
+  delete process.env.TEST_HOST_ENV;
+});
+
+test("evaluateCondition evaluates boolean strings, templates, and predicates", () => {
+  const ctx = {
+    vars: { isReady: true, count: 5, status: "ok" },
+    steps: [],
+  };
+
+  assert.equal(evaluateCondition("true", ctx), true);
+  assert.equal(evaluateCondition("false", ctx), false);
+  assert.equal(evaluateCondition("{{vars.isReady}}", ctx), true);
+  assert.equal(evaluateCondition("vars.count > 3", ctx), true);
+  assert.equal(evaluateCondition("vars.count === 10", ctx), false);
+  assert.equal(evaluateCondition("vars.status === 'ok'", ctx), true);
+  assert.equal(evaluateCondition("invalid syntax !!@@##", ctx), false);
+});
+
+test("evaluateExpectation validates status, contains, equals, and JS expressions", () => {
+  // Status check
+  assert.equal(evaluateExpectation({ status: "success" }, { ok: true }, false).pass, true);
+  assert.equal(evaluateExpectation({ status: "success" }, "error occurred", true).pass, false);
+
+  // Contains check
+  assert.equal(evaluateExpectation({ contains: "Welcome" }, { message: "Welcome back!" }, false).pass, true);
+  assert.equal(evaluateExpectation({ contains: "Admin" }, { message: "Welcome user" }, false).pass, false);
+
+  // Equals path check
+  assert.equal(evaluateExpectation({ equals: { path: "data.id", value: 42 } }, { data: { id: 42 } }, false).pass, true);
+  assert.equal(evaluateExpectation({ equals: { path: "data.id", value: 99 } }, { data: { id: 42 } }, false).pass, false);
+
+  // JS expression
+  assert.equal(evaluateExpectation({ js: "result.items.length === 2" }, { items: [1, 2] }, false).pass, true);
+  assert.equal(evaluateExpectation({ js: "result.items.length === 5" }, { items: [1, 2] }, false).pass, false);
+});
+
+test("generatePlaywrightCode transforms steps into executable Playwright test", () => {
+  const steps = [
+    { tool: "navigate", args: { url: "https://example.test" } },
+    { tool: "wait_for", args: { selector: "#login-button" } },
+    { tool: "click_ax", args: { name: "Sign In", role: "button" } },
+    { tool: "type_text", args: { selector: "#username", text: "admin", clear: true } },
+    { tool: "assert_ui", args: { selector: "#dashboard", textIncludes: "Dashboard" } },
+    { tool: "save_screenshot", args: { path: "evidence.png" } },
+  ];
+
+  const code = generatePlaywrightCode(steps, "./dist/main.js");
+  assert.ok(code.includes('import { test, expect, _electron as electron } from "@playwright/test";'));
+  assert.ok(code.includes('await page.goto("https://example.test");'));
+  assert.ok(code.includes('await page.locator("#login-button").waitFor({ state: "visible" });'));
+  assert.ok(code.includes('await page.getByRole("button", { name: "Sign In" }).click();'));
+  assert.ok(code.includes('await page.locator("#username").fill("admin");'));
+  assert.ok(code.includes('await expect(page.locator("#dashboard")).toBeVisible();'));
+  assert.ok(code.includes('await expect(page.locator("body")).toContainText("Dashboard");'));
+  assert.ok(code.includes('await page.screenshot({ path: "evidence.png" });'));
+});
+
+test("runScriptEngine executes mock steps with assignment, conditionals and retry", async () => {
+  const mockServer = {
+    _registeredTools: {
+      get_auth_token: {
+        callback: async () => ({
+          content: [{ type: "text", text: JSON.stringify({ token: "jwt-xyz-123", role: "admin" }) }],
+        }),
+      },
+      fetch_user_profile: {
+        callback: async (args) => {
+          if (args.token !== "jwt-xyz-123") {
+            return { isError: true, content: [{ type: "text", text: "Invalid auth" }] };
+          }
+          return {
+            content: [{ type: "text", text: JSON.stringify({ userId: 101, username: "admin_user" }) }],
+          };
+        },
+      },
+      skip_me: {
+        callback: async () => ({
+          content: [{ type: "text", text: "should not run" }],
+        }),
+      },
+      retry_success: {
+        callback: (() => {
+          let attempts = 0;
+          return async () => {
+            attempts++;
+            if (attempts < 2) {
+              return { isError: true, content: [{ type: "text", text: "transient network blip" }] };
+            }
+            return { content: [{ type: "text", text: JSON.stringify({ ok: true, attempts }) }] };
+          };
+        })(),
+      },
+    },
+  };
+
+  const script = [
+    {
+      name: "Get Token",
+      tool: "get_auth_token",
+      assign: "auth",
+      expect: { status: "success" },
+    },
+    {
+      name: "Fetch Profile",
+      tool: "fetch_user_profile",
+      args: { token: "{{vars.auth.token}}" },
+      assign: "profile",
+      expect: { equals: { path: "username", value: "admin_user" } },
+    },
+    {
+      name: "Conditional Skip",
+      tool: "skip_me",
+      if: "vars.auth.role === 'guest'",
+    },
+    {
+      name: "Transient Retry Step",
+      tool: "retry_success",
+      retry: { maxAttempts: 3, delayMs: 10 },
+      expect: { status: "success" },
+    },
+  ];
+
+  const report = await runScriptEngine(mockServer, {
+    script,
+    exportAs: "playwright",
+  });
+
+  assert.equal(report.success, true);
+  assert.equal(report.totalSteps, 4);
+  assert.equal(report.passedSteps, 3);
+  assert.equal(report.skippedSteps, 1);
+  assert.equal(report.failedSteps, 0);
+  assert.equal(report.vars.auth.token, "jwt-xyz-123");
+  assert.equal(report.vars.profile.userId, 101);
+  assert.ok(report.exportedCode.includes('test("automated electron workflow'));
 });

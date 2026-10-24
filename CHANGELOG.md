@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.13.0
+
+### Features & Workflow Automation
+- **`run_script` (Server-Side Workflow Engine & Codegen)** — execute structured multi-step automation scripts in a single roundtrip with zero client latency:
+  - **Variable Interpolation & Context**: Pass dynamic variables (`{{vars.key}}`), reference previous step results (`{{steps[stepId].result.path}}`), access environment variables (`{{env.KEY}}`), and inject masked secrets (`{{secret:KEY}}`) with exact type preservation for primitives, booleans, numbers, and nested objects.
+  - **Conditional Branching**: Execute steps conditionally via `if` expressions supporting truthiness, equality (`==`, `!=`), comparisons (`>`, `<`, `>=`, `<=`), and logical operators (`&&`, `||`).
+  - **Expectation Assertions**: Validate steps with `expect: { status, contains, equals, js }`. Custom JS expressions evaluate directly against `result` to verify app invariants.
+  - **Execution Resilience**: Per-step retry configuration (`retries`, `delayMs`) with exponential backoff for flaky UI transitions or async state convergence.
+  - **Automatic Failure Diagnostics**: On step assertion failure or unhandled tool error, automatically captures a viewport screenshot artifact (`electron://artifact/{id}`) and extracts recent console errors and failed network requests.
+  - **Playwright Test Codegen**: Set `exportAs: "playwright"` to compile executed workflows into standalone, ready-to-run Playwright `_electron` test specifications (`.spec.ts`) with selector locators, input actions, and assertions.
+- Surface: **97 tools · 9 resources · 6 prompts**.
+
 ## 1.12.0
 
 ### Features & Composite Workflows

@@ -12,6 +12,7 @@ import { registerMainTools } from "./tools/main.js";
 import { registerNetworkTools } from "./tools/network.js";
 import { registerPageTools } from "./tools/page.js";
 import { registerProfileTools } from "./tools/profile.js";
+import { registerScriptTools } from "./tools/script.js";
 import { registerPrompts } from "./tools/prompts.js";
 import { registerResources } from "./tools/resources.js";
 
@@ -90,6 +91,7 @@ registerPageTools(server);
 registerNetworkTools(server);
 registerProfileTools(server);
 registerMainTools(server);
+registerScriptTools(server);
 registerPrompts(server);
 registerResources(server);
 
