@@ -1,0 +1,12 @@
+{
+  "name": "Reading time",
+  "description": "Tiny MV3 content-script fixture",
+  "version": "1.0",
+  "manifest_version": 3,
+  "content_scripts": [
+    {
+      "js": ["content.js"],
+      "matches": ["https://developer.chrome.com/*"]
+    }
+  ]
+}

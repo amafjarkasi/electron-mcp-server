@@ -1,0 +1,30 @@
+{
+  "name": "crx-re",
+  "private": true,
+  "type": "module",
+  "description": "CLI AI agent that unpacks Chrome extensions into a readable inventory",
+  "bin": {
+    "crx-re": "cli/index.ts"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "dev": "agent-sdk dev",
+    "crx-re": "tsx cli/index.ts",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "@grok/agent-sdk": "^0.2.29",
+    "citty": "^0.1.6",
+    "tsx": "^4.23.15",
+    "yauzl": "^3.4.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@types/yauzl": "^2.10.3",
+    "typescript": "6.0.3"
+  }
+}
