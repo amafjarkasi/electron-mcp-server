@@ -2,6 +2,7 @@ import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/serv
 import { z } from "zod";
 import { SERVER_VERSION, startedAt } from "../server-info.js";
 import { log } from "../log.js";
+import { getArtifact, listArtifacts, readArtifactContent } from "../artifacts.js";
 import {
 	getAllProcesses,
 	getElectronDebugInfo,
@@ -54,6 +55,8 @@ export function registerResources(server: McpServer) {
 									"electron://logs/{id}",
 									"electron://console/{id}",
 									"electron://cdp/{processId}/{targetId}",
+									"electron://artifacts",
+									"electron://artifact/{id}",
 								],
 							},
 						},
@@ -274,6 +277,57 @@ export function registerResources(server: McpServer) {
 						),
 					},
 				],
+			};
+		},
+	);
+
+	server.resource(
+		"artifacts",
+		"electron://artifacts",
+		{
+			description:
+				"List of all exported artifacts (screenshots, traces, heapsnapshots, HARs, PDFs)",
+			mimeType: "application/json",
+		},
+		async (uri) => ({
+			contents: [
+				{
+					uri: uri.href,
+					mimeType: "application/json",
+					text: JSON.stringify({ artifacts: listArtifacts() }, null, 2),
+				},
+			],
+		}),
+	);
+
+	server.resource(
+		"artifact",
+		new ResourceTemplate("electron://artifact/{id}", {
+			list: async () => ({
+				resources: listArtifacts().map((art) => ({
+					uri: `electron://artifact/${art.id}`,
+					name: `Artifact: ${art.type} (${art.processId})`,
+					description: `Exported ${art.type} file from ${art.filePath}`,
+					mimeType: art.mimeType,
+				})),
+			}),
+		}),
+		{
+			description: "Read an exported artifact by its artifact ID",
+			mimeType: "application/octet-stream",
+		},
+		async (uri, { id }) => {
+			const entry = getArtifact(String(id));
+			if (!entry) {
+				throw new Error(`Artifact not found: ${id}`);
+			}
+			const content = await readArtifactContent(entry);
+			const item =
+				content.blob !== undefined
+					? { uri: uri.href, mimeType: content.mimeType, blob: content.blob }
+					: { uri: uri.href, mimeType: content.mimeType, text: content.text ?? "" };
+			return {
+				contents: [item],
 			};
 		},
 	);

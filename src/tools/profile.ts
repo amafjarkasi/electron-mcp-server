@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { textResult, requireRunningProcess } from "../tool-helpers.js";
+import { registerTool, textResult, withProcess, requireRunningProcess } from "../tool-helpers.js";
+import { registerArtifact } from "../artifacts.js";
 import {
 	startTracing,
 	stopTracing,
@@ -28,309 +29,364 @@ import {
 } from "../power-tools.js";
 
 export function registerProfileTools(server: McpServer) {
-	server.tool(
+	registerTool(
+		server,
 		"start_tracing",
-		"Start Chrome DevTools Protocol performance tracing (pair with stop_tracing)",
 		{
-			processId: z.string(),
-			categories: z
-				.string()
-				.optional()
-				.describe(
-					"Comma-separated CDP trace categories (default: timeline + v8)",
-				),
-			targetId: z.string().optional(),
+			description:
+				"Start Chrome DevTools Protocol performance tracing (pair with stop_tracing)",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				categories: z
+					.string()
+					.optional()
+					.describe(
+						"Comma-separated CDP trace categories (default: timeline + v8)",
+					),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false },
 		},
-		async ({ processId, categories, targetId }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				const result = await startTracing(proc, { categories, targetId });
-				return textResult(result);
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
-			}
-		},
+		withProcess(async (proc, { categories, targetId }) => {
+			return await startTracing(proc, { categories, targetId });
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"stop_tracing",
-		"Stop CDP tracing and write a JSON trace file (open in chrome://tracing)",
 		{
-			processId: z.string(),
-			path: z
-				.string()
-				.optional()
-				.describe("Output file path (default: OS temp dir)"),
+			description:
+				"Stop CDP tracing and write a JSON trace file (open in chrome://tracing)",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				path: z
+					.string()
+					.optional()
+					.describe("Output file path (default: OS temp dir)"),
+			},
+			annotations: { readOnlyHint: false, idempotentHint: true },
 		},
-		async ({ processId, path: filePath }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				const result = await stopTracing(proc, filePath);
-				return textResult(result);
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
+		withProcess(async (proc, { path: filePath }) => {
+			const result = await stopTracing(proc, filePath);
+			if (result && typeof result === "object" && "path" in result && (result as any).path) {
+				const art = registerArtifact(proc.id, "trace", (result as any).path);
+				return { ...result, artifactUri: `electron://artifact/${art.id}` };
 			}
-		},
+			return result;
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"get_performance_metrics",
-		"Renderer Performance.getMetrics (JS heap, layout count, task duration, …)",
 		{
-			processId: z.string(),
-			targetId: z.string().optional(),
+			description:
+				"Renderer Performance.getMetrics (JS heap, layout count, task duration, …)",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				targetId: z.string().optional(),
+			},
+			annotations: { readOnlyHint: true },
 		},
-		async ({ processId, targetId }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				const result = await getPerformanceMetrics(proc, targetId);
-				return textResult({ processId, ...result });
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
-			}
-		},
+		withProcess(async (proc, { targetId }) => {
+			const result = await getPerformanceMetrics(proc, targetId);
+			return { processId: proc.id, ...result };
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"start_cpu_profile",
-		"Start V8 CPU profiler on a page target (pair with stop_cpu_profile)",
 		{
-			processId: z.string(),
-			targetId: z.string().optional(),
+			description:
+				"Start V8 CPU profiler on a page target (pair with stop_cpu_profile)",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false },
 		},
-		async ({ processId, targetId }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(await startCpuProfile(proc, targetId));
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
-			}
-		},
+		withProcess(async (proc, { targetId }) => {
+			return await startCpuProfile(proc, targetId);
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"stop_cpu_profile",
-		"Stop CPU profiler and write a .cpuprofile JSON file",
 		{
-			processId: z.string(),
-			path: z.string().optional().describe("Output path (default: OS temp)"),
+			description:
+				"Stop CPU profiler and write a .cpuprofile JSON file",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				path: z.string().optional().describe("Output path (default: OS temp)"),
+			},
+			annotations: { readOnlyHint: false, idempotentHint: true },
 		},
-		async ({ processId, path: filePath }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(await stopCpuProfile(proc, filePath));
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
+		withProcess(async (proc, { path: filePath }) => {
+			const result = await stopCpuProfile(proc, filePath);
+			if (result?.path) {
+				const art = registerArtifact(proc.id, "cpuprofile", result.path);
+				return { ...result, artifactUri: `electron://artifact/${art.id}` };
 			}
-		},
+			return result;
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"heap_snapshot",
-		"Take a V8 heap snapshot (.heapsnapshot) for leak investigation",
 		{
-			processId: z.string(),
-			path: z.string().optional(),
-			targetId: z.string().optional(),
+			description:
+				"Take a V8 heap snapshot (.heapsnapshot) for leak investigation",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				path: z.string().optional(),
+				targetId: z.string().optional(),
+			},
+			annotations: { readOnlyHint: false, idempotentHint: true },
 		},
-		async ({ processId, path: filePath, targetId }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(await takeHeapSnapshot(proc, filePath, targetId));
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
+		withProcess(async (proc, { path: filePath, targetId }) => {
+			const result = await takeHeapSnapshot(proc, filePath, targetId);
+			if (result?.path) {
+				const art = registerArtifact(proc.id, "heapsnapshot", result.path);
+				return { ...result, artifactUri: `electron://artifact/${art.id}` };
 			}
-		},
+			return result;
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"diff_screenshot",
-		"Capture (or compare) a screenshot against a baseline PNG; reports identical + byte similarity",
 		{
-			processId: z.string(),
-			baselinePath: z.string(),
-			currentPath: z
-				.string()
-				.optional()
-				.describe("Existing PNG to compare; if omitted, captures fresh"),
-			selector: z.string().optional(),
-			targetId: z.string().optional(),
+			description:
+				"Capture (or compare) a screenshot against a baseline PNG; reports identical + byte similarity",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				baselinePath: z.string(),
+				currentPath: z
+					.string()
+					.optional()
+					.describe("Existing PNG to compare; if omitted, captures fresh"),
+				selector: z.string().optional(),
+				targetId: z.string().optional(),
+			},
+			annotations: { readOnlyHint: true },
 		},
-		async ({ processId, baselinePath, currentPath, selector, targetId }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(
-					await diffScreenshot(proc, {
-						baselinePath,
-						currentPath,
-						selector,
-						targetId,
-					}),
-				);
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
-			}
-		},
+		withProcess(async (proc, { baselinePath, currentPath, selector, targetId }) => {
+			return await diffScreenshot(proc, {
+				baselinePath,
+				currentPath,
+				selector,
+				targetId,
+			});
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"get_audit_issues",
-		"Buffered Chromium Audits issues (cookie/CORS/mixed-content/deprecations) captured since attach",
 		{
-			processId: z.string(),
-			tail: z.number().int().positive().optional(),
+			description:
+				"Buffered Chromium Audits issues (cookie/CORS/mixed-content/deprecations) captured since attach",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				tail: z.number().int().positive().optional(),
+			},
+			annotations: { readOnlyHint: true },
 		},
-		async ({ processId, tail }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(getAuditIssues(proc, tail));
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
-			}
-		},
+		withProcess(async (proc, { tail }) => {
+			return getAuditIssues(proc, tail);
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"start_coverage",
-		"Start JS precise coverage (optional CSS rule usage). Pair with stop_coverage.",
 		{
-			processId: z.string(),
-			targetId: z.string().optional(),
-			css: z.boolean().optional().describe("Also track CSS rule usage"),
+			description:
+				"Start JS precise coverage (optional CSS rule usage). Pair with stop_coverage.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				targetId: z.string().optional(),
+				css: z.boolean().optional().describe("Also track CSS rule usage"),
+			},
+			annotations: { destructiveHint: false },
 		},
-		async ({ processId, targetId, css }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(await startCoverage(proc, { targetId, css }));
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
-			}
-		},
+		withProcess(async (proc, { targetId, css }) => {
+			return await startCoverage(proc, { targetId, css });
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"stop_coverage",
-		"Stop coverage and return JS (and optional CSS) coverage data; optionally write JSON",
 		{
-			processId: z.string(),
-			path: z.string().optional(),
+			description:
+				"Stop coverage and return JS (and optional CSS) coverage data; optionally write JSON",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				path: z.string().optional(),
+			},
+			annotations: { readOnlyHint: false, idempotentHint: true },
 		},
-		async ({ processId, path: filePath }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(await stopCoverage(proc, filePath));
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
-			}
-		},
+		withProcess(async (proc, { path: filePath }) => {
+			return await stopCoverage(proc, filePath);
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"set_file_input",
-		"Set files on an <input type=file> via DOM.setFileInputFiles (host paths)",
 		{
-			processId: z.string(),
-			selector: z.string(),
-			files: z.array(z.string()).min(1),
-			targetId: z.string().optional(),
+			description:
+				"Set files on an <input type=file> via DOM.setFileInputFiles (host paths)",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				selector: z.string(),
+				files: z.array(z.string()).min(1),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false },
 		},
-		async ({ processId, selector, files, targetId }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(
-					await setFileInput(proc, { selector, files, targetId }),
-				);
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
-			}
-		},
+		withProcess(async (proc, { selector, files, targetId }) => {
+			return await setFileInput(proc, { selector, files, targetId });
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"emulate",
-		"Device metrics / UA / geolocation / media emulation (or clear=true to reset)",
 		{
-			processId: z.string(),
-			targetId: z.string().optional(),
-			clear: z.boolean().optional(),
-			metrics: z
-				.object({
-					width: z.number().int().positive(),
-					height: z.number().int().positive(),
-					deviceScaleFactor: z.number().positive().optional(),
-					mobile: z.boolean().optional(),
-				})
-				.optional(),
-			userAgent: z.string().optional(),
-			geolocation: z
-				.object({
-					latitude: z.number(),
-					longitude: z.number(),
-					accuracy: z.number().optional(),
-				})
-				.optional(),
-			media: z.string().optional().describe('e.g. "print" or "screen"'),
+			description:
+				"Device metrics / UA / geolocation / media emulation (or clear=true to reset)",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				targetId: z.string().optional(),
+				clear: z.boolean().optional(),
+				metrics: z
+					.object({
+						width: z.number().int().positive(),
+						height: z.number().int().positive(),
+						deviceScaleFactor: z.number().positive().optional(),
+						mobile: z.boolean().optional(),
+					})
+					.optional(),
+				userAgent: z.string().optional(),
+				geolocation: z
+					.object({
+						latitude: z.number(),
+						longitude: z.number(),
+						accuracy: z.number().optional(),
+					})
+					.optional(),
+				media: z.string().optional().describe('e.g. "print" or "screen"'),
+			},
+			annotations: { destructiveHint: false },
 		},
-		async ({ processId, targetId, clear, metrics, userAgent, geolocation, media }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(
-					await emulate(proc, {
-						targetId,
-						clear,
-						metrics,
-						userAgent,
-						geolocation,
-						media,
-					}),
-				);
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
-			}
-		},
+		withProcess(async (proc, { targetId, clear, metrics, userAgent, geolocation, media }) => {
+			return await emulate(proc, {
+				targetId,
+				clear,
+				metrics,
+				userAgent,
+				geolocation,
+				media,
+			});
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"start_screencast",
-		"Start Page.startScreencast; buffers up to maxFrames (ack frames). Pair with stop_screencast.",
 		{
-			processId: z.string(),
-			targetId: z.string().optional(),
-			maxFrames: z.number().int().positive().max(30).optional(),
-			everyNthFrame: z.number().int().positive().optional(),
-			format: z.enum(["png", "jpeg"]).optional(),
-			quality: z.number().int().min(0).max(100).optional(),
+			description:
+				"Start Page.startScreencast; buffers up to maxFrames (ack frames). Pair with stop_screencast.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				targetId: z.string().optional(),
+				maxFrames: z.number().int().positive().max(30).optional(),
+				everyNthFrame: z.number().int().positive().optional(),
+				format: z.enum(["png", "jpeg"]).optional(),
+				quality: z.number().int().min(0).max(100).optional(),
+			},
+			annotations: { destructiveHint: false },
 		},
-		async ({ processId, targetId, maxFrames, everyNthFrame, format, quality }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(
-					await startScreencast(proc, {
-						targetId,
-						maxFrames,
-						everyNthFrame,
-						format,
-						quality,
-					}),
-				);
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
-			}
-		},
+		withProcess(async (proc, { targetId, maxFrames, everyNthFrame, format, quality }) => {
+			return await startScreencast(proc, {
+				targetId,
+				maxFrames,
+				everyNthFrame,
+				format,
+				quality,
+			});
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"stop_screencast",
-		"Stop screencast; optionally write last frame PNG/JPEG to path",
 		{
-			processId: z.string(),
-			path: z.string().optional(),
+			description:
+				"Stop screencast; optionally write last frame PNG/JPEG to path",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				path: z.string().optional(),
+			},
+			annotations: { readOnlyHint: false },
 		},
 		async ({ processId, path: filePath }) => {
 			try {
 				const proc = requireRunningProcess(processId);
 				const result = await stopScreencast(proc, filePath);
 				const { lastFrameBase64, ...rest } = result;
+				if (filePath && result.path) {
+					registerArtifact(proc.id, "screenshot", result.path);
+				}
 				if (lastFrameBase64 && !filePath) {
 					return {
 						content: [
@@ -357,159 +413,184 @@ export function registerProfileTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"set_breakpoint",
-		"Debugger.setBreakpointByUrl (0-based lineNumber). Keep debugger enabled while BPs exist.",
 		{
-			processId: z.string(),
-			lineNumber: z.number().int().nonnegative(),
-			url: z.string().optional(),
-			urlRegex: z.string().optional(),
-			columnNumber: z.number().int().nonnegative().optional(),
-			targetId: z.string().optional(),
+			description:
+				"Debugger.setBreakpointByUrl (0-based lineNumber). Keep debugger enabled while BPs exist.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				lineNumber: z.number().int().nonnegative(),
+				url: z.string().optional(),
+				urlRegex: z.string().optional(),
+				columnNumber: z.number().int().nonnegative().optional(),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false },
 		},
-		async ({ processId, lineNumber, url, urlRegex, columnNumber, targetId }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(
-					await setBreakpointByUrl(proc, {
-						lineNumber,
-						url,
-						urlRegex,
-						columnNumber,
-						targetId,
-					}),
-				);
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
-			}
-		},
+		withProcess(async (proc, { lineNumber, url, urlRegex, columnNumber, targetId }) => {
+			return await setBreakpointByUrl(proc, {
+				lineNumber,
+				url,
+				urlRegex,
+				columnNumber,
+				targetId,
+			});
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"remove_breakpoint",
-		"Debugger.removeBreakpoint by breakpointId from set_breakpoint",
 		{
-			processId: z.string(),
-			breakpointId: z.string(),
-			targetId: z.string().optional(),
+			description:
+				"Debugger.removeBreakpoint by breakpointId from set_breakpoint",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				breakpointId: z.string(),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false },
 		},
-		async ({ processId, breakpointId, targetId }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(await removeBreakpoint(proc, breakpointId, targetId));
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
-			}
-		},
+		withProcess(async (proc, { breakpointId, targetId }) => {
+			return await removeBreakpoint(proc, breakpointId, targetId);
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"resolve_stack",
-		"Resolve stack frames to source snippets (Debugger.getScriptSource / file://)",
 		{
-			processId: z.string(),
-			frames: z
-				.array(
-					z.object({
-						url: z.string().optional(),
-						scriptId: z.string().optional(),
-						lineNumber: z.number().int(),
-						columnNumber: z.number().int().optional(),
-						functionName: z.string().optional(),
-					}),
-				)
-				.min(1),
-			contextLines: z.number().int().nonnegative().max(20).optional(),
-			targetId: z.string().optional(),
+			description:
+				"Resolve stack frames to source snippets (Debugger.getScriptSource / file://)",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				frames: z
+					.array(
+						z.object({
+							url: z.string().optional(),
+							scriptId: z.string().optional(),
+							lineNumber: z.number().int(),
+							columnNumber: z.number().int().optional(),
+							functionName: z.string().optional(),
+						}),
+					)
+					.min(1),
+				contextLines: z.number().int().nonnegative().max(20).optional(),
+				targetId: z.string().optional(),
+			},
+			annotations: { readOnlyHint: true },
 		},
-		async ({ processId, frames, contextLines, targetId }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(
-					await resolveStack(proc, { frames, contextLines, targetId }),
-				);
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
-			}
-		},
+		withProcess(async (proc, { frames, contextLines, targetId }) => {
+			return await resolveStack(proc, { frames, contextLines, targetId });
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"perf_audit",
-		"Lighthouse-lite: Performance.getMetrics + nav/paint timing + recent Audits issues (not full Lighthouse)",
 		{
-			processId: z.string(),
-			targetId: z.string().optional(),
-			includeAudits: z.boolean().optional(),
-			includeNavTiming: z.boolean().optional(),
+			description:
+				"Lighthouse-lite: Performance.getMetrics + nav/paint timing + recent Audits issues (not full Lighthouse)",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				targetId: z.string().optional(),
+				includeAudits: z.boolean().optional(),
+				includeNavTiming: z.boolean().optional(),
+			},
+			annotations: { readOnlyHint: true },
 		},
-		async ({ processId, targetId, includeAudits, includeNavTiming }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(
-					await runPerfAudit(proc, { targetId, includeAudits, includeNavTiming }),
-				);
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
-			}
-		},
+		withProcess(async (proc, { targetId, includeAudits, includeNavTiming }) => {
+			return await runPerfAudit(proc, { targetId, includeAudits, includeNavTiming });
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"capture_mhtml",
-		"Save page as MHTML via Page.captureSnapshot",
 		{
-			processId: z.string(),
-			path: z.string().optional(),
-			targetId: z.string().optional(),
+			description:
+				"Save page as MHTML via Page.captureSnapshot. Also registers the file as an artifact resource.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				path: z.string().optional(),
+				targetId: z.string().optional(),
+			},
+			annotations: { readOnlyHint: false, idempotentHint: true },
 		},
-		async ({ processId, path: filePath, targetId }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(await captureMhtml(proc, filePath, targetId));
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
+		withProcess(async (proc, { path: filePath, targetId }) => {
+			const res = await captureMhtml(proc, filePath, targetId);
+			if (res?.path) {
+				const art = registerArtifact(proc.id, "mhtml", res.path);
+				return { ...res, artifactUri: `electron://artifact/${art.id}` };
 			}
-		},
+			return res;
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"virtual_clock",
-		"Emulation.setVirtualTimePolicy — pause / advance virtual time (use budget when advancing)",
 		{
-			processId: z.string(),
-			policy: z.enum(["pause", "advance", "pauseIfNetworkFetchesPending"]),
-			budget: z.number().positive().optional().describe("Virtual ms to grant when advancing"),
-			targetId: z.string().optional(),
+			description:
+				"Emulation.setVirtualTimePolicy — pause / advance virtual time (use budget when advancing)",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				policy: z.enum(["pause", "advance", "pauseIfNetworkFetchesPending"]),
+				budget: z.number().positive().optional().describe("Virtual ms to grant when advancing"),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false },
 		},
-		async ({ processId, policy, budget, targetId }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(await setVirtualClock(proc, { policy, budget, targetId }));
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
-			}
-		},
+		withProcess(async (proc, { policy, budget, targetId }) => {
+			return await setVirtualClock(proc, { policy, budget, targetId });
+		}),
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"print_pdf",
-		"Write the page to a PDF. Uses Page.printToPDF, and falls back to webContents.printToPDF when that method is missing (needs inspectMain). printBackground defaults to true.",
 		{
-			processId: z.string(),
-			path: z.string().optional(),
-			landscape: z.boolean().optional(),
-			printBackground: z.boolean().optional(),
-			targetId: z.string().optional(),
+			description:
+				"Write the page to a PDF. Uses Page.printToPDF, and falls back to webContents.printToPDF when that method is missing (needs inspectMain). printBackground defaults to true. Also registers as an artifact resource.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				path: z.string().optional(),
+				landscape: z.boolean().optional(),
+				printBackground: z.boolean().optional(),
+				targetId: z.string().optional(),
+			},
+			annotations: { readOnlyHint: false, idempotentHint: true },
 		},
-		async ({ processId, path: filePath, landscape, printBackground, targetId }) => {
-			try {
-				const proc = requireRunningProcess(processId);
-				return textResult(await printPdf(proc, { path: filePath, landscape, printBackground, targetId }));
-			} catch (err) {
-				return textResult(err instanceof Error ? err.message : String(err), true);
+		withProcess(async (proc, { path: filePath, landscape, printBackground, targetId }) => {
+			const res = await printPdf(proc, { path: filePath, landscape, printBackground, targetId });
+			if (res?.path) {
+				const art = registerArtifact(proc.id, "pdf", res.path);
+				return { ...res, artifactUri: `electron://artifact/${art.id}` };
 			}
-		},
+			return res;
+		}),
 	);
 }

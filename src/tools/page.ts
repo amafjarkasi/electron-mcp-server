@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { textResult, requireRunningProcess } from "../tool-helpers.js";
+import { textResult, requireRunningProcess, resolveProcess, registerTool } from "../tool-helpers.js";
+import { registerArtifact } from "../artifacts.js";
 import { log } from "../log.js";
 import {
 	captureScreenshot,
@@ -44,10 +45,12 @@ import {
 } from "../power-tools.js";
 
 export function registerPageTools(server: McpServer) {
-	server.tool(
+	registerTool(
+		server,
 		"get_logs",
-		"Get captured stdout/stderr logs for a managed Electron process",
 		{
+			description: "Get captured stdout/stderr logs for a managed Electron process",
+			params: {
 			processId: z
 				.string()
 				.describe("Process id returned by start_app or attach"),
@@ -58,8 +61,10 @@ export function registerPageTools(server: McpServer) {
 				.optional()
 				.describe("Optional number of trailing log chunks to return"),
 		},
+			annotations: {"readOnlyHint":true},
+		},
 		async ({ processId, tail }) => {
-			const proc = getProcess(processId);
+			const proc = resolveProcess(processId);
 			if (!proc) {
 				return textResult(`Process not found: ${processId}`, true);
 			}
@@ -72,19 +77,23 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
-	  "get_console_messages",
-	  "Get buffered page console/log/exception messages captured via CDP",
-	  {
-	    processId: z.string(),
+	registerTool(
+		server,
+		"get_console_messages",
+		{
+			description: "Get buffered page console/log/exception messages captured via CDP",
+			params: {
+	    processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 	    tail: z.number().int().positive().optional(),
 	    level: z
 	      .string()
 	      .optional()
 	      .describe("Optional filter, e.g. error, warning, log"),
 	  },
-	  async ({ processId, tail, level }) => {
-	    const proc = getProcess(processId);
+			annotations: {"readOnlyHint":true},
+		},
+		async ({ processId, tail, level }) => {
+	    const proc = resolveProcess(processId);
 	    if (!proc) {
 	      return textResult(`Process not found: ${processId}`, true);
 	    }
@@ -119,16 +128,20 @@ export function registerPageTools(server: McpServer) {
 	  }
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"list_targets",
-		"List Chrome DevTools Protocol targets with role classification (page/worker/browser/other)",
 		{
+			description: "List Chrome DevTools Protocol targets with role classification (page/worker/browser/other)",
+			params: {
 			processId: z
 				.string()
 				.optional()
 				.describe(
 					"Optional process id; omit to list targets for all running apps",
 				),
+		},
+			annotations: {"readOnlyHint":true,"idempotentHint":true},
 		},
 		async ({ processId }) => {
 			try {
@@ -174,11 +187,13 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"evaluate",
-		"Evaluate JavaScript in an Electron target via CDP Runtime.evaluate. Defaults to the first page/renderer target.",
 		{
-			processId: z.string(),
+			description: "Evaluate JavaScript in an Electron target via CDP Runtime.evaluate. Defaults to the first page/renderer target.",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			expression: z.string().describe("JavaScript expression to evaluate"),
 			targetId: z.string().optional(),
 			role: z
@@ -188,6 +203,8 @@ export function registerPageTools(server: McpServer) {
 					"Preferred target role when targetId is omitted (default page)",
 				),
 			returnByValue: z.boolean().optional(),
+		},
+			annotations: {"destructiveHint":false,"openWorldHint":true},
 		},
 		async ({ processId, expression, targetId, role, returnByValue }) => {
 			try {
@@ -220,11 +237,13 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"screenshot",
-		"Capture a PNG/JPEG screenshot of a page target via Page.captureScreenshot (optional CSS selector clips to element bounds)",
 		{
-			processId: z.string(),
+			description: "Capture a PNG/JPEG screenshot of a page target via Page.captureScreenshot (optional CSS selector clips to element bounds)",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			targetId: z.string().optional(),
 			format: z.enum(["png", "jpeg"]).optional(),
 			quality: z.number().int().min(0).max(100).optional(),
@@ -234,6 +253,8 @@ export function registerPageTools(server: McpServer) {
 				.describe(
 					"Optional CSS selector — capture only that element's bounding box",
 				),
+		},
+			annotations: {"readOnlyHint":true},
 		},
 		async ({ processId, targetId, format, quality, selector }) => {
 			try {
@@ -274,11 +295,13 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"save_screenshot",
-		"Capture a screenshot and write it to a local file path (PNG/JPEG); optional selector clips to element",
 		{
-			processId: z.string(),
+			description: "Capture a screenshot and write it to a local file path (PNG/JPEG); optional selector clips to element",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			path: z.string().describe("Absolute or relative file path to write"),
 			targetId: z.string().optional(),
 			format: z.enum(["png", "jpeg"]).optional(),
@@ -289,6 +312,8 @@ export function registerPageTools(server: McpServer) {
 				.describe(
 					"Optional CSS selector — capture only that element's bounding box",
 				),
+		},
+			annotations: {"readOnlyHint":false,"idempotentHint":true},
 		},
 		async ({
 			processId,
@@ -315,11 +340,13 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"get_dom",
-		"Read documentElement.outerHTML or a specific element's outerHTML",
 		{
-			processId: z.string(),
+			description: "Read documentElement.outerHTML or a specific element's outerHTML",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			selector: z
 				.string()
 				.optional()
@@ -327,6 +354,8 @@ export function registerPageTools(server: McpServer) {
 					"Optional CSS selector; omit for full documentElement.outerHTML",
 				),
 			targetId: z.string().optional(),
+		},
+			annotations: {"readOnlyHint":true},
 		},
 		async ({ processId, selector, targetId }) => {
 			try {
@@ -344,14 +373,18 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"query_selector",
-		"Query DOM nodes with document.querySelectorAll and return tag/id/class/text summary",
 		{
-			processId: z.string(),
+			description: "Query DOM nodes with document.querySelectorAll and return tag/id/class/text summary",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			selector: z.string().describe("CSS selector"),
 			targetId: z.string().optional(),
 			limit: z.number().int().positive().max(100).optional(),
+		},
+			annotations: {"readOnlyHint":true},
 		},
 		async ({ processId, selector, targetId, limit }) => {
 			try {
@@ -395,13 +428,17 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"reload",
-		"Reload a page target (or all page targets) in an Electron app",
 		{
-			processId: z.string(),
+			description: "Reload a page target (or all page targets) in an Electron app",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			targetId: z.string().optional(),
 			ignoreCache: z.boolean().optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ processId, targetId, ignoreCache }) => {
 			try {
@@ -439,12 +476,16 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"pause",
-		"Pause JavaScript execution on a target via Debugger.pause",
 		{
-			processId: z.string(),
+			description: "Pause JavaScript execution on a target via Debugger.pause",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			targetId: z.string().optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ processId, targetId }) => {
 			try {
@@ -497,12 +538,16 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"resume",
-		"Resume JavaScript execution on a target via Debugger.resume",
 		{
-			processId: z.string(),
+			description: "Resume JavaScript execution on a target via Debugger.resume",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			targetId: z.string().optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ processId, targetId }) => {
 			try {
@@ -530,16 +575,20 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"cdp_command",
-		"Execute an arbitrary Chrome DevTools Protocol method on a target (Domain.method)",
 		{
-			processId: z.string(),
+			description: "Execute an arbitrary Chrome DevTools Protocol method on a target (Domain.method)",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			method: z
 				.string()
 				.describe('CDP method name, e.g. "Page.navigate" or "Runtime.evaluate"'),
 			targetId: z.string().optional(),
 			params: z.record(z.unknown()).optional(),
+		},
+			annotations: {"destructiveHint":false,"openWorldHint":true},
 		},
 		async ({ processId, method, targetId, params }) => {
 			try {
@@ -567,12 +616,16 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"page_info",
-		"Get URL, title, readyState, and userAgent for a page target",
 		{
-			processId: z.string(),
+			description: "Get URL, title, readyState, and userAgent for a page target",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			targetId: z.string().optional(),
+		},
+			annotations: {"readOnlyHint":true},
 		},
 		async ({ processId, targetId }) => {
 			try {
@@ -584,15 +637,19 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"navigate",
-		"Navigate a page target to a URL (Page.navigate) and optionally wait for load",
 		{
-			processId: z.string(),
+			description: "Navigate a page target to a URL (Page.navigate) and optionally wait for load",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			url: z.string().describe("Absolute or app URL to navigate to"),
 			targetId: z.string().optional(),
 			waitUntilLoad: z.boolean().optional(),
 			timeoutMs: z.number().int().positive().max(120000).optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ processId, url, targetId, waitUntilLoad, timeoutMs }) => {
 			try {
@@ -611,11 +668,13 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"wait_for",
-		"Wait until a selector exists/hides/enables, text/URL/console matches, or node count is met",
 		{
-			processId: z.string(),
+			description: "Wait until a selector exists/hides/enables, text/URL/console matches, or node count is met",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			selector: z.string().optional().describe("CSS selector that must exist"),
 			hidden: z
 				.string()
@@ -653,6 +712,8 @@ export function registerPageTools(server: McpServer) {
 				.optional()
 				.describe("If true, save a PNG to the OS temp dir when wait times out"),
 			targetId: z.string().optional(),
+		},
+			annotations: {"readOnlyHint":true},
 		},
 		async ({
 			processId,
@@ -718,14 +779,18 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"click",
-		"Click the center of a CSS selector via CDP Input.dispatchMouseEvent",
 		{
-			processId: z.string(),
+			description: "Click the center of a CSS selector via CDP Input.dispatchMouseEvent",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			selector: z.string().describe("CSS selector to click"),
 			targetId: z.string().optional(),
 			button: z.enum(["left", "right", "middle"]).optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ processId, selector, targetId, button }) => {
 			try {
@@ -743,13 +808,17 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"hover",
-		"Move the pointer over a CSS selector (mouseover / hover menus). Does not click.",
 		{
-			processId: z.string(),
+			description: "Move the pointer over a CSS selector (mouseover / hover menus). Does not click.",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			selector: z.string().describe("CSS selector to hover"),
 			targetId: z.string().optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ processId, selector, targetId }) => {
 			try {
@@ -762,15 +831,19 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"scroll",
-		"Scroll the page or an element. With a selector and no deltas, scrolls that element into view. With deltaY/deltaX, sends a mouse wheel at the element (or the viewport).",
 		{
-			processId: z.string(),
+			description: "Scroll the page or an element. With a selector and no deltas, scrolls that element into view. With deltaY/deltaX, sends a mouse wheel at the element (or the viewport).",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			selector: z.string().optional().describe("Element to scroll into view, or the wheel target"),
 			deltaX: z.number().optional().describe("Horizontal wheel delta. Positive scrolls right."),
 			deltaY: z.number().optional().describe("Vertical wheel delta. Positive scrolls down. Default 400 when no selector."),
 			targetId: z.string().optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ processId, selector, deltaX, deltaY, targetId }) => {
 			try {
@@ -783,15 +856,19 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"drag",
-		"Press on fromSelector, move to toSelector, and release. Also sends an HTML5 drag with text/plain dataTransfer so drop listeners receive the payload. Pass data to override the source text.",
 		{
-			processId: z.string(),
+			description: "Press on fromSelector, move to toSelector, and release. Also sends an HTML5 drag with text/plain dataTransfer so drop listeners receive the payload. Pass data to override the source text.",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			fromSelector: z.string(),
 			toSelector: z.string(),
 			data: z.string().optional().describe("text/plain payload. Defaults to the source element's text."),
 			targetId: z.string().optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ processId, fromSelector, toSelector, data, targetId }) => {
 			try {
@@ -804,11 +881,13 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"type_text",
-		"Type text into the focused element (optionally click a selector first)",
 		{
-			processId: z.string(),
+			description: "Type text into the focused element (optionally click a selector first)",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			text: z.string(),
 			selector: z
 				.string()
@@ -820,6 +899,8 @@ export function registerPageTools(server: McpServer) {
 				.describe("If true and selector is set, clear the field first"),
 			pressEnter: z.boolean().optional(),
 			targetId: z.string().optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ processId, text, selector, clear, pressEnter, targetId }) => {
 			try {
@@ -837,11 +918,13 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"press_key",
-		"Press a key or shortcut (Enter, Escape, Tab, Arrow*, or a character) with optional modifiers",
 		{
-			processId: z.string(),
+			description: "Press a key or shortcut (Enter, Escape, Tab, Arrow*, or a character) with optional modifiers",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			key: z
 				.string()
 				.describe('Key name, e.g. "Enter", "Escape", "a", "Tab", "ArrowDown"'),
@@ -855,6 +938,8 @@ export function registerPageTools(server: McpServer) {
 				.describe('Modifier keys, e.g. ["Control"] for Ctrl+A'),
 			repeat: z.number().int().positive().max(50).optional(),
 			targetId: z.string().optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ processId, key, selector, modifiers, repeat, targetId }) => {
 			try {
@@ -872,11 +957,15 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"set_console_live",
-		"Enable/disable live MCP log notifications for console events (all levels when enabled; errors always notify)",
 		{
+			description: "Enable/disable live MCP log notifications for console events (all levels when enabled; errors always notify)",
+			params: {
 			enabled: z.boolean().describe("true to stream console events as MCP logs"),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ enabled }) => {
 			const value = setConsoleLiveLogging(enabled);
@@ -887,13 +976,17 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"get_cookies",
-		"Read cookies for the page (optionally filtered by URL)",
 		{
-			processId: z.string(),
+			description: "Read cookies for the page (optionally filtered by URL)",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			urls: z.array(z.string()).optional(),
 			targetId: z.string().optional(),
+		},
+			annotations: {"readOnlyHint":true},
 		},
 		async ({ processId, urls, targetId }) => {
 			try {
@@ -906,11 +999,13 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"set_cookie",
-		"Set a cookie on the page (provide url or domain; defaults to current location.href). file:// pages usually reject cookies unless you pass an http(s) url or domain.",
 		{
-			processId: z.string(),
+			description: "Set a cookie on the page (provide url or domain; defaults to current location.href). file:// pages usually reject cookies unless you pass an http(s) url or domain.",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			name: z.string(),
 			value: z.string(),
 			url: z.string().optional(),
@@ -921,6 +1016,8 @@ export function registerPageTools(server: McpServer) {
 			sameSite: z.enum(["Strict", "Lax", "None"]).optional(),
 			expires: z.number().optional().describe("Unix time in seconds"),
 			targetId: z.string().optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({
 			processId,
@@ -959,16 +1056,20 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"delete_cookie",
-		"Delete a cookie by name. Provide url or domain, same as set_cookie. Defaults url to the page location.",
 		{
-			processId: z.string(),
+			description: "Delete a cookie by name. Provide url or domain, same as set_cookie. Defaults url to the page location.",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			name: z.string(),
 			url: z.string().optional(),
 			domain: z.string().optional(),
 			path: z.string().optional(),
 			targetId: z.string().optional(),
+		},
+			annotations: {"destructiveHint":true},
 		},
 		async ({ processId, name, url, domain, path: cookiePath, targetId }) => {
 			try {
@@ -985,13 +1086,17 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"get_storage",
-		"Read localStorage or sessionStorage key/value pairs from the page",
 		{
-			processId: z.string(),
+			description: "Read localStorage or sessionStorage key/value pairs from the page",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			kind: z.enum(["localStorage", "sessionStorage"]).optional(),
 			targetId: z.string().optional(),
+		},
+			annotations: {"readOnlyHint":true},
 		},
 		async ({ processId, kind, targetId }) => {
 			try {
@@ -1004,15 +1109,19 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"set_storage",
-		"Write localStorage or sessionStorage entries (optionally clear first)",
 		{
-			processId: z.string(),
+			description: "Write localStorage or sessionStorage entries (optionally clear first)",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			kind: z.enum(["localStorage", "sessionStorage"]).optional(),
 			entries: z.record(z.string()),
 			clear: z.boolean().optional(),
 			targetId: z.string().optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ processId, kind, entries, clear, targetId }) => {
 			try {
@@ -1028,20 +1137,24 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"clear_buffers",
-		"Clear buffered console messages, network events, process logs, ipc, and/or audits",
 		{
-			processId: z.string(),
+			description: "Clear buffered console messages, network events, process logs, ipc, and/or audits",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			console: z.boolean().optional(),
 			network: z.boolean().optional(),
 			logs: z.boolean().optional(),
 			ipc: z.boolean().optional(),
 			audits: z.boolean().optional(),
 		},
+			annotations: {"destructiveHint":true},
+		},
 		async ({ processId, console: clearConsole, network, logs, ipc, audits }) => {
 			try {
-				const proc = getProcess(processId);
+				const proc = resolveProcess(processId);
 				if (!proc) {
 					return textResult(`Process not found: ${processId}`, true);
 				}
@@ -1074,13 +1187,17 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"snapshot",
-		"Accessibility tree snapshot (roles/names) via CDP Accessibility.getFullAXTree — agent-friendly UI map",
 		{
-			processId: z.string(),
+			description: "Accessibility tree snapshot (roles/names) via CDP Accessibility.getFullAXTree — agent-friendly UI map",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			depth: z.number().int().positive().optional(),
 			targetId: z.string().optional(),
+		},
+			annotations: {"readOnlyHint":true},
 		},
 		async ({ processId, depth, targetId }) => {
 			try {
@@ -1093,16 +1210,20 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"vision",
-		"One-shot app state: screenshot + page_info + recent console errors + network failures + windows",
 		{
-			processId: z.string(),
+			description: "One-shot app state: screenshot + page_info + recent console errors + network failures + windows",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			targetId: z.string().optional(),
 			includeScreenshot: z
 				.boolean()
 				.optional()
 				.describe("Include base64 PNG (default true)"),
+		},
+			annotations: {"readOnlyHint":true},
 		},
 		async ({ processId, targetId, includeScreenshot }) => {
 			try {
@@ -1137,14 +1258,18 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"highlight",
-		"Scroll a CSS selector into view and paint a CDP overlay highlight (auto-hides when durationMs > 0)",
 		{
-			processId: z.string(),
+			description: "Scroll a CSS selector into view and paint a CDP overlay highlight (auto-hides when durationMs > 0)",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			selector: z.string(),
 			durationMs: z.number().int().nonnegative().max(5000).optional(),
 			targetId: z.string().optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ processId, selector, durationMs, targetId }) => {
 			try {
@@ -1158,16 +1283,20 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"click_ax",
-		"Click an element by accessibility name (optional role). Uses the AX tree, not CSS.",
 		{
-			processId: z.string(),
+			description: "Click an element by accessibility name (optional role). Uses the AX tree, not CSS.",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			name: z.string().describe('Accessible name, e.g. "Go" or "Submit"'),
 			role: z.string().optional().describe('AX role, e.g. "button" or "link"'),
 			exact: z.boolean().optional().describe("Require an exact name match"),
 			button: z.enum(["left", "right", "middle"]).optional(),
 			targetId: z.string().optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ processId, name, role, exact, button, targetId }) => {
 			try {
@@ -1181,17 +1310,21 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"type_ax",
-		"Focus an element by accessibility name and insert text (optional clear)",
 		{
-			processId: z.string(),
+			description: "Focus an element by accessibility name and insert text (optional clear)",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			name: z.string().describe("Accessible name of the field"),
 			text: z.string(),
 			role: z.string().optional().describe('AX role, e.g. "textbox"'),
 			exact: z.boolean().optional(),
 			clear: z.boolean().optional(),
 			targetId: z.string().optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ processId, name, text, role, exact, clear, targetId }) => {
 			try {
@@ -1205,15 +1338,19 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"handle_dialog",
-		"Auto accept or dismiss the next JavaScript dialogs (alert/confirm/prompt). clear:true disarms.",
 		{
-			processId: z.string(),
+			description: "Auto accept or dismiss the next JavaScript dialogs (alert/confirm/prompt). clear:true disarms.",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			action: z.enum(["accept", "dismiss"]).optional(),
 			promptText: z.string().optional().describe("Value when accepting a prompt"),
 			clear: z.boolean().optional(),
 			targetId: z.string().optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ processId, action, promptText, clear, targetId }) => {
 			try {
@@ -1227,11 +1364,13 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"assert_ui",
-		"Check url/title/text/selector/console-error budget/expression. Returns pass:false with per-check detail (does not throw on a failed check).",
 		{
-			processId: z.string(),
+			description: "Check url/title/text/selector/console-error budget/expression. Returns pass:false with per-check detail (does not throw on a failed check).",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			urlIncludes: z.string().optional(),
 			titleIncludes: z.string().optional(),
 			textIncludes: z.string().optional(),
@@ -1243,6 +1382,8 @@ export function registerPageTools(server: McpServer) {
 				.optional()
 				.describe("JS expression that must be truthy"),
 			targetId: z.string().optional(),
+		},
+			annotations: {"readOnlyHint":true},
 		},
 		async ({
 			processId,
@@ -1275,15 +1416,19 @@ export function registerPageTools(server: McpServer) {
 		},
 	);
 
-	server.tool(
+	registerTool(
+		server,
 		"select_option",
-		"Choose an option in a <select> by value or visible label, then fire input and change.",
 		{
-			processId: z.string(),
+			description: "Choose an option in a <select> by value or visible label, then fire input and change.",
+			params: {
+			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			selector: z.string(),
 			value: z.string().optional().describe("Option value attribute"),
 			label: z.string().optional().describe("Visible option label"),
 			targetId: z.string().optional(),
+		},
+			annotations: {"destructiveHint":false},
 		},
 		async ({ processId, selector, value, label, targetId }) => {
 			try {

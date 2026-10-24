@@ -1,6 +1,6 @@
 {
   "name": "electron-debug-mcp",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "description": "MCP server for launching and debugging Electron apps via Chrome DevTools Protocol",
   "type": "module",
   "main": "./build/index.js",
@@ -12,7 +12,8 @@
     "assets/",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "llms.txt"
   ],
   "scripts": {
     "ensure-electron": "node scripts/ensure-electron.mjs",
@@ -28,6 +29,7 @@
     "test:unit": "node --test test/unit-helpers.test.mjs test/probe.test.mjs test/monitor.test.mjs",
     "test:smoke": "node test/mcp-smoke.mjs",
     "doctor": "npm run build && node scripts/doctor.mjs",
+    "sync:readme": "npm run build && node scripts/sync-readme.mjs",
     "pack:check": "npm pack --dry-run"
   },
   "keywords": [
@@ -52,7 +54,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.1.0",
     "chrome-remote-interface": "^0.33.0",
-    "zod": "^3.24.2"
+    "zod": "^3.24.2",
+    "zod-to-json-schema": "^3.24.1"
   },
   "optionalDependencies": {
     "electron": "^29.1.0"
@@ -63,7 +66,7 @@
     "ws": "^8.21.3"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "publishConfig": {
     "access": "public",

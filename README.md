@@ -10,11 +10,11 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.10.0-0F766E?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-1.11.0-0F766E?style=flat-square" />
   <img alt="88 tools" src="https://img.shields.io/badge/88_tools-0F766E?style=flat-square" />
-  <img alt="7 resources" src="https://img.shields.io/badge/7_resources-115E59?style=flat-square" />
+  <img alt="9 resources" src="https://img.shields.io/badge/9_resources-115E59?style=flat-square" />
   <img alt="6 prompts" src="https://img.shields.io/badge/6_prompts-134E4A?style=flat-square" />
-  <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D18-339933?style=flat-square&logo=nodedotjs&logoColor=white" />
+  <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D20-339933?style=flat-square&logo=nodedotjs&logoColor=white" />
   <img alt="Electron" src="https://img.shields.io/badge/Electron-CDP-47848F?style=flat-square&logo=electron&logoColor=white" />
   <img alt="license" src="https://img.shields.io/badge/license-ISC-F5A623?style=flat-square" />
 </p>
@@ -60,6 +60,7 @@ Full history, including 1.6 and 1.5, is in [`CHANGELOG.md` on GitHub](https://gi
 
 | Version | What landed |
 | --- | --- |
+| 1.11.0 | Tool annotations (`readOnlyHint`), optional `processId`, artifact resources (`electron://artifacts`), network log filters, DOM max length, `llms.txt`. 88 tools · 9 resources. |
 | 1.10.0 | `emulate_network`, `select_option`, `set_window_bounds`, and `print_pdf`. 88 tools. |
 | 1.9.4 | `set_permission` is visible to the page as granted. Clipboard reads and writes PNG. `drag` delivers `dataTransfer`. |
 | 1.9.3 | Transparent logo, and a See / Drive / Inspect header so the npm page is not a bare list. |
@@ -129,7 +130,7 @@ npm run build
 
 `start_app` launches your app with a DevTools port. `find_apps` reads Electron PIDs from the process list. `discover_apps` probes local ports. `attach` and `attach_by_pid` join an app that is already running.
 
-The reply includes an id, usually `electron-…`. Later calls pass that id as `processId`.
+The reply includes an id, usually `electron-…`. Later calls can pass that id as `processId`. If only one app is running, `processId` is optional.
 
 `stop_app` kills a process this server started. On an attached session it only detaches. Either way the session leaves `list_apps`.
 
@@ -298,6 +299,8 @@ Page targets keep console, network, and audit events buffered between calls.
 | `electron://logs/{id}` | stdout and stderr. |
 | `electron://console/{id}` | Buffered console. |
 | `electron://cdp/{processId}/{targetId}` | One target. |
+| `electron://artifacts` | All exported screenshots, traces, heap snapshots, HARs, PDFs. |
+| `electron://artifact/{id}` | Read an exported artifact file by its unique artifact ID. |
 
 ## Configuration
 

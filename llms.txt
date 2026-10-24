@@ -1,0 +1,67 @@
+# electron-debug-mcp — LLM & Agent Usage Guide
+
+Electron Debug MCP allows AI coding agents (Claude, Cursor, Antigravity, etc.) to launch, inspect, drive, and debug Electron applications over the Chrome DevTools Protocol (CDP) and Node inspect protocol.
+
+## Connection & Setup
+- Always start by checking the environment if unsure: `doctor`
+- Start an app with remote debugging:
+  ```json
+  { "appPath": "/absolute/path/to/app", "inspectMain": true }
+  ```
+- If an Electron app is already running, find it with `find_apps` and attach using `attach_by_pid` or `attach`.
+- **Note on processId**: If only one Electron app is running under this MCP server, `processId` is **optional** across all tools.
+
+## High-Leverage Agent Recipes
+
+### 1. Visual & Accessibility Inspection (See)
+- One-shot check for layout, errors, and failed network calls:
+  `vision` -> returns screenshot image + active URL + recent console errors + failed network requests.
+- Inspect accessibility tree (avoid brittle CSS selectors):
+  `snapshot` -> returns accessibility tree with roles, names, and states.
+- Find DOM elements: `query_selector` or `get_dom`.
+- Highlighting elements: `highlight({ selector: "#submit-btn" })`.
+
+### 2. Driving Interactivity (Act)
+- Prefer accessible interactions when elements have aria names:
+  `click_ax({ name: "Save", role: "button" })`
+  `type_ax({ name: "Email", text: "user@example.com" })`
+- Or use CSS selectors:
+  `click({ selector: "button.submit" })`
+  `type_text({ text: "Hello", selector: "input#name" })`
+  `select_option({ selector: "select#country", label: "Canada" })`
+  `hover({ selector: ".menu-item" })`
+  `scroll({ selector: "#footer" })`
+  `drag({ fromSelector: "#draggable", toSelector: "#dropzone" })`
+- Verify interactions without tool crashes:
+  `assert_ui({ textIncludes: "Changes saved", maxConsoleErrors: 0 })` -> returns structured pass/fail.
+
+### 3. Network Debugging & Interception
+- Inspect recent network calls:
+  `get_network_log({ tail: 20, failedOnly: true })`
+- Read response body:
+  `get_response_body({ requestId: "<id from get_network_log>" })`
+- Mock an API endpoint:
+  `network_stub({ urlPattern: "*api/users*", action: "fulfill", status: 200, body: JSON.stringify([{ id: 1 }]) })`
+- Wait for all network calls to settle:
+  `wait_network_idle({ idleMs: 500 })`
+- Export HAR file:
+  `export_har()` -> returns file path and `electron://artifact/{id}` URI.
+
+### 4. Main Process & IPC Debugging (inspectMain: true)
+- Window topology and target mapping: `webcontents_topology`
+- Main process state (app paths, metrics, windows): `main_state`
+- Record and observe IPC messages:
+  `ipc_tap` -> then perform UI action -> `get_ipc_log({ tail: 50 })`
+- Test deep linking: `open_deep_link({ url: "myapp://settings" })`
+- Window bounds & focus: `focus_window`, `set_window_bounds`
+- Clipboard interaction: `get_clipboard`, `set_clipboard`
+- Permissions: `set_permission({ permission: "notifications", grant: true })`
+- Main-process JS evaluation: `evaluate_main({ expression: "process.versions" })`
+
+### 5. Performance & Artifacts
+- CPU profiling: `start_cpu_profile` -> perform action -> `stop_cpu_profile`
+- Memory leaks: `heap_snapshot`
+- Performance metrics & audit: `get_performance_metrics`, `perf_audit`
+- Read exported artifacts directly via MCP:
+  - List all artifacts: `electron://artifacts`
+  - Read specific artifact: `electron://artifact/{id}`

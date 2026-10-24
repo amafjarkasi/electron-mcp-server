@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import { processEvents } from "./events.js";
 import { log } from "./log.js";
 import { isConsoleLiveLoggingEnabled } from "./process-manager.js";
@@ -34,6 +36,7 @@ const server = new McpServer(
 			"get_downloads must be called before the download (or pass url to start one). It returns savePath. delete_cookie removes a cookie set with set_cookie. file:// pages need an http(s) url or domain for cookies.",
 			"screenshot/save_screenshot accept selector to clip an element. resume after pause or later screenshots fail. stop_app kills an owned app and only detaches an attached one, then drops the processId.",
 			"Read electron://server for package version, uptime, and capability counts without calling a tool.",
+			"Read electron://artifacts for exported screenshots, traces, heap snapshots, and HAR files.",
 		].join(" "),
 	},
 );
@@ -89,6 +92,21 @@ registerProfileTools(server);
 registerMainTools(server);
 registerPrompts(server);
 registerResources(server);
+
+// Hook tools/list to pass through tool annotations
+server.server.setRequestHandler(ListToolsRequestSchema, () => {
+	const registered = (server as any)._registeredTools ?? {};
+	return {
+		tools: Object.entries(registered).map(([name, tool]: [string, any]) => ({
+			name,
+			description: tool.description,
+			inputSchema: tool.inputSchema
+				? zodToJsonSchema(tool.inputSchema, { strictUnions: true })
+				: { type: "object" },
+			...(tool.annotations ? { annotations: tool.annotations } : {}),
+		})),
+	};
+});
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

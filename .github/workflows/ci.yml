@@ -11,6 +11,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: ["20", "22"]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -24,7 +25,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: ${{ matrix.node-version }}
           cache: npm
 
       - name: Install dependencies

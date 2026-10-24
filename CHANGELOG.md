@@ -1,9 +1,17 @@
 # Changelog
 
-## Unreleased
+## 1.11.0
 
-### Internal
-- Tool, prompt, and resource registration moved out of `src/index.ts` into `src/tools/` (`connect`, `page`, `network`, `profile`, `main`, `prompts`, `resources`). Sessions and DevTools stay in `src/process-manager.ts`. Higher-level helpers stay in `src/power-tools.ts`.
+### Features & Ergonomics
+- **Tool Annotations** — all 88 tools now provide standard MCP `annotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`). MCP clients (Cursor, Claude, Antigravity) can auto-approve read-only inspection tools without manual confirmation prompts.
+- **Optional `processId`** — when only one Electron app is running under the server, `processId` is now optional across all tools, auto-resolving to the active process.
+- **Artifacts Resource System** — new `electron://artifacts` and `electron://artifact/{id}` resources. Tools that write outputs (`save_screenshot`, `export_har`, `stop_tracing`, `stop_cpu_profile`, `heap_snapshot`, `capture_mhtml`, `print_pdf`, `get_downloads`) automatically register their files and return an `artifactUri` for instant MCP retrieval.
+- **Network Log Filtering** — `get_network_log` now accepts `status`, `failedOnly`, and `urlPattern` filters to quickly isolate errors.
+- **DOM Guard** — `get_dom` accepts optional `maxLength` to protect token context from massive DOM trees.
+- **Agent Recipes** — added `llms.txt` with end-to-end prompt patterns and workflows for coding agents.
+- **Console Fix** — `get_console_messages` level filtering now properly includes assert failures and unhandled exceptions under `error`, and handles both `warn` and `warning`.
+- **CI Matrix** — automated testing across both Node 20 and Node 22 on Ubuntu (Xvfb), Windows, and macOS.
+- Surface: **88 tools · 9 resources · 6 prompts**.
 
 ## 1.10.0
 
