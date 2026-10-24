@@ -327,37 +327,100 @@ Returns checklist score (0–100), letter grade (A–F), and actionable remediat
 ```
 Generates ready-to-use TypeScript definitions for your preload APIs directly from observed runtime communication.
 
-### 5. Multi-Step Script Execution & Playwright Codegen
+### 5. Multi-Step Workflow Engine & Playwright Codegen (`run_script`)
+Execute complex, multi-action automations server-side in a single MCP roundtrip with variable interpolation, conditional branching, retries, assertion checks, and code generation.
+
 ```json
 {
   "name": "run_script",
   "arguments": {
-    "vars": { "searchQuery": "antigravity" },
+    "vars": {
+      "targetWorkspace": "workspace-alpha",
+      "expectedItems": 3
+    },
     "steps": [
       {
-        "id": "input_query",
+        "id": "authenticate",
         "tool": "type_text",
-        "args": { "selector": "input#search", "text": "{{vars.searchQuery}}" }
-      },
-      {
-        "id": "submit_click",
-        "tool": "click",
-        "args": { "selector": "button#submit" },
+        "args": {
+          "selector": "input#token",
+          "text": "{{secret:APP_API_TOKEN}}"
+        },
         "expect": { "status": "success" }
       },
       {
-        "id": "assert_results",
+        "id": "switch_workspace",
+        "tool": "click",
+        "args": { "selector": "button.workspace-switch" },
+        "retry": { "retries": 3, "delayMs": 250 }
+      },
+      {
+        "id": "check_banner",
         "tool": "eval_js",
-        "args": { "expression": "document.querySelector('#results').textContent" },
-        "expect": { "contains": "antigravity" }
+        "args": { "expression": "Boolean(document.querySelector('.promo-modal'))" }
+      },
+      {
+        "id": "dismiss_banner",
+        "if": "{{steps.check_banner.result.value}} == true",
+        "tool": "click",
+        "args": { "selector": ".promo-modal .close-btn" }
+      },
+      {
+        "id": "verify_workspace_state",
+        "tool": "eval_js",
+        "args": {
+          "expression": "({ active: document.querySelector('#current-ws').textContent.trim(), count: document.querySelectorAll('.item').length })"
+        },
+        "expect": {
+          "js": "result.value.active === 'workspace-alpha' && result.value.count >= 3"
+        }
       }
     ],
     "exportAs": "playwright"
   }
 }
 ```
-> [!TIP]
-> Runs all steps on the server with deterministic speed, resolves runtime context, auto-captures diagnostics on failure, and compiles the sequence into ready-to-run Playwright `_electron` tests.
+
+#### Capabilities & Options
+
+| Feature | Syntax / Option | Purpose |
+| --- | --- | --- |
+| **Variables & Context** | `{{vars.key}}` | Reference values from the script's `vars` object with preserved primitive types (strings, numbers, booleans, objects). |
+| **Step Dependencies** | `{{steps.id.result.path}}` | Pass outputs, IDs, or tokens computed in earlier steps directly into subsequent tool arguments. |
+| **Environment & Secrets** | `{{env.KEY}}` · `{{secret:KEY}}` | Inject process environment variables; secrets are automatically masked in logs, console events, and outputs as `[REDACTED]`. |
+| **Conditional Branching** | `if: "{{steps.check.result.open}} == true"` | Skips step execution unless condition evaluates to true (`==`, `!=`, `<`, `>`, `&&`, `||`). |
+| **Expectation Assertions** | `expect: { contains, equals, status, js }` | Validates step outcome; custom `js` expressions evaluate against `result` to verify app invariants. |
+| **Automatic Retries** | `retry: { retries: 3, delayMs: 250 }` | Automatically retries flaky operations with exponential backoff before failing. |
+| **Failure Diagnostics** | *Automated* | If a step fails, captures viewport screenshot artifact (`electron://artifact/{id}`), console errors, and network errors. |
+| **Playwright Codegen** | `exportAs: "playwright"` | Generates a standalone, runnable Playwright `_electron` test script (`.spec.ts`) reflecting the executed sequence. |
+
+<details>
+<summary><b>View Generated Playwright Codegen Output</b></summary>
+
+```typescript
+import { test, expect, _electron as electron } from "@playwright/test";
+
+test("executed script workflow", async () => {
+  const electronApp = await electron.launch({ args: ["."] });
+  const window = await electronApp.firstWindow();
+
+  // Step: authenticate
+  await window.locator("input#token").fill(process.env.APP_API_TOKEN || "");
+
+  // Step: switch_workspace
+  await window.locator("button.workspace-switch").click();
+
+  // Step: dismiss_banner
+  await window.locator(".promo-modal .close-btn").click();
+
+  // Step: verify_workspace_state
+  const evalResult = await window.evaluate("({ active: document.querySelector('#current-ws').textContent.trim(), count: document.querySelectorAll('.item').length })");
+  expect(evalResult).toBeDefined();
+
+  await electronApp.close();
+});
+```
+</details>
 
 ---
 

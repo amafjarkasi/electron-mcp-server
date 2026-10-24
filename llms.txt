@@ -65,3 +65,12 @@ Electron Debug MCP allows AI coding agents (Claude, Cursor, Antigravity, etc.) t
 - Read exported artifacts directly via MCP:
   - List all artifacts: `electron://artifacts`
   - Read specific artifact: `electron://artifact/{id}`
+
+### 6. Multi-Step Workflows & Codegen (`run_script`)
+Execute multi-action sequences server-side with zero client roundtrip latency:
+- Context variable interpolation: `{{vars.key}}`, `{{steps[id].result.path}}`, `{{env.KEY}}`, `{{secret:KEY}}`
+- Conditional branching: `if: "{{steps.check.result.val}} == true"`
+- Step retry: `retry: { retries: 3, delayMs: 250 }`
+- Invariant assertions: `expect: { status: "success", contains: "Dashboard", js: "result.value.count > 0" }`
+- Failure diagnostics: on step failure, auto-captures failure screenshot artifact (`electron://artifact/{id}`) and console/network error tails.
+- Export as Playwright test: `exportAs: "playwright"` returns executable Playwright `_electron` test code.
