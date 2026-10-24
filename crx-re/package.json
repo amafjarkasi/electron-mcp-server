@@ -4,13 +4,17 @@
   "type": "module",
   "description": "CLI AI agent that unpacks Chrome extensions into a readable inventory",
   "bin": {
-    "crx-re": "cli/index.ts"
+    "crx-re": "bin/crx-re.mjs"
   },
   "scripts": {
     "check": "tsc --noEmit",
     "dev": "agent-sdk dev",
-    "crx-re": "tsx cli/index.ts",
-    "test": "tsx --test test/*.test.ts"
+    "crx-re": "node bin/crx-re.mjs",
+    "tokens": "node bin/crx-re.mjs tokens",
+    "analyze:hello": "node bin/crx-re.mjs analyze fixtures/hello-world --out ./out/hello-world",
+    "analyze:reading-time": "node bin/crx-re.mjs analyze fixtures/reading-time --out ./out/reading-time",
+    "test": "tsx --test test/*.test.ts",
+    "test:local": "bash scripts/test-local.sh"
   },
   "engines": {
     "node": ">=22.13"
