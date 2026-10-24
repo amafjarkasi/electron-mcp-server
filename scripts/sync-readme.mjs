@@ -32,8 +32,13 @@ console.log(
 );
 
 let readme = fs.readFileSync("README.md", "utf8");
+const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
 
 // Update badges
+readme = readme.replace(
+	/<img alt="version" src="https:\/\/img\.shields\.io\/badge\/version-[^"]+" \/>/,
+	`<img alt="version" src="https://img.shields.io/badge/version-${pkg.version}-0F766E?style=flat-square" />`
+);
 readme = readme.replace(
 	/<img alt="\d+[ _]tools" src="https:\/\/img\.shields\.io\/badge\/\d+_tools-[^"]+" \/>/,
 	`<img alt="${toolCount} tools" src="https://img.shields.io/badge/${toolCount}_tools-0F766E?style=flat-square" />`

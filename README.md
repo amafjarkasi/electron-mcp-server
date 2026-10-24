@@ -8,8 +8,8 @@
 *Give Cursor, Claude & autonomous agents eyes, hands, and deep runtime inspection inside Electron desktop applications.*
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.12.0-0F766E?style=flat-square" />
-  <img alt="97 tools" src="https://img.shields.io/badge/97_tools-0F766E?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-1.14.0-0F766E?style=flat-square" />
+  <img alt="106 tools" src="https://img.shields.io/badge/106_tools-0F766E?style=flat-square" />
   <img alt="9 resources" src="https://img.shields.io/badge/9_resources-115E59?style=flat-square" />
   <img alt="6 prompts" src="https://img.shields.io/badge/6_prompts-134E4A?style=flat-square" />
   <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D20-339933?style=flat-square&logo=nodedotjs&logoColor=white" />
@@ -134,7 +134,7 @@ High-level single-turn workflows reduce round trips:
 
 ---
 
-## 🛠️ Tool Matrix (96 Tools)
+## 🛠️ Tool Matrix (106 Tools)
 
 All tools accept an optional `processId`. When only one app is running, it automatically resolves to the active process.
 
@@ -153,8 +153,8 @@ All tools accept an optional `processId`. When only one app is running, it autom
 ### 👁️ See & Visual Inspection (8)
 | Tool | Description |
 | --- | --- |
-| `vision` | Recommended one-shot snapshot: viewport screenshot, page URL/title, console errors, and network failures. |
-| `snapshot` | Complete semantic accessibility tree (`Accessibility.getFullAXTree`) with roles, names, and backend IDs. |
+| `vision` | Recommended one-shot snapshot: viewport screenshot, page URL/title, console errors, and network failures. Supports `markElements: true` for Set-of-Marks visual badges. |
+| `snapshot` | Complete semantic accessibility tree (`Accessibility.getFullAXTree`) with stable element refs (`ref: "e1"`), roles, names, and backend IDs. Supports `markElements: true`. |
 | `screenshot` | Capture viewport PNG or JPEG base64 payload. |
 | `save_screenshot` | Capture screenshot to disk (supports CSS selector clipping); registers an artifact. |
 | `diff_screenshot` | Visual regression comparison against a baseline screenshot. |
@@ -166,20 +166,20 @@ All tools accept an optional `processId`. When only one app is running, it autom
 | Tool | Description |
 | --- | --- |
 | `act_and_verify` | **Composite:** Executes an action (`click`, `type`, `click_ax`), waits for network idle, verifies assertion, and captures failure screenshot if failed. |
-| `click` | Click the center of an element matching a CSS selector. |
+| `click` | Click the center of an element matching a CSS `selector` or accessibility `ref` (e.g. `"e1"`). |
 | `click_ax` | Robust click locating an element by its accessibility name and optional role. |
-| `type_text` | Type text into the focused element or selector. Supports `{{secret:VAR}}` resolution and redaction. |
+| `type_text` | Type text into focused element, `selector`, or `ref`. Supports `{{secret:VAR}}` resolution and redaction. |
 | `type_ax` | Focus an element by accessibility name and type text with secret placeholder support. |
 | `press_key` | Dispatch keypress or keyboard shortcut (Enter, Escape, Tab, Arrows, Ctrl+A, etc.). |
-| `hover` | Move mouse pointer over a CSS selector without clicking. |
-| `scroll` | Scroll page or element by delta coordinates, or scroll a selector into view. |
-| `drag` | Drag-and-drop between two selectors with native HTML5 `dataTransfer` payload. |
+| `hover` | Move mouse pointer over a CSS `selector` or `ref` without clicking. |
+| `scroll` | Scroll page or element by delta coordinates, or scroll a `selector` or `ref` into view. |
+| `drag` | Drag-and-drop between two selectors or refs with native HTML5 `dataTransfer` payload. |
 | `select_option` | Select an option in a `<select>` dropdown by value or label. |
 | `set_file_input` | Programmatically set files on an `<input type="file">`. |
 | `handle_dialog` | Automatically accept or dismiss JavaScript alerts, confirms, and prompts. |
 | `open_deep_link` | Dispatch a custom protocol deep link (e.g. `myapp://action`) into the application. |
 
-### 📄 Page State & Navigation (15)
+### 📄 Page State & Navigation (17)
 | Tool | Description |
 | --- | --- |
 | `page_info` | Basic page details: URL, title, dimensions, readyState, and user agent. |
@@ -197,6 +197,8 @@ All tools accept an optional `processId`. When only one app is running, it autom
 | `get_storage` | Read items from `localStorage` or `sessionStorage`. |
 | `set_storage` | Write items to `localStorage` or `sessionStorage`. |
 | `assert_ui` | Verify page URL, title, element visibility, text matches, and absence of console errors. |
+| `save_storage_state` | Export cookies, `localStorage`, and `sessionStorage` into a Playwright-compatible JSON artifact (`electron://artifact/{id}`). |
+| `load_storage_state` | Restore cookies and origin storage state back into the live Electron session for instant auth bypass and state replay. |
 
 ### 🌐 Network & Downloads (11)
 | Tool | Description |
@@ -229,9 +231,16 @@ All tools accept an optional `processId`. When only one app is running, it autom
 | `set_breakpoint` / `remove_breakpoint` | Set or clear JavaScript breakpoints by script URL and line number. |
 | `pause` / `resume` | Suspend or resume V8 JavaScript execution via Debugger domain. |
 
-### 🛡️ Main Process, Security & System (15)
+### 🛡️ Main Process, Native Mocks, Menus & Security (22)
 | Tool | Description |
 | --- | --- |
+| `mock_electron_api` | Intercept and mock any Electron native module (`dialog`, `shell`, `app`, `clipboard`, `autoUpdater`) with custom return values or async implementations. |
+| `get_mock_calls` | Inspect recorded call history, argument signatures, and timestamps for mocked Electron APIs. |
+| `restore_electron_mocks` | Restore original native Electron implementations and purge mock call records. |
+| `get_application_menu` | Inspect the native `Menu.getApplicationMenu()` tree with roles, labels, enabled/checked states, and accelerator shortcuts. |
+| `click_menu_item` | Programmatically dispatch `.click()` on native application menu items by path (`"File > Save"`), role, or id. |
+| `trigger_shortcut` | Inspect and trigger native global accelerators (`globalShortcut`) in the Electron application. |
+| `get_process_health` | Watchdog monitoring process exits, crashes (`render-process-gone`), window hangs (`unresponsive`), memory RSS/heap, and stderr logs. |
 | `electron_security_audit` | Comprehensive security audit of webPreferences, context isolation, sandboxing, window handlers, navigation guards, and binary fuses. |
 | `ipc_invoke` | Directly invoke a main-process IPC handle channel or emit an IPC event with arguments. |
 | `ipc_schema_inference` | Infer IPC channel contracts, payload types, and auto-generate TypeScript definitions. |
@@ -384,7 +393,85 @@ Execute complex, multi-action automations server-side in a single MCP roundtrip 
 #### Capabilities & Options
 
 | Feature | Syntax / Option | Purpose |
-| --- | --- | --- |
+| 
+### 6. Ref Locators & Set-of-Marks Visual Prompting
+Inspect accessibility targets with compact refs (`e1`, `e2`) and drive interactions without fragile CSS selectors:
+```json
+// 1. Take snapshot with Set-of-Marks badges in the screenshot
+{ "name": "vision", "arguments": { "markElements": true } }
+
+// 2. Click directly by ref token
+{ "name": "click", "arguments": { "ref": "e3" } }
+
+// 3. Type text into ref
+{ "name": "type_text", "arguments": { "ref": "e4", "text": "Hello Desktop!" } }
+```
+
+### 7. Native Electron API Mocking (Dialogs, Shell, Clipboard)
+Bypass OS file dialogs, external URL opens, or update checks during automated test runs:
+```json
+// 1. Mock dialog.showOpenDialog to return test fixtures
+{
+  "name": "mock_electron_api",
+  "arguments": {
+    "module": "dialog",
+    "method": "showOpenDialog",
+    "returns": { "canceled": false, "filePaths": ["/fixtures/document.pdf"] }
+  }
+}
+
+// 2. Mock shell.openExternal
+{
+  "name": "mock_electron_api",
+  "arguments": {
+    "module": "shell",
+    "method": "openExternal",
+    "returns": true
+  }
+}
+
+// 3. Inspect tracked invocations
+{ "name": "get_mock_calls", "arguments": { "module": "shell", "method": "openExternal" } }
+
+// 4. Restore original implementation
+{ "name": "restore_electron_mocks", "arguments": { "module": "shell", "method": "openExternal" } }
+```
+
+### 8. Native Application Menu & Accelerator Trigger
+Automate native OS menus and global keyboard shortcuts:
+```json
+// 1. Inspect the full native menu tree
+{ "name": "get_application_menu", "arguments": {} }
+
+// 2. Click menu item by path or role
+{ "name": "click_menu_item", "arguments": { "path": "File > Save" } }
+
+// 3. Dispatch an Electron accelerator directly
+{ "name": "trigger_shortcut", "arguments": { "accelerator": "CommandOrControl+Shift+P" } }
+```
+
+### 9. Process Health Watchdog & Crash Diagnostics
+```json
+{ "name": "get_process_health", "arguments": {} }
+```
+Returns real-time status (`"healthy"`, `"unresponsive"`, or `"crashed"`), tracking OOM terminations, child process failures, window hangs, and memory metrics.
+
+### 10. Storage State Snapshot & Auth Replay
+Save full session state (cookies, localStorage, sessionStorage) into Playwright-compatible storage state artifacts to bypass repeated login flows across tests:
+```json
+// 1. Export storage state to an artifact
+{ "name": "save_storage_state", "arguments": {} }
+
+// 2. Restore state into any new Electron session
+{
+  "name": "load_storage_state",
+  "arguments": {
+    "state": { "cookies": [...], "origins": [...] }
+  }
+}
+```
+
+--- | --- | --- |
 | **Variables & Context** | `{{vars.key}}` | Reference values from the script's `vars` object with preserved primitive types (strings, numbers, booleans, objects). |
 | **Step Dependencies** | `{{steps.id.result.path}}` | Pass outputs, IDs, or tokens computed in earlier steps directly into subsequent tool arguments. |
 | **Environment & Secrets** | `{{env.KEY}}` · `{{secret:KEY}}` | Inject process environment variables; secrets are automatically masked in logs, console events, and outputs as `[REDACTED]`. |

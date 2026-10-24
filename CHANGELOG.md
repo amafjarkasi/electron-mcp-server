@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.14.0
+
+### Features & Desktop Automation Surface
+- **Ref-Based Locators & Set-of-Marks Visual Prompting**:
+  - `snapshot` now tags interactive accessibility elements with stable reference identifiers (`ref: "e1"`, `ref: "e2"`, mapped to underlying `backendDOMNodeId`).
+  - Action tools (`click`, `hover`, `type_text`, `scroll`, `drag`) now accept `ref` directly as an alternative to CSS selectors, completely eliminating brittle selector queries.
+  - `vision` and `snapshot` support `markElements: true`, dynamically overlaying high-contrast Set-of-Marks badges on all interactive elements in the viewport with zero external dependencies, taking the screenshot, and cleanly restoring the DOM.
+- **Electron Native API Mocking & Spying**:
+  - `mock_electron_api`: Mock native Electron APIs (`dialog.showOpenDialog`, `shell.openExternal`, `app.getPath`, `clipboard`, `autoUpdater`) in the main process with custom return values or async implementations.
+  - `get_mock_calls`: Retrieve tracked call counts, argument arrays, and timestamps.
+  - `restore_electron_mocks`: Restore original native implementations and purge call history.
+- **Application Menu & Accelerator Driver**:
+  - `get_application_menu`: Inspect the native `Menu.getApplicationMenu()` tree with roles, labels, enabled/checked states, and accelerator shortcuts.
+  - `click_menu_item`: Programmatically click menu items by path (`"File > Save"`), role, or id.
+  - `trigger_shortcut`: Check registration and trigger Electron global accelerators.
+- **Process Health & Crash Watchdog**:
+  - `get_process_health`: Live health status (`healthy`, `unresponsive`, `crashed`), tracking `render-process-gone` (OOM, killed, exit codes), window hangs/unresponsive events, memory consumption (RSS, heap), and stderr tail.
+- **Storage State Snapshot & Restore**:
+  - `save_storage_state`: Export cookies, `localStorage`, and `sessionStorage` into standardized Playwright-compatible storage state JSON artifacts (`electron://artifact/{id}`).
+  - `load_storage_state`: Restore cookies and origin storage directly into running Electron sessions for instant auth bypass and state replay.
+- Surface: **106 tools · 9 resources · 6 prompts** (135 passing unit tests and full smoke suite).
+
 ## 1.13.0
 
 ### Features & Workflow Automation

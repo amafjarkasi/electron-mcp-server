@@ -33,6 +33,7 @@ import {
 } from "./process-manager.js";
 import CDP from "chrome-remote-interface";
 import { log } from "./log.js";
+import { injectSetOfMarks, removeSetOfMarks } from "./desktop-tools.js";
 
 const MAX_IPC = 500;
 const DEFAULT_AX_NODES = 400;
@@ -102,6 +103,7 @@ export async function getAccessibilitySnapshot(
 	nodeCount: number;
 	truncated: boolean;
 	nodes: Array<{
+		ref?: string;
 		nodeId?: string;
 		role?: string;
 		name?: string;
@@ -132,14 +134,25 @@ export async function getAccessibilitySnapshot(
 	const raw = result.nodes ?? [];
 	const truncated = raw.length > maxNodes;
 	const slice = truncated ? raw.slice(0, maxNodes) : raw;
-	const nodes = slice.map((n) => ({
-		nodeId: n.nodeId,
-		role: n.role?.value,
-		name: n.name?.value,
-		description: n.description?.value,
-		backendDOMNodeId: n.backendDOMNodeId,
-		ignored: n.ignored,
-	}));
+	if (!electronProcess.axRefMap) {
+		electronProcess.axRefMap = new Map();
+	}
+	const nodes = slice.map((n, idx) => {
+		const ref = "e" + (idx + 1);
+		if (n.backendDOMNodeId) {
+			electronProcess.axRefMap!.set(ref, n.backendDOMNodeId);
+			electronProcess.axRefMap!.set(String(n.backendDOMNodeId), n.backendDOMNodeId);
+		}
+		return {
+			ref,
+			nodeId: n.nodeId,
+			role: n.role?.value,
+			name: n.name?.value,
+			description: n.description?.value,
+			backendDOMNodeId: n.backendDOMNodeId,
+			ignored: n.ignored,
+		};
+	});
 	return {
 		targetId: target.id,
 		nodeCount: nodes.length,
@@ -151,7 +164,7 @@ export async function getAccessibilitySnapshot(
 /** One-shot agent vision: screenshot + page + errors + network failures. */
 export async function getAppVision(
 	electronProcess: ElectronProcess,
-	options: { targetId?: string; includeScreenshot?: boolean } = {},
+	options: { targetId?: string; includeScreenshot?: boolean; markElements?: boolean } = {},
 ): Promise<Record<string, unknown>> {
 	await ensureMonitoring(electronProcess);
 	await updateCDPTargets(electronProcess);
@@ -201,6 +214,9 @@ export async function getAppVision(
 
 	if (options.includeScreenshot !== false) {
 		try {
+			if (options.markElements) {
+				await injectSetOfMarks(electronProcess, target.id);
+			}
 			const shot = await withTimeout(
 				captureScreenshot(electronProcess, target.id, "png"),
 				CDP_TIMEOUT_MS,
@@ -215,6 +231,10 @@ export async function getAppVision(
 		} catch (err) {
 			out.screenshotError =
 				err instanceof Error ? err.message : String(err);
+		} finally {
+			if (options.markElements) {
+				await removeSetOfMarks(electronProcess, target.id);
+			}
 		}
 	}
 	return out;
@@ -412,7 +432,7 @@ export function hasCpuProfileSession(processId: string): boolean {
  * target. Bare `require` is usually missing on Electron's `browser_init`
  * context, so fall back to `_linkedBinding` for app / BrowserWindow.
  */
-const LOAD_ELECTRON = `(() => {
+export const LOAD_ELECTRON = `(() => {
 	const req = typeof require === 'function'
 		? require
 		: (process.mainModule && typeof process.mainModule.require === 'function'
@@ -421,17 +441,21 @@ const LOAD_ELECTRON = `(() => {
 	if (typeof req === 'function') {
 		try {
 			const mod = req('electron');
-			if (mod && mod.app && mod.BrowserWindow) return mod;
+			if (mod && (mod.app || mod.BrowserWindow || mod.shell || mod.Menu || mod.dialog || mod.globalShortcut)) return mod;
 		} catch { /* fall through */ }
 	}
 	const electron = {};
 	try { electron.app = process._linkedBinding('electron_browser_app').app; } catch { /* */ }
 	try { electron.BrowserWindow = process._linkedBinding('electron_browser_window').BrowserWindow; } catch { /* */ }
+	try { electron.shell = process._linkedBinding('electron_common_shell'); } catch { /* */ }
+	try { electron.dialog = process._linkedBinding('electron_browser_dialog'); } catch { /* */ }
+	try { electron.Menu = req ? req('electron').Menu : null; } catch { /* */ }
+	try { electron.globalShortcut = req ? req('electron').globalShortcut : null; } catch { /* */ }
 	try {
 		const wc = process._linkedBinding('electron_browser_web_contents');
 		electron.webContents = wc;
 	} catch { /* */ }
-	if (!electron.app || !electron.BrowserWindow) {
+	if (!electron.app && !electron.BrowserWindow && !electron.shell && !electron.Menu) {
 		throw new Error('Unable to access Electron APIs from this main-process evaluate context');
 	}
 	return electron;
@@ -2076,7 +2100,7 @@ async function dispatchClick(
 	});
 }
 
-async function boxCenterForBackendNode(
+export async function boxCenterForBackendNode(
 	electronProcess: ElectronProcess,
 	targetId: string,
 	backendNodeId: number,

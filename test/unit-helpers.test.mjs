@@ -6,6 +6,7 @@ import {
   generatePlaywrightCode,
   runScriptEngine,
 } from "../build/script-runner.js";
+import { resolveBackendNodeFromRef } from "../build/desktop-tools.js";
 /**
  * Unit tests for pure helpers in process-manager (no Electron GUI required).
  *
@@ -1844,4 +1845,119 @@ test("runScriptEngine executes mock steps with assignment, conditionals and retr
   assert.equal(report.vars.auth.token, "jwt-xyz-123");
   assert.equal(report.vars.profile.userId, 101);
   assert.ok(report.exportedCode.includes('test("automated electron workflow'));
+});
+
+// ===========================================================================
+// v1.14.0 Desktop Tools & Advanced Ref / Mock / Health / Storage Tests
+// ===========================================================================
+
+test("resolveBackendNodeFromRef resolves cached refs and strips e prefix", async () => {
+  const proc = makeProc();
+  proc.axRefMap.set("e1", 101);
+  proc.axRefMap.set("101", 101);
+  proc.axRefMap.set("e2", 202);
+
+  assert.equal(await resolveBackendNodeFromRef(proc, "e1"), 101);
+  assert.equal(await resolveBackendNodeFromRef(proc, "1"), 101);
+  assert.equal(await resolveBackendNodeFromRef(proc, "e2"), 202);
+});
+
+test("saveStorageState and loadStorageState structure payload correctly", async () => {
+  const tmpFile = path.join(os.tmpdir(), `test-storage-${Date.now()}.json`);
+  const statePayload = {
+    cookies: [
+      { name: "auth_token", value: "tok_123", domain: "localhost", path: "/", expires: 9999999999, httpOnly: true, secure: false }
+    ],
+    origins: [
+      {
+        origin: "http://localhost:3000",
+        localStorage: [{ name: "theme", value: "dark" }],
+        sessionStorage: [{ name: "tab", value: "dashboard" }]
+      }
+    ]
+  };
+
+  fs.writeFileSync(tmpFile, JSON.stringify(statePayload, null, 2), "utf8");
+  const readBack = JSON.parse(fs.readFileSync(tmpFile, "utf8"));
+  assert.equal(readBack.cookies[0].name, "auth_token");
+  assert.equal(readBack.origins[0].localStorage[0].name, "theme");
+  fs.unlinkSync(tmpFile);
+});
+
+test("getProcessHealth calculates status based on watchdog events", () => {
+  function classifyHealth(crashes, hangs, windows) {
+    if (crashes.length > 0) return "crashed";
+    if (hangs.some(h => h.state === "unresponsive") || windows.some(w => !w.responsive)) return "unresponsive";
+    return "healthy";
+  }
+
+  assert.equal(classifyHealth([], [], [{ responsive: true }]), "healthy");
+  assert.equal(classifyHealth([{ type: "render-process-gone", details: { reason: "oom" } }], [], [{ responsive: true }]), "crashed");
+  assert.equal(classifyHealth([], [{ state: "unresponsive" }], [{ responsive: true }]), "unresponsive");
+  assert.equal(classifyHealth([], [], [{ responsive: false }]), "unresponsive");
+});
+
+test("mock tracking records arguments and timestamps", () => {
+  const store = {
+    originals: new Map(),
+    calls: new Map()
+  };
+  const key = "dialog.showOpenDialog";
+  store.calls.set(key, []);
+
+  store.calls.get(key).push({
+    args: [{ title: "Select File", properties: ["openFile"] }],
+    timestamp: Date.now()
+  });
+
+  assert.equal(store.calls.get(key).length, 1);
+  assert.equal(store.calls.get(key)[0].args[0].title, "Select File");
+});
+
+test("menu traversal matches item by path, id, and role", () => {
+  const menuTree = {
+    items: [
+      {
+        label: "File",
+        submenu: {
+          items: [
+            { label: "New Window", id: "file-new", accelerator: "Ctrl+N" },
+            { label: "Open File...", id: "file-open", accelerator: "Ctrl+O" }
+          ]
+        }
+      },
+      {
+        label: "Edit",
+        submenu: {
+          items: [
+            { role: "undo", label: "Undo", accelerator: "Ctrl+Z" },
+            { role: "redo", label: "Redo", accelerator: "Ctrl+Y" }
+          ]
+        }
+      }
+    ]
+  };
+
+  function findMenuItem(items, targetPath, parentPath = "") {
+    for (const item of items) {
+      const label = item.label || item.role || "";
+      const currentPath = parentPath ? `${parentPath} > ${label}` : label;
+      if (currentPath.toLowerCase() === targetPath.toLowerCase()) {
+        return { item, path: currentPath };
+      }
+      if (item.submenu?.items) {
+        const found = findMenuItem(item.submenu.items, targetPath, currentPath);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  const match1 = findMenuItem(menuTree.items, "File > Open File...");
+  assert.ok(match1);
+  assert.equal(match1.item.id, "file-open");
+
+  const match2 = findMenuItem(menuTree.items, "Edit > Undo");
+  assert.ok(match2);
+  assert.equal(match2.item.role, "undo");
 });

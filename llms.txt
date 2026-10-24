@@ -16,12 +16,19 @@ Electron Debug MCP allows AI coding agents (Claude, Cursor, Antigravity, etc.) t
 ### 1. Visual & Accessibility Inspection (See)
 - One-shot check for layout, errors, and failed network calls:
   `vision` -> returns screenshot image + active URL + recent console errors + failed network requests.
-- Inspect accessibility tree (avoid brittle CSS selectors):
-  `snapshot` -> returns accessibility tree with roles, names, and states.
+- Inspect accessibility tree with stable element refs (`ref: "e1"`):
+  `snapshot` -> returns accessibility tree with roles, names, and backend IDs.
+- Set-of-Marks visual prompting:
+  `vision({ markElements: true })` or `snapshot({ markElements: true })` -> injects high-contrast red numeric badges into the viewport image without modifying page styles permanently.
 - Find DOM elements: `query_selector` or `get_dom`.
 - Highlighting elements: `highlight({ selector: "#submit-btn" })`.
 
 ### 2. Driving Interactivity (Act)
+- Ref-based actions (fast, robust, resistant to DOM shifts):
+  `click({ ref: "e1" })`
+  `type_text({ ref: "e2", text: "Hello desktop" })`
+  `hover({ ref: "e3" })`
+  `scroll({ ref: "e4" })`
 - Prefer accessible interactions when elements have aria names:
   `click_ax({ name: "Save", role: "button" })`
   `type_ax({ name: "Email", text: "user@example.com" })`
@@ -58,15 +65,42 @@ Electron Debug MCP allows AI coding agents (Claude, Cursor, Antigravity, etc.) t
 - Permissions: `set_permission({ permission: "notifications", grant: true })`
 - Main-process JS evaluation: `evaluate_main({ expression: "process.versions" })`
 
-### 5. Performance & Artifacts
+### 5. Native Electron API Mocking
+Mock native dialogs, shell methods, or OS integrations without popups blocking execution:
+- Mock `dialog.showOpenDialog`:
+  `mock_electron_api({ module: "dialog", method: "showOpenDialog", returns: { canceled: false, filePaths: ["/test/file.png"] } })`
+- Mock `shell.openExternal`:
+  `mock_electron_api({ module: "shell", method: "openExternal", returns: true })`
+- Inspect recorded calls:
+  `get_mock_calls({ module: "shell", method: "openExternal" })`
+- Restore original APIs:
+  `restore_electron_mocks({ module: "shell", method: "openExternal" })`
+
+### 6. Native Menus & Global Shortcuts
+Drive native application menus and accelerators directly:
+- Inspect menu tree: `get_application_menu()`
+- Click menu item: `click_menu_item({ path: "File > Open File..." })`
+- Trigger shortcut accelerator: `trigger_shortcut({ accelerator: "CommandOrControl+P" })`
+
+### 7. Process Health Watchdog & Crash Diagnostics
+Monitor Electron renderer terminations, window hangs, and memory pressure:
+- Check health: `get_process_health()`
+  Returns `status: "healthy" | "unresponsive" | "crashed"`, memory metrics (RSS, heap), window responsive states, and recent stderr crash tails.
+
+### 8. Storage State Snapshot & Auth Replay
+Export and restore cookies and local/session storage to bypass repeated logins:
+- Export storage state: `save_storage_state()` -> returns Playwright-compatible JSON artifact.
+- Restore storage state: `load_storage_state({ state: <payload> })` -> hydrates session instantly.
+
+### 9. Performance & Artifacts
 - CPU profiling: `start_cpu_profile` -> perform action -> `stop_cpu_profile`
-- Memory leaks: `heap_snapshot`
+- Memory leaks: `heap_snapshot`, `leak_check`
 - Performance metrics & audit: `get_performance_metrics`, `perf_audit`
 - Read exported artifacts directly via MCP:
   - List all artifacts: `electron://artifacts`
   - Read specific artifact: `electron://artifact/{id}`
 
-### 6. Multi-Step Workflows & Codegen (`run_script`)
+### 10. Multi-Step Workflows & Codegen (`run_script`)
 Execute multi-action sequences server-side with zero client roundtrip latency:
 - Context variable interpolation: `{{vars.key}}`, `{{steps[id].result.path}}`, `{{env.KEY}}`, `{{secret:KEY}}`
 - Conditional branching: `if: "{{steps.check.result.val}} == true"`

@@ -111,6 +111,7 @@ export interface ElectronProcess {
 	redactedSecrets: Set<string>;
 	targets?: CDPTarget[];
 	lastTargetUpdate?: Date;
+	axRefMap?: Map<string, number>;
 }
 
 /** Allocate an ephemeral TCP port on 127.0.0.1 that we can bind right now. */
@@ -629,6 +630,7 @@ export function createProcessRecord(
 		unmonitorableTargets: new Set(),
 		inFlightMonitorTargets: new Set(),
 		redactedSecrets: new Set(),
+		axRefMap: new Map(),
 	};
 }
 
@@ -1027,6 +1029,11 @@ export async function updateCDPTargets(
 						err,
 					);
 				}
+			}
+
+			if (inspectTargets.length === 0 && electronProcess.inspectPort && electronProcess.targets) {
+				const prevNode = electronProcess.targets.filter((t) => t.type === "node" || t.port === electronProcess.inspectPort);
+				if (prevNode.length > 0) inspectTargets = prevNode;
 			}
 
 			const seen = new Set(pageTargets.map((t) => t.id));
@@ -2323,7 +2330,7 @@ export async function navigatePage(
 	return { targetId: target.id, url: info.url, title: info.title };
 }
 
-async function elementCenter(
+export async function elementCenter(
 	electronProcess: ElectronProcess,
 	targetId: string,
 	selector: string,
@@ -2984,6 +2991,7 @@ export function pickMainTarget(
 	const targets = electronProcess.targets;
 	const nodeLike =
 		targets.find((t) => t.type === "node") ??
+		(electronProcess.inspectPort ? targets.find((t) => t.port === electronProcess.inspectPort || (Boolean(t.webSocketDebuggerUrl && t.webSocketDebuggerUrl.includes(String(electronProcess.inspectPort))))) : undefined) ??
 		targets.find((t) => t.type === "service_worker" && RE_LIKELY_MAIN.test(`${t.title} ${t.url}`)) ??
 		targets.find((t) => /node/i.test(t.type));
 
@@ -3001,8 +3009,23 @@ export async function evaluateMain(
 	targetId?: string,
 	returnByValue = true,
 ): Promise<{ targetId: string; targetType: string; result: unknown }> {
-	await updateCDPTargets(electronProcess);
-	const target = pickMainTarget(electronProcess, targetId);
+	let target: CDPTarget | undefined;
+	let lastErr: unknown;
+	for (let attempt = 0; attempt < 5; attempt++) {
+		try {
+			await updateCDPTargets(electronProcess, attempt > 0);
+			target = pickMainTarget(electronProcess, targetId);
+			break;
+		} catch (err) {
+			lastErr = err;
+			if (attempt === 4 || !electronProcess.inspectPort) break;
+			await new Promise((r) => setTimeout(r, 200));
+		}
+	}
+	if (!target) {
+		if (lastErr) throw lastErr;
+		target = pickMainTarget(electronProcess, targetId);
+	}
 	const result = await executeCDPCommand(
 		electronProcess,
 		target.id,

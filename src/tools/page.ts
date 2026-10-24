@@ -6,6 +6,12 @@ import { textResult, requireRunningProcess, resolveProcess, registerTool, withPr
 import { registerArtifact } from "../artifacts.js";
 import { log } from "../log.js";
 import {
+	resolveActionTarget,
+	resolveBackendNodeFromRef,
+	saveStorageState,
+	loadStorageState,
+} from "../desktop-tools.js";
+import {
 	redactSecretsString,
 	redactSecretsDeep,
 	diagnoseProcess,
@@ -37,6 +43,7 @@ import {
 	updateCDPTargets,
 	waitForCondition,
 	withTimeout,
+	resolveSecretPlaceholders,
 } from "../process-manager.js";
 import {
 	waitNetworkIdle,
@@ -44,6 +51,7 @@ import {
 	assertUi,
 	clickByAx,
 	getAccessibilitySnapshot,
+	boxCenterForBackendNode,
 	getAppVision,
 	handleDialog,
 	highlightSelector,
@@ -797,18 +805,46 @@ export function registerPageTools(server: McpServer) {
 			description: "Click the center of a CSS selector via CDP Input.dispatchMouseEvent",
 			params: {
 			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
-			selector: z.string().describe("CSS selector to click"),
+			selector: z.string().optional().describe("CSS selector to click"),
+			ref: z.string().optional().describe("Accessibility element ref (e.g. 'e1', 'e12') from snapshot"),
 			targetId: z.string().optional(),
 			button: z.enum(["left", "right", "middle"]).optional(),
 		},
 			annotations: {"destructiveHint":false},
 		},
-		async ({ processId, selector, targetId, button }) => {
+		async ({ processId, selector, ref, targetId, button }) => {
 			try {
 				const proc = requireRunningProcess(processId);
+				if (!selector && !ref) {
+					return textResult("Must provide either 'selector' or 'ref'", true);
+				}
+				if (ref) {
+					await updateCDPTargets(proc);
+					const target = pickPageTarget(proc, targetId);
+					const backendDOMNodeId = await resolveBackendNodeFromRef(proc, ref, target.id);
+					const center = await boxCenterForBackendNode(proc, target.id, backendDOMNodeId);
+					const x = Math.round(center.x);
+					const y = Math.round(center.y);
+					const btn = button === "right" ? "right" : button === "middle" ? "middle" : "left";
+					await executeCDPCommand(proc, target.id, "Input.dispatchMouseEvent", {
+						type: "mousePressed",
+						x,
+						y,
+						button: btn,
+						clickCount: 1,
+					});
+					await executeCDPCommand(proc, target.id, "Input.dispatchMouseEvent", {
+						type: "mouseReleased",
+						x,
+						y,
+						button: btn,
+						clickCount: 1,
+					});
+					return textResult({ processId, targetId: target.id, ref, backendDOMNodeId, x, y });
+				}
 				const result = await clickSelector(
 					proc,
-					selector,
+					selector!,
 					targetId,
 					button ?? "left",
 				);
@@ -826,15 +862,33 @@ export function registerPageTools(server: McpServer) {
 			description: "Move the pointer over a CSS selector (mouseover / hover menus). Does not click.",
 			params: {
 			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
-			selector: z.string().describe("CSS selector to hover"),
+			selector: z.string().optional().describe("CSS selector to hover"),
+			ref: z.string().optional().describe("Accessibility element ref (e.g. 'e1', 'e12') from snapshot"),
 			targetId: z.string().optional(),
 		},
 			annotations: {"destructiveHint":false},
 		},
-		async ({ processId, selector, targetId }) => {
+		async ({ processId, selector, ref, targetId }) => {
 			try {
 				const proc = requireRunningProcess(processId);
-				const result = await hoverSelector(proc, selector, targetId);
+				if (!selector && !ref) {
+					return textResult("Must provide either 'selector' or 'ref'", true);
+				}
+				if (ref) {
+					await updateCDPTargets(proc);
+					const target = pickPageTarget(proc, targetId);
+					const backendDOMNodeId = await resolveBackendNodeFromRef(proc, ref, target.id);
+					const center = await boxCenterForBackendNode(proc, target.id, backendDOMNodeId);
+					const x = Math.round(center.x);
+					const y = Math.round(center.y);
+					await executeCDPCommand(proc, target.id, "Input.dispatchMouseEvent", {
+						type: "mouseMoved",
+						x,
+						y,
+					});
+					return textResult({ processId, targetId: target.id, ref, backendDOMNodeId, x, y });
+				}
+				const result = await hoverSelector(proc, selector!, targetId);
 				return textResult({ processId, ...result });
 			} catch (err) {
 				return textResult(err instanceof Error ? err.message : String(err), true);
@@ -900,22 +954,57 @@ export function registerPageTools(server: McpServer) {
 			params: {
 			processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
 			text: z.string(),
-			selector: z
-				.string()
-				.optional()
-				.describe("Optional CSS selector to focus before typing"),
-			clear: z
-				.boolean()
-				.optional()
-				.describe("If true and selector is set, clear the field first"),
+			selector: z.string().optional().describe("Optional CSS selector to focus before typing"),
+			ref: z.string().optional().describe("Optional accessibility element ref from snapshot"),
+			clear: z.boolean().optional().describe("If true and selector/ref is set, clear the field first"),
 			pressEnter: z.boolean().optional(),
 			targetId: z.string().optional(),
 		},
 			annotations: {"destructiveHint":false},
 		},
-		async ({ processId, text, selector, clear, pressEnter, targetId }) => {
+		async ({ processId, text, selector, ref, clear, pressEnter, targetId }) => {
 			try {
 				const proc = requireRunningProcess(processId);
+				if (ref) {
+					await updateCDPTargets(proc);
+					const target = pickPageTarget(proc, targetId);
+					const backendDOMNodeId = await resolveBackendNodeFromRef(proc, ref, target.id);
+					await executeCDPCommand(proc, target.id, "DOM.focus", { backendNodeId: backendDOMNodeId });
+					if (clear) {
+						await executeCDPCommand(proc, target.id, "Runtime.evaluate", {
+							expression: `(() => {
+								const el = document.activeElement;
+								if (!el) return false;
+								if ("value" in el) el.value = "";
+								else el.textContent = "";
+								el.dispatchEvent(new Event("input", { bubbles: true }));
+								return true;
+							})()`, 
+							awaitPromise: true
+						});
+					}
+					const { resolved, masked } = resolveSecretPlaceholders(text, (s) => proc.redactedSecrets.add(s));
+					if (resolved) {
+						await executeCDPCommand(proc, target.id, "Input.insertText", { text: resolved });
+					}
+					if (pressEnter) {
+						await executeCDPCommand(proc, target.id, "Input.dispatchKeyEvent", {
+							type: "keyDown",
+							key: "Enter",
+							code: "Enter",
+							windowsVirtualKeyCode: 13,
+							nativeVirtualKeyCode: 13,
+						});
+						await executeCDPCommand(proc, target.id, "Input.dispatchKeyEvent", {
+							type: "keyUp",
+							key: "Enter",
+							code: "Enter",
+							windowsVirtualKeyCode: 13,
+							nativeVirtualKeyCode: 13,
+						});
+					}
+					return textResult({ processId, targetId: target.id, ref, typed: masked });
+				}
 				const result = await typeText(proc, text, {
 					selector,
 					clear,
@@ -1620,5 +1709,51 @@ export function registerPageTools(server: McpServer) {
 			};
 		}),
 	);
-}
 
+	registerTool(
+		server,
+		"save_storage_state",
+		{
+			description: "Export all page cookies, localStorage, and sessionStorage into a standardized JSON storage state artifact (Playwright-compatible format)",
+			params: {
+				processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
+				path: z.string().optional().describe("Optional destination file path. If omitted, saves to temporary artifact."),
+				targetId: z.string().optional(),
+			},
+			annotations: { readOnlyHint: true },
+		},
+		async ({ processId, path, targetId }) => {
+			try {
+				const proc = requireRunningProcess(processId);
+				const result = await saveStorageState(proc, { path, targetId });
+				return textResult(result);
+			} catch (err) {
+				return textResult(err instanceof Error ? err.message : String(err), true);
+			}
+		},
+	);
+
+	registerTool(
+		server,
+		"load_storage_state",
+		{
+			description: "Restore page cookies, localStorage, and sessionStorage from a saved JSON storage state file or payload",
+			params: {
+				processId: z.string().optional().describe("Target process ID. Omit if only one app is running."),
+				path: z.string().optional().describe("Path to storage state JSON file"),
+				state: z.record(z.unknown()).optional().describe("Inline storage state object"),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false },
+		},
+		async ({ processId, path, state, targetId }) => {
+			try {
+				const proc = requireRunningProcess(processId);
+				const result = await loadStorageState(proc, { path, state: state as any, targetId });
+				return textResult(result);
+			} catch (err) {
+				return textResult(err instanceof Error ? err.message : String(err), true);
+			}
+		},
+	);
+}

@@ -345,6 +345,15 @@ async function main() {
       "act_and_verify",
       "triage",
       "run_script",
+      "mock_electron_api",
+      "get_mock_calls",
+      "restore_electron_mocks",
+      "get_application_menu",
+      "click_menu_item",
+      "trigger_shortcut",
+      "get_process_health",
+      "save_storage_state",
+      "load_storage_state",
     ];
     const tools = await client.request("tools/list");
     const names = new Set((tools.tools ?? []).map((t) => t.name));
@@ -1860,6 +1869,76 @@ async function main() {
       assert(scriptParsed.passedSteps === 2, "expected 2 passed steps");
       assert(scriptParsed.exportedCode.includes('test("automated electron workflow'));
       pass("run_script (meta workflow + codegen)");
+
+      // v1.14 Desktop Tools & Watchdog Smoke Steps
+      const saveStateRes = await client.request("tools/call", {
+        name: "save_storage_state",
+        arguments: { processId },
+      });
+      assert(!saveStateRes.isError, `save_storage_state error: ${saveStateRes.content?.[0]?.text}`);
+      const savedState = parseToolText(saveStateRes);
+      assert(typeof savedState.cookieCount === "number", "expected cookieCount in save_storage_state");
+      pass("save_storage_state");
+
+      const loadStateRes = await client.request("tools/call", {
+        name: "load_storage_state",
+        arguments: { processId, state: savedState.state },
+      });
+      assert(!loadStateRes.isError, `load_storage_state error: ${loadStateRes.content?.[0]?.text}`);
+      pass("load_storage_state");
+
+      const mockRes = await client.request("tools/call", {
+        name: "mock_electron_api",
+        arguments: {
+          processId,
+          module: "shell",
+          method: "openExternal",
+          returns: true,
+        },
+      });
+      assert(!mockRes.isError, `mock_electron_api error: ${mockRes.content?.[0]?.text}`);
+      pass("mock_electron_api");
+
+      const getCallsRes = await client.request("tools/call", {
+        name: "get_mock_calls",
+        arguments: {
+          processId,
+          module: "shell",
+          method: "openExternal",
+        },
+      });
+      assert(!getCallsRes.isError, `get_mock_calls error: ${getCallsRes.content?.[0]?.text}`);
+      pass("get_mock_calls");
+
+      const restoreRes = await client.request("tools/call", {
+        name: "restore_electron_mocks",
+        arguments: { processId, module: "shell", method: "openExternal" },
+      });
+      assert(!restoreRes.isError, `restore_electron_mocks error: ${restoreRes.content?.[0]?.text}`);
+      pass("restore_electron_mocks");
+
+      const menuRes = await client.request("tools/call", {
+        name: "get_application_menu",
+        arguments: { processId },
+      });
+      assert(!menuRes.isError, `get_application_menu error: ${menuRes.content?.[0]?.text}`);
+      pass("get_application_menu");
+
+      const shortcutRes = await client.request("tools/call", {
+        name: "trigger_shortcut",
+        arguments: { processId, accelerator: "CommandOrControl+Shift+P" },
+      });
+      assert(!shortcutRes.isError, `trigger_shortcut error: ${shortcutRes.content?.[0]?.text}`);
+      pass("trigger_shortcut");
+
+      const healthRes = await client.request("tools/call", {
+        name: "get_process_health",
+        arguments: { processId },
+      });
+      assert(!healthRes.isError, `get_process_health error: ${healthRes.content?.[0]?.text}`);
+      const healthData = parseToolText(healthRes);
+      assert(healthData.status === "healthy" || healthData.status === "unresponsive" || healthData.status === "crashed", "expected valid health status");
+      pass("get_process_health");
     }
 
     }

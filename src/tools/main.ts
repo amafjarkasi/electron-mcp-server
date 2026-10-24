@@ -22,6 +22,15 @@ import {
 	setWindowBounds,
 	writeClipboard,
 } from "../power-tools.js";
+import {
+	mockElectronApi,
+	getMockCalls,
+	restoreElectronMocks,
+	getApplicationMenu,
+	clickMenuItem,
+	triggerShortcut,
+	getProcessHealth,
+} from "../desktop-tools.js";
 
 export function registerMainTools(server: McpServer) {
 	registerTool(
@@ -372,5 +381,132 @@ export function registerMainTools(server: McpServer) {
 			return await inferIpcSchemas(proc, { refreshFromMain, channel });
 		}),
 	);
-}
 
+	registerTool(
+		server,
+		"mock_electron_api",
+		{
+			description:
+				"Mock an Electron main-process API (e.g. dialog.showOpenDialog, shell.openExternal, app.getPath) with a custom return value or implementation. Requires inspectMain.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				module: z.string().describe("Electron module name (e.g. 'dialog', 'shell', 'app', 'clipboard', 'autoUpdater')"),
+				method: z.string().describe("Method name to mock (e.g. 'showOpenDialog', 'openExternal', 'showMessageBox')"),
+				returns: z.unknown().optional().describe("Value or Promise result to return when invoked"),
+				implementation: z.string().optional().describe("Optional JS function body to execute as mock"),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false, openWorldHint: true },
+		},
+		withProcess(async (proc, { module, method, returns, implementation, targetId }) => {
+			return await mockElectronApi(proc, { module, method, returns, implementation, targetId });
+		}),
+	);
+
+	registerTool(
+		server,
+		"get_mock_calls",
+		{
+			description: "Get recorded invocations and arguments for a mocked Electron API method",
+			params: {
+				processId: z.string().optional().describe("Process ID. If omitted, uses the single running app."),
+				module: z.string().describe("Electron module name"),
+				method: z.string().describe("Method name"),
+				targetId: z.string().optional(),
+			},
+			annotations: { readOnlyHint: true },
+		},
+		withProcess(async (proc, { module, method, targetId }) => {
+			return await getMockCalls(proc, { module, method, targetId });
+		}),
+	);
+
+	registerTool(
+		server,
+		"restore_electron_mocks",
+		{
+			description: "Restore original implementations of mocked Electron APIs",
+			params: {
+				processId: z.string().optional().describe("Process ID. If omitted, uses the single running app."),
+				module: z.string().optional().describe("Module to restore (omit to restore all)"),
+				method: z.string().optional().describe("Method to restore (omit to restore all in module)"),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false },
+		},
+		withProcess(async (proc, { module, method, targetId }) => {
+			return await restoreElectronMocks(proc, { module, method, targetId });
+		}),
+	);
+
+	registerTool(
+		server,
+		"get_application_menu",
+		{
+			description: "Inspect the native Electron application menu hierarchy, items, roles, accelerators, and enabled states",
+			params: {
+				processId: z.string().optional().describe("Process ID. If omitted, uses the single running app."),
+				targetId: z.string().optional(),
+			},
+			annotations: { readOnlyHint: true },
+		},
+		withProcess(async (proc, { targetId }) => {
+			return await getApplicationMenu(proc, targetId);
+		}),
+	);
+
+	registerTool(
+		server,
+		"click_menu_item",
+		{
+			description: "Trigger a click on a native application menu item by path (e.g. 'File > Open File...'), id, or role",
+			params: {
+				processId: z.string().optional().describe("Process ID. If omitted, uses the single running app."),
+				path: z.string().optional().describe("Full menu item path e.g. 'File > Save' or 'View > Toggle Developer Tools'"),
+				id: z.string().optional().describe("MenuItem ID if assigned"),
+				role: z.string().optional().describe("Standard role e.g. 'undo', 'cut', 'copy'"),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false },
+		},
+		withProcess(async (proc, { path, id, role, targetId }) => {
+			return await clickMenuItem(proc, { path, id, role, targetId });
+		}),
+	);
+
+	registerTool(
+		server,
+		"trigger_shortcut",
+		{
+			description: "Trigger an Electron global shortcut accelerator (e.g. 'CommandOrControl+Shift+P')",
+			params: {
+				processId: z.string().optional().describe("Process ID. If omitted, uses the single running app."),
+				accelerator: z.string().describe("Keyboard shortcut accelerator (e.g. 'Ctrl+Shift+P', 'F12')"),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false },
+		},
+		withProcess(async (proc, { accelerator, targetId }) => {
+			return await triggerShortcut(proc, { accelerator, targetId });
+		}),
+	);
+
+	registerTool(
+		server,
+		"get_process_health",
+		{
+			description: "Watchdog health check diagnosing renderer crashes (OOM, killed), window hangs, responsiveness, and process memory",
+			params: {
+				processId: z.string().optional().describe("Process ID. If omitted, uses the single running app."),
+				targetId: z.string().optional(),
+			},
+			annotations: { readOnlyHint: true },
+		},
+		withProcess(async (proc, { targetId }) => {
+			return await getProcessHealth(proc, targetId);
+		}),
+	);
+}
