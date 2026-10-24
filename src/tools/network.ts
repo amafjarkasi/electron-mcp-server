@@ -3,6 +3,8 @@ import { z } from "zod";
 import { registerTool, textResult, withProcess, requireRunningProcess } from "../tool-helpers.js";
 import { registerArtifact } from "../artifacts.js";
 import {
+	redactSecretsDeep,
+	redactSecretsString,
 	ensureMonitoring,
 	getProcess,
 } from "../process-manager.js";
@@ -71,6 +73,9 @@ export function registerNetworkTools(server: McpServer) {
 					entries = entries.slice(-tail);
 				}
 
+				if (proc.redactedSecrets && proc.redactedSecrets.size > 0) {
+					entries = redactSecretsDeep(entries, proc.redactedSecrets);
+				}
 				return textResult({ processId: proc.id, count: entries.length, entries });
 			} catch (err) {
 				return textResult(err instanceof Error ? err.message : String(err), true);
@@ -327,4 +332,92 @@ export function registerNetworkTools(server: McpServer) {
 			return res;
 		}),
 	);
+
+	registerTool(
+		server,
+		"network_failure_report",
+		{
+			description:
+				"Composite network diagnostics: gathers all failed HTTP requests (status >= 400 or failed requests), fetches response bodies inline, and exports a HAR artifact.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				urlPattern: z
+					.string()
+					.optional()
+					.describe("Optional URL substring or pattern filter"),
+				tail: z
+					.number()
+					.int()
+					.positive()
+					.optional()
+					.describe("Optional limit of recent failures to return"),
+				exportHarFile: z
+					.boolean()
+					.optional()
+					.describe("Whether to export a HAR file (default: true)"),
+				harPath: z
+					.string()
+					.optional()
+					.describe("Optional path for the exported HAR file"),
+			},
+			annotations: { readOnlyHint: false, idempotentHint: true },
+		},
+		withProcess(async (proc, { urlPattern, tail, exportHarFile, harPath }) => {
+			if (proc.status === "running") {
+				await ensureMonitoring(proc);
+			}
+			let failures = proc.networkEntries.filter(
+				(e) => Boolean((e as any).failed || (typeof e.status === "number" && e.status >= 400) || (e as any).errorText),
+			);
+			if (urlPattern) {
+				const clean = urlPattern.toLowerCase();
+				failures = failures.filter((e) => (e.url || "").toLowerCase().includes(clean));
+			}
+			if (tail && tail > 0) {
+				failures = failures.slice(-tail);
+			}
+
+			const failuresWithBodies = await Promise.all(
+				failures.map(async (entry) => {
+					let bodyInfo: { body?: string; base64Encoded?: boolean; error?: string } = {};
+					if (entry.requestId) {
+						try {
+							const res = await getResponseBody(proc, entry.requestId, (entry as any).targetId);
+							bodyInfo = { body: res.body, base64Encoded: res.base64Encoded };
+						} catch (err) {
+							bodyInfo = { error: err instanceof Error ? err.message : String(err) };
+						}
+					}
+					return {
+						...entry,
+						responseBody: bodyInfo.body,
+						responseError: bodyInfo.error,
+					};
+				}),
+			);
+
+			let harResult: unknown = undefined;
+			if (exportHarFile !== false) {
+				const har = await exportHar(proc, harPath);
+				const art = registerArtifact(proc.id, "har", har.path);
+				harResult = { ...har, artifactUri: `electron://artifact/${art.id}` };
+			}
+
+			const report = {
+				processId: proc.id,
+				failureCount: failuresWithBodies.length,
+				failures: failuresWithBodies,
+				har: harResult,
+			};
+
+			if (proc.redactedSecrets && proc.redactedSecrets.size > 0) {
+				return redactSecretsDeep(report, proc.redactedSecrets);
+			}
+			return report;
+		}),
+	);
 }
+

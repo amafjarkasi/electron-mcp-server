@@ -11,7 +11,7 @@
 
 <p align="center">
   <img alt="version" src="https://img.shields.io/badge/version-1.11.0-0F766E?style=flat-square" />
-  <img alt="88 tools" src="https://img.shields.io/badge/88_tools-0F766E?style=flat-square" />
+  <img alt="96 tools" src="https://img.shields.io/badge/96_tools-0F766E?style=flat-square" />
   <img alt="9 resources" src="https://img.shields.io/badge/9_resources-115E59?style=flat-square" />
   <img alt="6 prompts" src="https://img.shields.io/badge/6_prompts-134E4A?style=flat-square" />
   <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D20-339933?style=flat-square&logo=nodedotjs&logoColor=white" />
@@ -217,6 +217,21 @@ Page targets keep console, network, and audit events buffered between calls.
 | `open_deep_link` | Emit `open-url` and `second-instance`. Needs `inspectMain`. |
 | `pause` / `resume` | Pause JavaScript. `resume` then disables the debugger so screenshots and input work again. |
 
+
+#### Secret Placeholders & Redaction
+
+When automating forms with API keys or credentials, pass `{{secret:VAR_NAME}}` in `type_text` or `type_ax`:
+```json
+{
+  "name": "type_text",
+  "arguments": {
+    "text": "{{secret:MY_API_KEY}}",
+    "selector": "#api-key-input"
+  }
+}
+```
+The server resolves the value from `process.env.MY_API_KEY` and automatically redacts the secret from return values, `get_logs`, `get_console_messages`, `get_network_log`, and `export_har`.
+
 ### Page state
 
 | Tool | What it does |
@@ -245,6 +260,7 @@ Page targets keep console, network, and audit events buffered between calls.
 | `network_stub` | Fulfill or fail URLs that match a pattern. The same pattern replaces the previous rule. |
 | `clear_network_stubs` | Turn request interception off. |
 | `wait_network_idle` | Wait until nothing is in flight and the log has been quiet. |
+| `network_failure_report` | Composite network failures with bodies inline plus exported HAR artifact. |
 | `get_downloads` | Save downloads from every webContents session and return `savePath`. Call it before the download, or pass `url` to start one. Needs `inspectMain`. |
 | `emulate_network` | Go offline, or add latency and cap throughput. `clear` restores a normal network. |
 
@@ -253,6 +269,8 @@ Page targets keep console, network, and audit events buffered between calls.
 | Tool | What it does |
 | --- | --- |
 | `get_performance_metrics` | Renderer performance counters. |
+| `perf_snapshot` | Composite performance profiler: coordinates tracing + CPU profile + coverage + perf audit in one call. |
+| `leak_check` | Memory leak detector: measures DOM node, listener, and heap growth across iterations post-GC. |
 | `perf_audit` | Metrics, navigation and paint timing, recent audit issues. Not full Lighthouse. |
 | `get_audit_issues` | Buffered audit issues: cookies, CORS, mixed content, deprecations. |
 | `start_tracing` / `stop_tracing` | One trace per session. Open the JSON in `chrome://tracing` or Perfetto. |
@@ -275,6 +293,9 @@ Page targets keep console, network, and audit events buffered between calls.
 | `focus_window` | Show and focus a window. `windowId` comes from `webcontents_topology`. `show: false` skips showing a hidden window. Needs `inspectMain`. |
 | `set_window_bounds` | Move or resize a window. Omitted fields stay as they are. Does not show a hidden window. Needs `inspectMain`. |
 | `set_permission` | Allow or deny a permission prompt and grant it in the page (`checked: "granted"`). Unlisted permissions are denied after this is installed. Needs `inspectMain`. |
+| `electron_security_audit` | Checklist audit against Electron security recommendations (webPreferences, sandbox, fuses, navigation guards). |
+| `ipc_invoke` | Invoke a main-process IPC handle channel or emit an IPC event with arguments. |
+| `ipc_schema_inference` | Inferred channel contracts, argument shapes, and TypeScript declarations. |
 | `cdp_command` | Any DevTools `Domain.method` the wrappers above do not cover. |
 
 ## Prompts

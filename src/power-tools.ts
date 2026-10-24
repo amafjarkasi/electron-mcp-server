@@ -26,6 +26,10 @@ import {
 	updateCDPTargets,
 	validateOutputPath,
 	withTimeout,
+	resolveSecretPlaceholders,
+	redactSecretsString,
+	redactSecretsDeep,
+	pickMainTarget,
 } from "./process-manager.js";
 import CDP from "chrome-remote-interface";
 import { log } from "./log.js";
@@ -3497,4 +3501,703 @@ async function printPdfFromMain(
 		throw new Error("printToPDF returned no data");
 	}
 	return value.data;
+}
+
+// ============================================================================
+// Source Map decoding & resolution for resolveStack
+// ============================================================================
+
+const VLQ_BASE64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const VLQ_BASE64_VALUES = new Map<string, number>();
+for (let i = 0; i < VLQ_BASE64_CHARS.length; i++) {
+	VLQ_BASE64_VALUES.set(VLQ_BASE64_CHARS[i], i);
+}
+
+function decodeVLQ(str: string, index: { pos: number }): number {
+	let result = 0;
+	let shift = 0;
+	let continuation = true;
+	while (continuation && index.pos < str.length) {
+		const char = str[index.pos++];
+		const val = VLQ_BASE64_VALUES.get(char) ?? 0;
+		continuation = (val & 32) !== 0;
+		result += (val & 31) << shift;
+		shift += 5;
+	}
+	return (result & 1) ? -(result >> 1) : (result >> 1);
+}
+
+export function resolveSourceMapping(
+	source: string,
+	frameUrl?: string,
+	lineNumber = 0,
+	columnNumber = 0,
+	contextLines = 3,
+): Record<string, unknown> | undefined {
+	try {
+		let mapJson: any = null;
+		const match = source.match(/\/\/[#@]\s*sourceMappingURL=(.+?)(?:\s*$)/m);
+		if (match) {
+			const url = match[1].trim();
+			if (url.startsWith("data:application/json;base64,") || url.startsWith("data:application/json;charset=utf-8;base64,")) {
+				const base64 = url.split("base64,")[1];
+				mapJson = JSON.parse(Buffer.from(base64, "base64").toString("utf8"));
+			} else if (frameUrl && frameUrl.startsWith("file://")) {
+				const scriptPath = decodeURIComponent(frameUrl.replace(/^file:\/\//, ""));
+				const mapPath = path.resolve(path.dirname(scriptPath), url);
+				if (fs.existsSync(mapPath)) {
+					mapJson = JSON.parse(fs.readFileSync(mapPath, "utf8"));
+				}
+			}
+		}
+		if (!mapJson && frameUrl && frameUrl.startsWith("file://")) {
+			const scriptPath = decodeURIComponent(frameUrl.replace(/^file:\/\//, ""));
+			const mapPath = `${scriptPath}.map`;
+			if (fs.existsSync(mapPath)) {
+				mapJson = JSON.parse(fs.readFileSync(mapPath, "utf8"));
+			}
+		}
+		if (!mapJson || !mapJson.mappings || !Array.isArray(mapJson.sources)) {
+			return undefined;
+		}
+
+		const lines = mapJson.mappings.split(";");
+		if (lineNumber >= lines.length) return undefined;
+
+		let sourceIdx = 0;
+		let origLine = 0;
+		let origCol = 0;
+		let bestMatch: { sourceIdx: number; origLine: number; origCol: number } | null = null;
+
+		for (let lineIndex = 0; lineIndex <= lineNumber; lineIndex++) {
+			const lineStr = lines[lineIndex];
+			if (!lineStr) continue;
+			let genCol = 0;
+			const segs = lineStr.split(",");
+			for (const seg of segs) {
+				if (!seg) continue;
+				const state = { pos: 0 };
+				genCol += decodeVLQ(seg, state);
+				if (state.pos >= seg.length) continue;
+				sourceIdx += decodeVLQ(seg, state);
+				origLine += decodeVLQ(seg, state);
+				origCol += decodeVLQ(seg, state);
+				if (lineIndex === lineNumber) {
+					if (bestMatch === null || genCol <= columnNumber) {
+						bestMatch = { sourceIdx, origLine, origCol };
+					}
+				}
+			}
+		}
+
+		if (!bestMatch || bestMatch.sourceIdx < 0 || bestMatch.sourceIdx >= mapJson.sources.length) {
+			return undefined;
+		}
+
+		const sourceFile = mapJson.sources[bestMatch.sourceIdx];
+		let originalSource = mapJson.sourcesContent?.[bestMatch.sourceIdx];
+		if (!originalSource && frameUrl && frameUrl.startsWith("file://")) {
+			try {
+				const scriptDir = path.dirname(decodeURIComponent(frameUrl.replace(/^file:\/\//, "")));
+				const resolvedSrc = path.resolve(scriptDir, sourceFile);
+				if (fs.existsSync(resolvedSrc)) {
+					originalSource = fs.readFileSync(resolvedSrc, "utf8");
+				}
+			} catch { /* ignore */ }
+		}
+
+		let originalSnippet: string | undefined;
+		if (originalSource) {
+			const srcLines = originalSource.split(/\r?\n/);
+			const line = bestMatch.origLine;
+			const start = Math.max(0, line - contextLines);
+			const end = Math.min(srcLines.length, line + contextLines + 1);
+			originalSnippet = srcLines
+				.slice(start, end)
+				.map((text: string, i: number) => {
+					const n = start + i;
+					const mark = n === line ? ">" : " ";
+					return `${mark} ${n}: ${text}`;
+				})
+				.join("\n");
+		}
+
+		return {
+			source: sourceFile,
+			line: bestMatch.origLine,
+			column: bestMatch.origCol,
+			snippet: originalSnippet,
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+// ============================================================================
+// Electron Security Audit
+// ============================================================================
+
+export interface SecurityCheckFinding {
+	id: string;
+	title: string;
+	severity: "critical" | "high" | "medium" | "low" | "info";
+	passed: boolean;
+	details: string;
+	recommendation: string;
+}
+
+export interface SecurityAuditResult {
+	processId: string;
+	score: number;
+	grade: "A" | "B" | "C" | "D" | "F";
+	summary: string;
+	webContentsCount: number;
+	findings: SecurityCheckFinding[];
+	webContents: Array<{
+		id: number;
+		type?: string;
+		url?: string;
+		nodeIntegration: boolean;
+		contextIsolation: boolean;
+		sandbox: boolean;
+		webSecurity: boolean;
+		allowRunningInsecureContent: boolean;
+		hasWindowOpenHandler: boolean;
+		willNavigateGuarded: boolean;
+	}>;
+	fuses?: Record<string, unknown>;
+}
+
+export async function runElectronSecurityAudit(
+	electronProcess: ElectronProcess,
+): Promise<SecurityAuditResult> {
+	await updateCDPTargets(electronProcess);
+	const expression = `(() => {
+		try {
+			const electron = (${LOAD_ELECTRON})();
+			const { app, webContents } = electron;
+			const allWc = webContents && typeof webContents.getAllWebContents === "function"
+				? webContents.getAllWebContents()
+				: [];
+			const list = allWc.map((wc) => {
+				let prefs = {};
+				try {
+					if (typeof wc.getLastWebPreferences === "function") {
+						prefs = wc.getLastWebPreferences() || {};
+					}
+				} catch { /* ignore */ }
+				const willNavCount = typeof wc.listenerCount === "function" ? wc.listenerCount("will-navigate") : 0;
+				const willFrameNavCount = typeof wc.listenerCount === "function" ? wc.listenerCount("will-frame-navigate") : 0;
+				const hasWindowOpenHandler = Boolean(
+					(wc && (wc._windowOpenHandler || wc._hasWindowOpenHandler))
+				);
+				return {
+					id: wc.id,
+					type: typeof wc.getType === "function" ? wc.getType() : "window",
+					url: typeof wc.getURL === "function" ? wc.getURL() : "",
+					nodeIntegration: Boolean(prefs.nodeIntegration),
+					nodeIntegrationInWorker: Boolean(prefs.nodeIntegrationInWorker),
+					nodeIntegrationInSubFrames: Boolean(prefs.nodeIntegrationInSubFrames),
+					contextIsolation: prefs.contextIsolation !== false,
+					sandbox: prefs.sandbox !== false,
+					webSecurity: prefs.webSecurity !== false,
+					allowRunningInsecureContent: Boolean(prefs.allowRunningInsecureContent),
+					experimentalFeatures: Boolean(prefs.experimentalFeatures),
+					enableRemoteModule: Boolean(prefs.enableRemoteModule),
+					hasWindowOpenHandler,
+					willNavigateGuarded: willNavCount > 0 || willFrameNavCount > 0,
+				};
+			});
+			let exePath = "";
+			try { exePath = app.getPath("exe"); } catch { /* ignore */ }
+			return {
+				ok: true,
+				isPackaged: app.isPackaged,
+				electronVersion: process.versions.electron,
+				chromeVersion: process.versions.chrome,
+				exePath,
+				webContents: list,
+			};
+		} catch (err) {
+			return { ok: false, error: err && err.message ? err.message : String(err) };
+		}
+	})()`;
+
+	const result = await withTimeout(
+		evaluateMain(electronProcess, expression, undefined, true),
+		CDP_TIMEOUT_MS,
+		"electron_security_audit",
+	);
+
+	const data = (result.result as { result?: { value?: any } })?.result?.value;
+	if (!data || data.ok === false) {
+		throw new Error(data?.error || "electron_security_audit failed in main process");
+	}
+
+	const findings: SecurityCheckFinding[] = [];
+	const auditedWc = data.webContents || [];
+
+	// 1. nodeIntegration
+	const badNode = auditedWc.filter((w: any) => w.nodeIntegration);
+	findings.push({
+		id: "node-integration",
+		title: "Node.js integration disabled in renderer",
+		severity: "critical",
+		passed: badNode.length === 0,
+		details: badNode.length > 0
+			? `nodeIntegration is enabled on webContents ID(s): ${badNode.map((w: any) => w.id).join(", ")}`
+			: "nodeIntegration is properly disabled across all webContents",
+		recommendation: "Ensure nodeIntegration is false on all BrowserWindow and webPreferences.",
+	});
+
+	// 2. contextIsolation
+	const badIsolation = auditedWc.filter((w: any) => !w.contextIsolation);
+	findings.push({
+		id: "context-isolation",
+		title: "Context isolation enabled",
+		severity: "critical",
+		passed: badIsolation.length === 0,
+		details: badIsolation.length > 0
+			? `contextIsolation is disabled on webContents ID(s): ${badIsolation.map((w: any) => w.id).join(", ")}`
+			: "contextIsolation is enabled across all webContents",
+		recommendation: "Always set contextIsolation: true to prevent renderer scripts from tampering with preload APIs.",
+	});
+
+	// 3. sandbox
+	const badSandbox = auditedWc.filter((w: any) => !w.sandbox);
+	findings.push({
+		id: "sandbox",
+		title: "Chromium OS sandbox enabled",
+		severity: "high",
+		passed: badSandbox.length === 0,
+		details: badSandbox.length > 0
+			? `sandbox is disabled on webContents ID(s): ${badSandbox.map((w: any) => w.id).join(", ")}`
+			: "sandbox is enabled across all webContents",
+		recommendation: "Enable sandbox: true on all webPreferences to restrict renderer OS privileges.",
+	});
+
+	// 4. webSecurity
+	const badSec = auditedWc.filter((w: any) => !w.webSecurity);
+	findings.push({
+		id: "web-security",
+		title: "Web security (CORS/SOP) enabled",
+		severity: "critical",
+		passed: badSec.length === 0,
+		details: badSec.length > 0
+			? `webSecurity is explicitly disabled on webContents ID(s): ${badSec.map((w: any) => w.id).join(", ")}`
+			: "webSecurity is enabled on all webContents",
+		recommendation: "Never disable webSecurity: false in production applications.",
+	});
+
+	// 5. allowRunningInsecureContent
+	const badInsecure = auditedWc.filter((w: any) => w.allowRunningInsecureContent);
+	findings.push({
+		id: "allow-running-insecure-content",
+		title: "Insecure mixed-content execution blocked",
+		severity: "high",
+		passed: badInsecure.length === 0,
+		details: badInsecure.length > 0
+			? `allowRunningInsecureContent is enabled on webContents ID(s): ${badInsecure.map((w: any) => w.id).join(", ")}`
+			: "allowRunningInsecureContent is disabled",
+		recommendation: "Keep allowRunningInsecureContent false to prevent HTTP content in HTTPS contexts.",
+	});
+
+	// 6. setWindowOpenHandler
+	const badOpen = auditedWc.filter((w: any) => !w.hasWindowOpenHandler);
+	findings.push({
+		id: "set-window-open-handler",
+		title: "Custom window.open handler configured",
+		severity: "medium",
+		passed: badOpen.length === 0,
+		details: badOpen.length > 0
+			? `No setWindowOpenHandler configured on webContents ID(s): ${badOpen.map((w: any) => w.id).join(", ")}`
+			: "setWindowOpenHandler is configured to control new window creation",
+		recommendation: "Register webContents.setWindowOpenHandler() to reject unexpected window openings or route to shell.openExternal.",
+	});
+
+	// 7. will-navigate guard
+	const badNav = auditedWc.filter((w: any) => !w.willNavigateGuarded);
+	findings.push({
+		id: "navigation-guard",
+		title: "Navigation guard listener installed",
+		severity: "medium",
+		passed: badNav.length === 0,
+		details: badNav.length > 0
+			? `No will-navigate listener on webContents ID(s): ${badNav.map((w: any) => w.id).join(", ")}`
+			: "will-navigate listener is installed to guard remote navigation",
+		recommendation: "Attach a will-navigate event listener to prevent windows from navigating to untrusted external URLs.",
+	});
+
+	// 8. Fuses check
+	let fuses: Record<string, unknown> = { status: "unfused-or-dev" };
+	if (data.exePath && fs.existsSync(data.exePath)) {
+		try {
+			const buf = fs.readFileSync(data.exePath);
+			const sentinel = Buffer.from("dL7pKGdnNz796PbbjQW5vHjj");
+			const idx = buf.indexOf(sentinel);
+			if (idx !== -1) {
+				fuses = {
+					sentinelFound: true,
+					status: "fused",
+					runAsNode: buf[idx + 24] === 0x32 ? false : (buf[idx + 24] === 0x31 ? true : "unfused"),
+					enableCookieEncryption: buf[idx + 25] === 0x31,
+					nodeOptions: buf[idx + 26] === 0x32 ? false : (buf[idx + 26] === 0x31 ? true : "unfused"),
+					nodeCliInspect: buf[idx + 27] === 0x32 ? false : (buf[idx + 27] === 0x31 ? true : "unfused"),
+					embeddedAsarIntegrityValidation: buf[idx + 28] === 0x31,
+					onlyLoadAppFromAsar: buf[idx + 29] === 0x31,
+				};
+			}
+		} catch { /* ignore exe read issues */ }
+	}
+
+	if (data.isPackaged && fuses.status === "fused") {
+		if (fuses.runAsNode !== false) {
+			findings.push({
+				id: "fuse-run-as-node",
+				title: "runAsNode fuse disabled in packaged app",
+				severity: "medium",
+				passed: false,
+				details: "The runAsNode fuse is not disabled; app can be executed as a node interpreter with ELECTRON_RUN_AS_NODE",
+				recommendation: "Disable the runAsNode fuse using @electron/fuses during build.",
+			});
+		}
+		if (fuses.nodeCliInspect !== false) {
+			findings.push({
+				id: "fuse-node-cli-inspect",
+				title: "nodeCliInspect fuse disabled in packaged app",
+				severity: "medium",
+				passed: false,
+				details: "The nodeCliInspect fuse is not disabled; app can be inspected via --inspect flags",
+				recommendation: "Disable the nodeCliInspect fuse using @electron/fuses during build.",
+			});
+		}
+	}
+
+	let score = 100;
+	for (const f of findings) {
+		if (!f.passed) {
+			if (f.severity === "critical") score -= 35;
+			else if (f.severity === "high") score -= 20;
+			else if (f.severity === "medium") score -= 10;
+			else if (f.severity === "low") score -= 5;
+		}
+	}
+	score = Math.max(0, Math.min(score, 100));
+
+	let grade: SecurityAuditResult["grade"] = "F";
+	if (score >= 90) grade = "A";
+	else if (score >= 80) grade = "B";
+	else if (score >= 70) grade = "C";
+	else if (score >= 60) grade = "D";
+
+	const failedCount = findings.filter((f) => !f.passed).length;
+	const summary = `Electron Security Audit: Score ${score}/100 (Grade ${grade}). ${failedCount === 0 ? "All checks passed!" : `${failedCount} finding(s) require attention.`} Evaluated ${auditedWc.length} webContents.`;
+
+	return {
+		processId: electronProcess.id,
+		score,
+		grade,
+		summary,
+		webContentsCount: auditedWc.length,
+		findings,
+		webContents: auditedWc,
+		fuses,
+	};
+}
+
+// ============================================================================
+// IPC invoke & IPC schema inference
+// ============================================================================
+
+export async function invokeIpcHandler(
+	electronProcess: ElectronProcess,
+	options: {
+		channel: string;
+		args?: unknown[];
+		targetId?: string;
+	},
+): Promise<Record<string, unknown>> {
+	await updateCDPTargets(electronProcess);
+	const target = pickMainTarget(electronProcess, options.targetId);
+	const channel = options.channel;
+	const args = options.args ?? [];
+	const expr = `(async () => {
+		try {
+			const electron = (${LOAD_ELECTRON})();
+			const { ipcMain, BrowserWindow } = electron;
+			if (!ipcMain) {
+				return { ok: false, error: "ipcMain is not available in main process" };
+			}
+			const channel = ${JSON.stringify(channel)};
+			const args = ${JSON.stringify(args)};
+			const handlers = ipcMain._invokeHandlers;
+			const win = BrowserWindow && typeof BrowserWindow.getAllWindows === "function"
+				? BrowserWindow.getAllWindows()[0]
+				: null;
+			const fakeEvent = {
+				sender: win ? win.webContents : null,
+				frameId: 0,
+				processId: process.pid,
+			};
+			if (handlers && typeof handlers.get === "function" && handlers.has(channel)) {
+				const handler = handlers.get(channel);
+				const res = await handler(fakeEvent, ...args);
+				return { ok: true, channel, type: "invoke", result: res };
+			}
+			if (typeof ipcMain.listenerCount === "function" && ipcMain.listenerCount(channel) > 0) {
+				ipcMain.emit(channel, fakeEvent, ...args);
+				return { ok: true, channel, type: "event", emitted: true };
+			}
+			const registered = handlers ? Array.from(handlers.keys()) : [];
+			return {
+				ok: false,
+				error: \`No IPC handle or event listener registered for channel "\${channel}". Available registered channels: \${registered.join(", ") || "none"}\`,
+				registeredChannels: registered,
+			};
+		} catch (err) {
+			return { ok: false, error: err && err.message ? err.message : String(err) };
+		}
+	})()`;
+
+	const res = await withTimeout(
+		executeCDPCommand(electronProcess, target.id, "Runtime.evaluate", {
+			expression: expr,
+			returnByValue: true,
+			awaitPromise: true,
+		}),
+		CDP_TIMEOUT_MS,
+		"ipc_invoke",
+	);
+
+	const val = (res as { result?: { value?: any } })?.result?.value;
+	if (!val || val.ok === false) {
+		throw new Error(val?.error || `ipc_invoke failed for channel "${channel}"`);
+	}
+	return { processId: electronProcess.id, ...val };
+}
+
+export interface ChannelContract {
+	channel: string;
+	calls: number;
+	directions: {
+		mainToRenderer: number;
+		rendererToMain: number;
+		handle: number;
+	};
+	inferredArgTypes: string[];
+	sampleArgs: unknown[];
+	typescriptSignature: string;
+}
+
+export async function inferIpcSchemas(
+	electronProcess: ElectronProcess,
+	options: { refreshFromMain?: boolean; channel?: string } = {},
+): Promise<{
+	processId: string;
+	channelCount: number;
+	totalEntries: number;
+	channels: Record<string, ChannelContract>;
+	typescriptDeclarations: string;
+}> {
+	if (options.refreshFromMain !== false) {
+		await getIpcLog(electronProcess, { refreshFromMain: true });
+	}
+
+	let entries = electronProcess.ipcEntries;
+	if (options.channel) {
+		entries = entries.filter((e) => e.channel === options.channel);
+	}
+
+	const channelsMap = new Map<string, {
+		channel: string;
+		calls: number;
+		directions: { mainToRenderer: number; rendererToMain: number; handle: number };
+		argTypes: string[][];
+		sampleArgs: unknown[];
+	}>();
+
+	for (const entry of entries) {
+		if (!entry.channel) continue;
+		let ch = channelsMap.get(entry.channel);
+		if (!ch) {
+			ch = {
+				channel: entry.channel,
+				calls: 0,
+				directions: { mainToRenderer: 0, rendererToMain: 0, handle: 0 },
+				argTypes: [],
+				sampleArgs: [],
+			};
+			channelsMap.set(entry.channel, ch);
+		}
+		ch.calls++;
+		if (entry.direction === "main->renderer") ch.directions.mainToRenderer++;
+		else if (entry.direction === "renderer->main") ch.directions.rendererToMain++;
+		else if (entry.direction === "handle") ch.directions.handle++;
+
+		let parsedArgs: unknown = null;
+		if (entry.argsPreview) {
+			try {
+				parsedArgs = JSON.parse(entry.argsPreview.replace(/…$/, ""));
+			} catch {
+				parsedArgs = [entry.argsPreview];
+			}
+		}
+		if (Array.isArray(parsedArgs)) {
+			if (ch.sampleArgs.length === 0) {
+				ch.sampleArgs = parsedArgs;
+			}
+			const types = parsedArgs.map((arg) => {
+				if (arg === null) return "null";
+				if (Array.isArray(arg)) return "unknown[]";
+				const t = typeof arg;
+				if (t === "object") return "Record<string, unknown>";
+				return t;
+			});
+			ch.argTypes.push(types);
+		}
+	}
+
+	const resultChannels: Record<string, ChannelContract> = {};
+	const tsSignatures: string[] = [];
+
+	for (const [name, ch] of channelsMap.entries()) {
+		const maxArgs = ch.argTypes.reduce((max, arr) => Math.max(max, arr.length), 0);
+		const consensusTypes: string[] = [];
+		for (let i = 0; i < maxArgs; i++) {
+			const observed = new Set<string>();
+			for (const list of ch.argTypes) {
+				if (i < list.length) observed.add(list[i]);
+			}
+			consensusTypes.push(Array.from(observed).join(" | ") || "unknown");
+		}
+
+		const paramsStr = consensusTypes.map((t, idx) => `arg${idx}: ${t}`).join(", ");
+		const isHandle = ch.directions.handle > 0;
+		const returnType = isHandle ? "Promise<unknown>" : "void";
+		const sig = `"${name}"(${paramsStr}): ${returnType};`;
+
+		tsSignatures.push(`  ${sig}`);
+		resultChannels[name] = {
+			channel: name,
+			calls: ch.calls,
+			directions: ch.directions,
+			inferredArgTypes: consensusTypes,
+			sampleArgs: ch.sampleArgs,
+			typescriptSignature: `(${paramsStr}) => ${returnType}`,
+		};
+	}
+
+	const typescriptDeclarations = [
+		"// Auto-inferred IPC contracts from electron-debug-mcp",
+		"export interface InferredIpcChannels {",
+		...tsSignatures,
+		"}",
+	].join("\n");
+
+	return {
+		processId: electronProcess.id,
+		channelCount: channelsMap.size,
+		totalEntries: entries.length,
+		channels: resultChannels,
+		typescriptDeclarations,
+	};
+}
+
+// ============================================================================
+// Memory Leak Detector
+// ============================================================================
+
+export async function checkMemoryLeaks(
+	electronProcess: ElectronProcess,
+	options: {
+		iterations?: number;
+		actionScript?: string;
+		targetId?: string;
+		captureSnapshots?: boolean;
+	} = {},
+): Promise<{
+	processId: string;
+	iterations: number;
+	baseline: Record<string, number>;
+	final: Record<string, number>;
+	growth: {
+		heapGrowthBytes: number;
+		domNodeGrowth: number;
+		listenerGrowth: number;
+		documentGrowth: number;
+	};
+	isLikelyLeaking: boolean;
+	summary: string;
+	baselineSnapshotUri?: string;
+	finalSnapshotUri?: string;
+}> {
+	await updateCDPTargets(electronProcess);
+	const target = pickPageTarget(electronProcess, options.targetId);
+	const iterations = Math.max(1, Math.min(options.iterations ?? 3, 20));
+
+	try {
+		await cdpTimed(electronProcess, target.id, "HeapProfiler.enable", {});
+		await cdpTimed(electronProcess, target.id, "HeapProfiler.collectGarbage", {});
+	} catch { /* ignore if not supported */ }
+
+	let baselineSnapshotUri: string | undefined;
+	if (options.captureSnapshots) {
+		const snap = await takeHeapSnapshot(electronProcess, undefined, target.id);
+		baselineSnapshotUri = snap.path;
+	}
+
+	const baseMetrics = await getPerformanceMetrics(electronProcess, target.id);
+	const baseMap = baseMetrics.metrics || {};
+
+	for (let i = 0; i < iterations; i++) {
+		if (options.actionScript) {
+			await evalPage(electronProcess, target.id, options.actionScript);
+		}
+		await new Promise((r) => setTimeout(r, 100));
+	}
+
+	try {
+		await cdpTimed(electronProcess, target.id, "HeapProfiler.collectGarbage", {});
+	} catch { /* ignore */ }
+
+	let finalSnapshotUri: string | undefined;
+	if (options.captureSnapshots) {
+		const snap = await takeHeapSnapshot(electronProcess, undefined, target.id);
+		finalSnapshotUri = snap.path;
+	}
+
+	const finalMetrics = await getPerformanceMetrics(electronProcess, target.id);
+	const finalMap = finalMetrics.metrics || {};
+
+	const heapGrowthBytes = (finalMap.JSHeapUsedSize ?? 0) - (baseMap.JSHeapUsedSize ?? 0);
+	const domNodeGrowth = (finalMap.Nodes ?? 0) - (baseMap.Nodes ?? 0);
+	const listenerGrowth = (finalMap.JSEventListeners ?? 0) - (baseMap.JSEventListeners ?? 0);
+	const documentGrowth = (finalMap.Documents ?? 0) - (baseMap.Documents ?? 0);
+
+	const isLikelyLeaking =
+		domNodeGrowth > iterations * 5 ||
+		listenerGrowth > iterations * 2 ||
+		documentGrowth > 0 ||
+		heapGrowthBytes > 5 * 1024 * 1024;
+
+	const summary = isLikelyLeaking
+		? `Potential memory leak detected: DOM nodes grew by +${domNodeGrowth}, listeners by +${listenerGrowth}, heap by +${(heapGrowthBytes / 1024).toFixed(1)} KB across ${iterations} iterations post-GC.`
+		: `No significant leak detected across ${iterations} iterations. DOM node delta: ${domNodeGrowth >= 0 ? "+" : ""}${domNodeGrowth}, heap delta: ${(heapGrowthBytes / 1024).toFixed(1)} KB post-GC.`;
+
+	return {
+		processId: electronProcess.id,
+		iterations,
+		baseline: baseMap,
+		final: finalMap,
+		growth: {
+			heapGrowthBytes,
+			domNodeGrowth,
+			listenerGrowth,
+			documentGrowth,
+		},
+		isLikelyLeaking,
+		summary,
+		...(baselineSnapshotUri ? { baselineSnapshotUri } : {}),
+		...(finalSnapshotUri ? { finalSnapshotUri } : {}),
+	};
 }

@@ -336,6 +336,14 @@ async function main() {
       "select_option",
       "set_window_bounds",
       "print_pdf",
+      "electron_security_audit",
+      "ipc_invoke",
+      "ipc_schema_inference",
+      "network_failure_report",
+      "perf_snapshot",
+      "leak_check",
+      "act_and_verify",
+      "triage",
     ];
     const tools = await client.request("tools/list");
     const names = new Set((tools.tools ?? []).map((t) => t.name));
@@ -1706,6 +1714,120 @@ async function main() {
         assert(!ipcLog.isError, `get_ipc_log error: ${ipcLog.content?.[0]?.text}`);
         pass("ipc_tap / get_ipc_log");
       }
+
+    {
+      // 1. electron_security_audit
+      const sec = await client.request("tools/call", {
+        name: "electron_security_audit",
+        arguments: { processId },
+      });
+      if (!sec.isError) {
+        const secParsed = parseToolText(sec);
+        assert(typeof secParsed.score === "number", "expected score in security audit");
+        assert(Array.isArray(secParsed.findings), "expected findings array");
+        pass(`electron_security_audit (score=${secParsed.score}, grade=${secParsed.grade})`);
+      } else {
+        pass(`electron_security_audit soft-skip (${sec.content?.[0]?.text})`);
+      }
+    }
+
+    {
+      // 2. ipc_schema_inference
+      const inf = await client.request("tools/call", {
+        name: "ipc_schema_inference",
+        arguments: { processId },
+      });
+      if (!inf.isError) {
+        const infParsed = parseToolText(inf);
+        assert(typeof infParsed.channelCount === "number", "expected channelCount");
+        pass(`ipc_schema_inference (channels=${infParsed.channelCount})`);
+      } else {
+        pass(`ipc_schema_inference soft-skip (${inf.content?.[0]?.text})`);
+      }
+    }
+
+    {
+      // 3. network_failure_report
+      const netRep = await client.request("tools/call", {
+        name: "network_failure_report",
+        arguments: { processId },
+      });
+      assert(!netRep.isError, `network_failure_report error: ${netRep.content?.[0]?.text}`);
+      const netRepParsed = parseToolText(netRep);
+      assert(typeof netRepParsed.failureCount === "number", "expected failureCount");
+      pass(`network_failure_report (failures=${netRepParsed.failureCount})`);
+    }
+
+    {
+      // 4. perf_snapshot
+      const perfSnap = await client.request("tools/call", {
+        name: "perf_snapshot",
+        arguments: { processId, durationMs: 200 },
+      });
+      assert(!perfSnap.isError, `perf_snapshot error: ${perfSnap.content?.[0]?.text}`);
+      const perfParsed = parseToolText(perfSnap);
+      assert(perfParsed.trace, "expected trace in perf_snapshot");
+      pass("perf_snapshot");
+    }
+
+    {
+      // 5. leak_check
+      const leak = await client.request("tools/call", {
+        name: "leak_check",
+        arguments: { processId, iterations: 2 },
+      });
+      assert(!leak.isError, `leak_check error: ${leak.content?.[0]?.text}`);
+      const leakParsed = parseToolText(leak);
+      assert(typeof leakParsed.isLikelyLeaking === "boolean", "expected isLikelyLeaking boolean");
+      pass("leak_check");
+    }
+
+    {
+      // 6. act_and_verify
+      const act = await client.request("tools/call", {
+        name: "act_and_verify",
+        arguments: {
+          processId,
+          action: { type: "click", selector: "button" },
+          assertion: { textIncludes: "Minimal" },
+        },
+      });
+      assert(!act.isError, `act_and_verify error: ${act.content?.[0]?.text}`);
+      pass("act_and_verify");
+    }
+
+    {
+      // 7. triage
+      const tr = await client.request("tools/call", {
+        name: "triage",
+        arguments: { processId },
+      });
+      assert(!tr.isError, `triage error: ${tr.content?.[0]?.text}`);
+      const trParsed = parseToolText(tr);
+      assert(trParsed.summary, "expected summary in triage");
+      pass("triage");
+    }
+
+    {
+      // 8. Secret Redaction check
+      process.env.SMOKE_API_KEY_SECRET = "sk_live_smoke_secret_99999";
+      const typed = await client.request("tools/call", {
+        name: "type_text",
+        arguments: { processId, text: "{{secret:SMOKE_API_KEY_SECRET}}" },
+      });
+      assert(!typed.isError, `type_text secret error: ${typed.content?.[0]?.text}`);
+      const typedParsed = parseToolText(typed);
+      assert(!JSON.stringify(typedParsed).includes("sk_live_smoke_secret_99999"), "secret leaked in typed return");
+
+      const logs = await client.request("tools/call", {
+        name: "get_logs",
+        arguments: { processId },
+      });
+      assert(!logs.content?.[0]?.text.includes("sk_live_smoke_secret_99999"), "secret leaked in logs");
+      delete process.env.SMOKE_API_KEY_SECRET;
+      pass("secret placeholders & redaction");
+    }
+
     }
 
     // Attach flow: launch external electron, attach via MCP

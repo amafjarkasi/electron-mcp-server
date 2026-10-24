@@ -7,6 +7,9 @@ import {
 	updateCDPTargets,
 } from "../process-manager.js";
 import {
+	runElectronSecurityAudit,
+	invokeIpcHandler,
+	inferIpcSchemas,
 	enableIpcTap,
 	findInstalledElectronApps,
 	focusWindow,
@@ -298,4 +301,76 @@ export function registerMainTools(server: McpServer) {
 			return await setWindowBounds(proc, { windowId, x, y, width, height });
 		}),
 	);
+
+	registerTool(
+		server,
+		"electron_security_audit",
+		{
+			description:
+				"Run security audit against Electron security recommendations (inspects webPreferences, sandbox, nodeIntegration, contextIsolation, setWindowOpenHandler, will-navigate guards, and binary fuses). Requires inspectMain.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+			},
+			annotations: { readOnlyHint: true },
+		},
+		withProcess(async (proc) => {
+			return await runElectronSecurityAudit(proc);
+		}),
+	);
+
+	registerTool(
+		server,
+		"ipc_invoke",
+		{
+			description:
+				"Directly invoke a main-process IPC handle channel or emit an IPC event with arguments. Requires inspectMain.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				channel: z.string().describe("IPC channel name (e.g. 'get-user-settings')"),
+				args: z
+					.array(z.unknown())
+					.optional()
+					.describe("Arguments to pass to the IPC handle listener"),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false, openWorldHint: true },
+		},
+		withProcess(async (proc, { channel, args, targetId }) => {
+			return await invokeIpcHandler(proc, { channel, args, targetId });
+		}),
+	);
+
+	registerTool(
+		server,
+		"ipc_schema_inference",
+		{
+			description:
+				"Infer IPC channel contracts, argument shapes, and generate TypeScript interfaces from captured IPC tap traffic. Requires inspectMain.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				refreshFromMain: z
+					.boolean()
+					.optional()
+					.describe("Whether to drain new IPC entries from main before analyzing (default: true)"),
+				channel: z
+					.string()
+					.optional()
+					.describe("Optional specific channel to analyze"),
+			},
+			annotations: { readOnlyHint: true },
+		},
+		withProcess(async (proc, { refreshFromMain, channel }) => {
+			return await inferIpcSchemas(proc, { refreshFromMain, channel });
+		}),
+	);
 }
+

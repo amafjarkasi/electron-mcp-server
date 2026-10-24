@@ -1,9 +1,14 @@
+import * as os from "os";
+import * as path from "path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { textResult, requireRunningProcess, resolveProcess, registerTool } from "../tool-helpers.js";
+import { textResult, requireRunningProcess, resolveProcess, registerTool, withProcess } from "../tool-helpers.js";
 import { registerArtifact } from "../artifacts.js";
 import { log } from "../log.js";
 import {
+	redactSecretsString,
+	redactSecretsDeep,
+	diagnoseProcess,
 	captureScreenshot,
 	clearProcessBuffers,
 	clickSelector,
@@ -34,6 +39,8 @@ import {
 	withTimeout,
 } from "../process-manager.js";
 import {
+	waitNetworkIdle,
+	resolveStack,
 	assertUi,
 	clickByAx,
 	getAccessibilitySnapshot,
@@ -69,10 +76,14 @@ export function registerPageTools(server: McpServer) {
 				return textResult(`Process not found: ${processId}`, true);
 			}
 			const logs = tail ? proc.logs.slice(-tail) : proc.logs;
+			let logText = logs.join("");
+			if (proc.redactedSecrets && proc.redactedSecrets.size > 0) {
+				logText = redactSecretsString(logText, proc.redactedSecrets);
+			}
 			return textResult({
 				processId,
 				status: proc.status,
-				logs: logs.join(""),
+				logs: logText,
 			});
 		},
 	);
@@ -1439,4 +1450,175 @@ export function registerPageTools(server: McpServer) {
 			}
 		},
 	);
+
+	registerTool(
+		server,
+		"act_and_verify",
+		{
+			description:
+				"Composite action & assertion: performs a UI action (click, click_ax, type_text, type_ax), waits for network idle, verifies assertion (assert_ui), and captures a screenshot immediately if assertion fails.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				action: z.object({
+					type: z.enum(["click", "click_ax", "type_text", "type_ax"]),
+					selector: z.string().optional(),
+					name: z.string().optional(),
+					text: z.string().optional(),
+					clear: z.boolean().optional(),
+					pressEnter: z.boolean().optional(),
+					role: z.string().optional(),
+				}),
+				assertion: z.object({
+					selector: z.string().optional(),
+					selectorHidden: z.string().optional(),
+					textIncludes: z.string().optional(),
+					urlIncludes: z.string().optional(),
+					titleIncludes: z.string().optional(),
+					expression: z.string().optional(),
+				}),
+				waitForSelector: z.string().optional(),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false },
+		},
+		withProcess(async (proc, { action, assertion, waitForSelector, targetId }) => {
+			if (waitForSelector) {
+				await waitForCondition(proc, { selector: waitForSelector, targetId });
+			}
+
+			let actionResult: unknown = null;
+			if (action.type === "click" && action.selector) {
+				actionResult = await clickSelector(proc, action.selector, targetId);
+			} else if (action.type === "click_ax" && action.name) {
+				actionResult = await clickByAx(proc, { name: action.name, role: action.role, targetId });
+			} else if (action.type === "type_text" && action.text !== undefined) {
+				actionResult = await typeText(proc, action.text, {
+					selector: action.selector,
+					clear: action.clear,
+					pressEnter: action.pressEnter,
+					targetId,
+				});
+			} else if (action.type === "type_ax" && action.name && action.text !== undefined) {
+				actionResult = await typeByAx(proc, {
+					name: action.name,
+					text: action.text,
+					role: action.role,
+					clear: action.clear,
+					targetId,
+				});
+			}
+
+			await waitNetworkIdle(proc, { idleMs: 300, targetId }).catch(() => {});
+
+			let assertionResult: any = null;
+			let assertionPassed = true;
+			try {
+				assertionResult = await assertUi(proc, {
+					selector: assertion.selector,
+					selectorHidden: assertion.selectorHidden,
+					textIncludes: assertion.textIncludes,
+					urlIncludes: assertion.urlIncludes,
+					titleIncludes: assertion.titleIncludes,
+					expression: assertion.expression,
+					targetId,
+				});
+				assertionPassed = assertionResult.pass !== false;
+			} catch (err) {
+				assertionResult = { passed: false, error: err instanceof Error ? err.message : String(err) };
+				assertionPassed = false;
+			}
+
+			let failureScreenshotUri: string | undefined;
+			if (!assertionPassed) {
+				try {
+					const outPath = path.join(os.tmpdir(), `electron-verify-failure-${Date.now()}.png`);
+					const snap = await saveScreenshot(proc, outPath, targetId);
+					const art = registerArtifact(proc.id, "screenshot", snap.path);
+					failureScreenshotUri = `electron://artifact/${art.id}`;
+				} catch { /* ignore screenshot failure */ }
+			}
+
+			return {
+				processId: proc.id,
+				actionPassed: true,
+				actionResult,
+				assertionPassed,
+				assertionResult,
+				...(failureScreenshotUri ? { failureScreenshotUri } : {}),
+			};
+		}),
+	);
+
+	registerTool(
+		server,
+		"triage",
+		{
+			description:
+				"One-shot crash and failure triage: inspects page state, collects console errors, failed network calls, audit issues, log tail, and resolves the stack trace of the top exception.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				targetId: z.string().optional(),
+			},
+			annotations: { readOnlyHint: true },
+		},
+		withProcess(async (proc, { targetId }) => {
+			if (proc.status === "running") {
+				await ensureMonitoring(proc);
+			}
+			const pageInfo = await getPageInfo(proc, targetId).catch(() => null);
+			const diag = await diagnoseProcess(proc.id).catch(() => null);
+
+			const consoleErrors = proc.consoleMessages.filter(
+				(m) => m.level === "error" || (m as any).type === "error" || (m as any).type === "assert",
+			).slice(-10);
+
+			const networkFailures = proc.networkEntries.filter(
+				(e) => Boolean((e as any).failed || (typeof e.status === "number" && e.status >= 400)),
+			).slice(-10);
+
+			const auditIssues = (proc.auditIssues || []).slice(-10);
+			const logsTail = (proc.logs || []).slice(-20).join("");
+
+			let topExceptionResolved: unknown = null;
+			if (consoleErrors.length > 0) {
+				const firstErr = consoleErrors[consoleErrors.length - 1];
+				if ((firstErr as any).stackTrace && Array.isArray(((firstErr as any).stackTrace as any).callFrames)) {
+					const frames = ((firstErr as any).stackTrace as any).callFrames.map((f: any) => ({
+						url: f.url,
+						scriptId: f.scriptId,
+						lineNumber: f.lineNumber,
+						columnNumber: f.columnNumber,
+						functionName: f.functionName,
+					}));
+					if (frames.length > 0) {
+						topExceptionResolved = await resolveStack(proc, { frames, contextLines: 3, targetId }).catch(() => null);
+					}
+				}
+			}
+
+			return {
+				processId: proc.id,
+				status: proc.status,
+				page: pageInfo,
+				diagnosis: diag,
+				summary: {
+					consoleErrorCount: consoleErrors.length,
+					networkFailureCount: networkFailures.length,
+					auditIssueCount: auditIssues.length,
+				},
+				consoleErrors,
+				networkFailures,
+				auditIssues,
+				topExceptionResolved,
+				logsTail,
+			};
+		}),
+	);
 }
+

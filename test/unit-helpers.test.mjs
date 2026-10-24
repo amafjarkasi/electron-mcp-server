@@ -20,6 +20,9 @@ import {
   clearProcessBuffers,
   classifyTargetRole as _classify, // re-import guard (unused, ensures module loads)
   createProcessRecord,
+  resolveSecretPlaceholders,
+  redactSecretsString,
+  redactSecretsDeep,
   executeCDPCommand,
   getAllProcesses,
   getAllowedRoots,
@@ -54,6 +57,8 @@ import {
   matchAxNode,
   networkEntriesToHar,
   safeDownloadFilename,
+  resolveSourceMapping,
+  inferIpcSchemas,
   urlPatternMatches,
 } from "../build/power-tools.js";
 
@@ -1533,4 +1538,122 @@ test("safeDownloadFilename keeps a basename and strips path and odd characters",
   assert.equal(safeDownloadFilename("..hidden"), "hidden");
   assert.equal(safeDownloadFilename("***"), "download.bin");
   assert.equal(safeDownloadFilename(""), "download.bin");
+});
+
+// ===========================================================================
+// Secret Placeholders & Redaction Tests
+// ===========================================================================
+
+test("resolveSecretPlaceholders resolves from process.env and masks in return", () => {
+  process.env.TEST_API_KEY_SECRET = "sk-live-secret-12345";
+  const captured = [];
+  const { resolved, masked } = resolveSecretPlaceholders(
+    "Bearer {{secret:TEST_API_KEY_SECRET}}",
+    (secret) => captured.push(secret)
+  );
+
+  assert.equal(resolved, "Bearer sk-live-secret-12345");
+  assert.equal(masked, "Bearer [REDACTED]");
+  assert.deepEqual(captured, ["sk-live-secret-12345"]);
+  delete process.env.TEST_API_KEY_SECRET;
+});
+
+test("resolveSecretPlaceholders leaves plain text untouched", () => {
+  const captured = [];
+  const { resolved, masked } = resolveSecretPlaceholders("hello world", (s) => captured.push(s));
+  assert.equal(resolved, "hello world");
+  assert.equal(masked, "hello world");
+  assert.equal(captured.length, 0);
+});
+
+test("resolveSecretPlaceholders throws if env var is missing", () => {
+  assert.throws(
+    () => resolveSecretPlaceholders("token: {{secret:DEFINITELY_NOT_SET_ENV_VAR_9999}}"),
+    /Secret environment variable "DEFINITELY_NOT_SET_ENV_VAR_9999" is not defined/
+  );
+});
+
+test("redactSecretsString replaces secret values with [REDACTED]", () => {
+  const secrets = new Set(["super-secret-token", "password123"]);
+  const input = "User used password123 with super-secret-token to login";
+  const redacted = redactSecretsString(input, secrets);
+  assert.equal(redacted, "User used [REDACTED] with [REDACTED] to login");
+});
+
+test("redactSecretsDeep redacts secrets across nested objects and arrays", () => {
+  const secrets = new Set(["secret-value"]);
+  const nested = {
+    url: "https://api.test?key=secret-value",
+    headers: { authorization: "Bearer secret-value" },
+    items: ["item1", { secret: "secret-value" }],
+  };
+  const result = redactSecretsDeep(nested, secrets);
+  assert.equal(result.url, "https://api.test?key=[REDACTED]");
+  assert.equal(result.headers.authorization, "Bearer [REDACTED]");
+  assert.equal(result.items[1].secret, "[REDACTED]");
+});
+
+test("createProcessRecord initializes empty redactedSecrets set", () => {
+  const proc = makeProc();
+  assert.ok(proc.redactedSecrets instanceof Set);
+  assert.equal(proc.redactedSecrets.size, 0);
+});
+
+// ===========================================================================
+// Source Map Decoding & Resolution Tests
+// ===========================================================================
+
+test("resolveSourceMapping decodes inline base64 v3 source map to original source", () => {
+  // A minimal v3 source map mapping (line 0, col 0) -> App.tsx line 10, col 2
+  // Mappings string for line 0: 'AAAA' or 'AAUA'
+  const sourceMap = {
+    version: 3,
+    sources: ["src/App.tsx"],
+    sourcesContent: [
+      "// line 0\n// line 1\n// line 2\n// line 3\n// line 4\n// line 5\n// line 6\n// line 7\n// line 8\n// line 9\nexport function App() { throw new Error('Crash'); }\n"
+    ],
+    // Mappings: genCol 0, source 0, origLine 10, origCol 0
+    // VLQ for [0, 0, 10, 0]:
+    // 0 -> A, 0 -> A, 10 (20 with sign bit = 0) -> U, 0 -> A => 'AAUA'
+    mappings: "AAUA",
+  };
+  const base64Map = Buffer.from(JSON.stringify(sourceMap)).toString("base64");
+  const jsSource = "function App(){throw new Error('Crash');}\n//# sourceMappingURL=data:application/json;base64," + base64Map;
+
+  const resolved = resolveSourceMapping(jsSource, "http://localhost/bundle.js", 0, 0, 2);
+  assert.ok(resolved);
+  assert.equal(resolved.source, "src/App.tsx");
+  assert.equal(resolved.line, 10);
+  assert.ok(resolved.snippet.includes("export function App()"));
+});
+
+// ===========================================================================
+// IPC Schema Inference Tests
+// ===========================================================================
+
+test("inferIpcSchemas extracts channel statistics and TypeScript declarations", async () => {
+  const proc = makeProc();
+  proc.ipcEntries.push(
+    {
+      timestamp: "2026-10-09T00:00:00.000Z",
+      direction: "handle",
+      channel: "get-profile",
+      argsPreview: '[123, {"detailed": true}]',
+    },
+    {
+      timestamp: "2026-10-09T00:00:01.000Z",
+      direction: "renderer->main",
+      channel: "window-minimize",
+      argsPreview: "[]",
+    }
+  );
+
+  const result = await inferIpcSchemas(proc, { refreshFromMain: false });
+  assert.equal(result.channelCount, 2);
+  assert.equal(result.totalEntries, 2);
+  assert.ok(result.channels["get-profile"]);
+  assert.equal(result.channels["get-profile"].calls, 1);
+  assert.deepEqual(result.channels["get-profile"].inferredArgTypes, ["number", "Record<string, unknown>"]);
+  assert.ok(result.typescriptDeclarations.includes('"get-profile"'));
+  assert.ok(result.typescriptDeclarations.includes('"window-minimize"'));
 });

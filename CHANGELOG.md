@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.12.0
+
+### Features & Composite Workflows
+- **`electron_security_audit`** — comprehensive security checklist audit for Electron apps. Inspects all `webContents` for `nodeIntegration`, `contextIsolation`, `sandbox`, `webSecurity`, `allowRunningInsecureContent`, `setWindowOpenHandler`, `will-navigate` listeners, and validates Electron binary fuses (`runAsNode`, `nodeCliInspect`). Returns structured findings, score (0-100), and letter grade.
+- **Secret Placeholders & Redaction** — `type_text` and `type_ax` now support `{{secret:ENV_VAR}}` syntax, resolving values from `process.env`. Automatically masks inputs and redacts secret values across stdout/stderr logs, console messages, network entries, IPC tap logs, and HAR exports with `[REDACTED]`.
+- **`network_failure_report`** — composite network diagnosis tool that filters failures (status >= 400 or failed network calls), fetches response bodies inline, and automatically exports and registers a HAR artifact.
+- **`perf_snapshot`** — composite workflow coordinating CDP tracing, CPU profiling, and JS/CSS coverage over an interaction or reload, stopping all collectors and returning an aggregated performance bundle with artifact URIs.
+- **`ipc_invoke` & `ipc_schema_inference`** — directly invoke main-process IPC handle handlers with arguments, and automatically infer contracts, argument shapes, and TypeScript declarations from captured IPC traffic.
+- **`leak_check`** — memory leak detector measuring DOM node, event listener, document, and heap growth across repeated iterations post-garbage collection.
+- **Source Map Awareness (`bundle_source_maps`)** — `resolve_stack` now decodes v3 source maps (both inline base64 and adjacent `.map` files) back to original source files, lines, and source code snippets.
+- **`act_and_verify` & `triage`** — one-shot composite tools: `act_and_verify` runs an action, waits for network idle, verifies assertions, and automatically captures a failure screenshot; `triage` provides an executive crash and failure diagnostic combining page state, console errors, network failures, audit issues, and resolved exception stack traces.
+- Surface: **96 tools · 9 resources · 6 prompts**.
+
 ## 1.11.0
 
 ### Features & Ergonomics

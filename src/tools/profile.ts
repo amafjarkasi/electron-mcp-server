@@ -3,10 +3,13 @@ import { z } from "zod";
 import { registerTool, textResult, withProcess, requireRunningProcess } from "../tool-helpers.js";
 import { registerArtifact } from "../artifacts.js";
 import {
+	pickPageTarget,
+	executeCDPCommand,
 	startTracing,
 	stopTracing,
 } from "../process-manager.js";
 import {
+	checkMemoryLeaks,
 	captureMhtml,
 	diffScreenshot,
 	emulate,
@@ -593,4 +596,120 @@ export function registerProfileTools(server: McpServer) {
 			return res;
 		}),
 	);
+
+	registerTool(
+		server,
+		"perf_snapshot",
+		{
+			description:
+				"Composite performance profiler: coordinates start_tracing + start_cpu_profile + start_coverage, optionally captures an interaction or reload, stops all collectors, and bundles perf audit, metrics, and artifact URIs.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				durationMs: z
+					.number()
+					.int()
+					.positive()
+					.max(60000)
+					.optional()
+					.describe("Capture window duration in milliseconds (default: 1000)"),
+				reload: z
+					.boolean()
+					.optional()
+					.describe("If true, reloads the current page during trace capture"),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false },
+		},
+		withProcess(async (proc, { durationMs, reload: shouldReload, targetId }) => {
+			const dur = Math.max(100, Math.min(durationMs ?? 1000, 30000));
+			await Promise.all([
+				startTracing(proc, { targetId }),
+				startCpuProfile(proc, targetId),
+				startCoverage(proc, { css: true, targetId }),
+			]);
+
+			if (shouldReload) {
+				const target = pickPageTarget(proc, targetId);
+				await executeCDPCommand(proc, target.id, "Page.reload", {});
+			}
+			await new Promise((r) => setTimeout(r, dur));
+
+			const [traceRes, cpuRes, covRes, auditRes, metricsRes] = await Promise.all([
+				stopTracing(proc).catch((e) => ({ error: String(e) })),
+				stopCpuProfile(proc, undefined).catch((e) => ({ error: String(e) })),
+				stopCoverage(proc, targetId).catch((e) => ({ error: String(e) })),
+				runPerfAudit(proc, { targetId, includeAudits: true, includeNavTiming: true }).catch((e) => ({ error: String(e) })),
+				getPerformanceMetrics(proc, targetId).catch((e) => ({ error: String(e) })),
+			]);
+
+			let traceArtifactUri: string | undefined;
+			let cpuArtifactUri: string | undefined;
+			if (traceRes && typeof traceRes === "object" && (traceRes as any).path) {
+				const art = registerArtifact(proc.id, "trace", (traceRes as any).path);
+				traceArtifactUri = `electron://artifact/${art.id}`;
+			}
+			if (cpuRes && typeof cpuRes === "object" && (cpuRes as any).path) {
+				const art = registerArtifact(proc.id, "cpuprofile", (cpuRes as any).path);
+				cpuArtifactUri = `electron://artifact/${art.id}`;
+			}
+
+			return {
+				processId: proc.id,
+				durationMs: dur,
+				trace: { ...(traceRes as any), ...(traceArtifactUri ? { artifactUri: traceArtifactUri } : {}) },
+				cpuProfile: { ...(cpuRes as any), ...(cpuArtifactUri ? { artifactUri: cpuArtifactUri } : {}) },
+				coverage: covRes,
+				perfAudit: auditRes,
+				metrics: (metricsRes as any)?.metrics ?? metricsRes,
+			};
+		}),
+	);
+
+	registerTool(
+		server,
+		"leak_check",
+		{
+			description:
+				"Memory leak detector: triggers garbage collection, measures baseline DOM and heap counters, repeats an action or wait, runs GC again, and reports retained node/listener/heap growth.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				iterations: z
+					.number()
+					.int()
+					.positive()
+					.max(20)
+					.optional()
+					.describe("Number of test action iterations (default: 3)"),
+				actionScript: z
+					.string()
+					.optional()
+					.describe("Optional JavaScript expression evaluated in the renderer on each iteration"),
+				targetId: z.string().optional(),
+				captureSnapshots: z
+					.boolean()
+					.optional()
+					.describe("Whether to capture heap snapshot files before and after (default: false)"),
+			},
+			annotations: { destructiveHint: false },
+		},
+		withProcess(async (proc, { iterations, actionScript, targetId, captureSnapshots }) => {
+			const res = await checkMemoryLeaks(proc, { iterations, actionScript, targetId, captureSnapshots });
+			if (res.baselineSnapshotUri) {
+				const art = registerArtifact(proc.id, "heapsnapshot", res.baselineSnapshotUri);
+				res.baselineSnapshotUri = `electron://artifact/${art.id}`;
+			}
+			if (res.finalSnapshotUri) {
+				const art = registerArtifact(proc.id, "heapsnapshot", res.finalSnapshotUri);
+				res.finalSnapshotUri = `electron://artifact/${art.id}`;
+			}
+			return res;
+		}),
+	);
 }
+

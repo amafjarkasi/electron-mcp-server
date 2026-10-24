@@ -108,6 +108,7 @@ export interface ElectronProcess {
 	unmonitorableTargets: Set<string>;
 	/** Targets currently being attached for monitoring (prevents parallel attach races). */
 	inFlightMonitorTargets: Set<string>;
+	redactedSecrets: Set<string>;
 	targets?: CDPTarget[];
 	lastTargetUpdate?: Date;
 }
@@ -547,6 +548,60 @@ export function pushCapped<T>(arr: T[], item: T, max: number): void {
 	}
 }
 
+
+export function resolveSecretPlaceholders(
+	text: string,
+	onSecretResolved?: (secret: string) => void,
+): { resolved: string; masked: string } {
+	if (!text || typeof text !== "string") {
+		return { resolved: text, masked: text };
+	}
+	let hasSecret = false;
+	const resolved = text.replace(/\{\{secret:([A-Za-z0-9_]+)\}\}/g, (_match, varName) => {
+		const val = process.env[varName];
+		if (val === undefined) {
+			throw new Error(`Secret environment variable "${varName}" is not defined in process.env`);
+		}
+		hasSecret = true;
+		if (val && onSecretResolved) {
+			onSecretResolved(val);
+		}
+		return val;
+	});
+	const masked = hasSecret
+		? text.replace(/\{\{secret:([A-Za-z0-9_]+)\}\}/g, "[REDACTED]")
+		: text;
+	return { resolved, masked };
+}
+
+export function redactSecretsString(text: string, secrets?: Set<string>): string {
+	if (!secrets || secrets.size === 0 || !text || typeof text !== "string") return text;
+	let out = text;
+	for (const secret of secrets) {
+		if (!secret) continue;
+		out = out.split(secret).join("[REDACTED]");
+	}
+	return out;
+}
+
+export function redactSecretsDeep<T>(value: T, secrets?: Set<string>): T {
+	if (!secrets || secrets.size === 0 || value == null) return value;
+	if (typeof value === "string") {
+		return redactSecretsString(value, secrets) as unknown as T;
+	}
+	if (Array.isArray(value)) {
+		return value.map((item) => redactSecretsDeep(item, secrets)) as unknown as T;
+	}
+	if (typeof value === "object") {
+		const res: any = {};
+		for (const [k, v] of Object.entries(value)) {
+			res[k] = redactSecretsDeep(v, secrets);
+		}
+		return res;
+	}
+	return value;
+}
+
 export function createProcessRecord(
 	partial: Omit<
 		ElectronProcess,
@@ -558,6 +613,7 @@ export function createProcessRecord(
 		| "unmonitorableTargets"
 		| "inFlightMonitorTargets"
 		| "logs"
+		| "redactedSecrets"
 	> & {
 		logs?: string[];
 	},
@@ -572,6 +628,7 @@ export function createProcessRecord(
 		monitorClients: new Map(),
 		unmonitorableTargets: new Set(),
 		inFlightMonitorTargets: new Set(),
+		redactedSecrets: new Set(),
 	};
 }
 
