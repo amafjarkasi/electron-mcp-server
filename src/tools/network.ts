@@ -19,6 +19,7 @@ import {
 	setExtraHeaders,
 	waitNetworkIdle,
 } from "../power-tools.js";
+import { runOfflineResilienceCheck } from "../composite-tools.js";
 
 export function registerNetworkTools(server: McpServer) {
 	registerTool(
@@ -417,6 +418,50 @@ export function registerNetworkTools(server: McpServer) {
 				return redactSecretsDeep(report, proc.redactedSecrets);
 			}
 			return report;
+		}),
+	);
+
+	registerTool(
+		server,
+		"offline_resilience_check",
+		{
+			description:
+				"Audit how gracefully the Electron app handles network loss, high latency, or HTTP 500 server faults during interactions. Emulates faults, checks for crashes or unhandled rejections, restores network, and computes a Resilience Grade (A-F).",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				faultType: z
+					.enum(["offline", "latency", "http500"])
+					.optional()
+					.describe("Type of network disruption to simulate (default 'offline')"),
+				action: z
+					.object({
+						type: z.enum(["click", "navigate", "type_text"]),
+						selector: z.string().optional(),
+						url: z.string().optional(),
+						text: z.string().optional(),
+					})
+					.optional()
+					.describe("Optional user action to trigger during network disruption"),
+				urlPattern: z
+					.string()
+					.optional()
+					.describe("URL pattern to intercept/fault (default '*')"),
+				durationMs: z
+					.number()
+					.int()
+					.positive()
+					.max(10_000)
+					.optional()
+					.describe("Disruption window duration in ms (default 1000)"),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false, openWorldHint: true },
+		},
+		withProcess(async (proc, { faultType, action, urlPattern, durationMs, targetId }) => {
+			return await runOfflineResilienceCheck(proc, { faultType, action, urlPattern, durationMs, targetId });
 		}),
 	);
 }

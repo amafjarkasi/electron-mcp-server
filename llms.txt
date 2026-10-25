@@ -108,3 +108,11 @@ Execute multi-action sequences server-side with zero client roundtrip latency:
 - Invariant assertions: `expect: { status: "success", contains: "Dashboard", js: "result.value.count > 0" }`
 - Failure diagnostics: on step failure, auto-captures failure screenshot artifact (`electron://artifact/{id}`) and console/network error tails.
 - Export as Playwright test: `exportAs: "playwright"` returns executable Playwright `_electron` test code.
+
+### 11. Composite Workflows (v1.15.0)
+High-leverage multi-step actions designed for autonomous agents:
+- `repro_bundle({ notes })`: Packages screenshot, MHTML DOM archive, HAR network replay, source-mapped console errors, stderr log tail, health metrics, and a GitHub issue report into a zero-dependency PKZip archive (`electron://artifact/{id}`).
+- `fill_form({ fields, submit, expect })`: Solves multi-field accessible forms (text, password, select, checkbox, radio, file), resolves `{{secret:VAR}}`, auto-submits, and verifies UI assertions in one turn.
+- `offline_resilience_check({ faultType, durationMs, action })`: Chaos audit simulating offline / latency / HTTP 500 faults during interactions, measuring recovery, and computing Resilience Grade (A-F).
+- `responsive_theme_matrix({ themes, viewports })`: Sweeps color schemes (`light`, `dark`) and viewport dimensions, catching horizontal scrollbar overflow (`scrollWidth > innerWidth`).
+- `ipc_fuzz_and_verify({ iterations })`: Probes active IPC channels with boundary and malicious vectors (`__proto__`, path traversal, oversized buffers), monitoring main-process responsiveness and crash resistance.

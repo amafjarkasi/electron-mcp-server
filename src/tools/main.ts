@@ -31,6 +31,7 @@ import {
 	triggerShortcut,
 	getProcessHealth,
 } from "../desktop-tools.js";
+import { fuzzIpcChannels } from "../composite-tools.js";
 
 export function registerMainTools(server: McpServer) {
 	registerTool(
@@ -507,6 +508,44 @@ export function registerMainTools(server: McpServer) {
 		},
 		withProcess(async (proc, { targetId }) => {
 			return await getProcessHealth(proc, targetId);
+		}),
+	);
+
+	registerTool(
+		server,
+		"ipc_fuzz_and_verify",
+		{
+			description:
+				"Fuzz test renderer-to-main IPC channels with boundary and malformed payloads (null, prototype pollution, path traversal, oversized buffers) and verify process crash resistance.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Process ID. If omitted, uses the single running app."),
+				channels: z
+					.array(z.string())
+					.optional()
+					.describe("Explicit IPC channels to test. If omitted, automatically discovers active channels."),
+				iterations: z
+					.number()
+					.int()
+					.positive()
+					.max(20)
+					.optional()
+					.describe("Number of payload variations per channel (default 6)"),
+				timeoutMs: z
+					.number()
+					.int()
+					.positive()
+					.max(10_000)
+					.optional()
+					.describe("Timeout per probe in ms (default 2000)"),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false, openWorldHint: true },
+		},
+		withProcess(async (proc, { channels, iterations, timeoutMs, targetId }) => {
+			return await fuzzIpcChannels(proc, { channels, iterations, timeoutMs, targetId });
 		}),
 	);
 }

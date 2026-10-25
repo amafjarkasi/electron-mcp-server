@@ -8,8 +8,8 @@
 *Give Cursor, Claude & autonomous agents eyes, hands, and deep runtime inspection inside Electron desktop applications.*
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.14.0-0F766E?style=flat-square" />
-  <img alt="106 tools" src="https://img.shields.io/badge/106_tools-0F766E?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-1.15.0-0F766E?style=flat-square" />
+  <img alt="111 tools" src="https://img.shields.io/badge/111_tools-0F766E?style=flat-square" />
   <img alt="9 resources" src="https://img.shields.io/badge/9_resources-115E59?style=flat-square" />
   <img alt="6 prompts" src="https://img.shields.io/badge/6_prompts-134E4A?style=flat-square" />
   <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D20-339933?style=flat-square&logo=nodedotjs&logoColor=white" />
@@ -20,7 +20,7 @@
 <p align="center">
   <a href="#-quick-start"><b>Quick Start</b></a> •
   <a href="#-key-superpowers"><b>Superpowers</b></a> •
-  <a href="#-tool-matrix-106-tools"><b>Tool Matrix</b></a> •
+  <a href="#-tool-matrix-111-tools"><b>Tool Matrix</b></a> •
   <a href="#-agent-recipes"><b>Recipes</b></a> •
   <a href="#-resources--prompts"><b>Resources & Prompts</b></a> •
   <a href="#-changelog--releases"><b>Changelog</b></a> •
@@ -135,7 +135,7 @@ High-level single-turn workflows reduce round trips:
 
 ---
 
-## 🛠️ Tool Matrix (106 Tools)
+## 🛠️ Tool Matrix (111 Tools)
 
 All tools accept an optional `processId`. When only one app is running, it automatically resolves to the active process.
 
@@ -180,9 +180,12 @@ All tools accept an optional `processId`. When only one app is running, it autom
 | `handle_dialog` | Automatically accept or dismiss JavaScript alerts, confirms, and prompts. |
 | `open_deep_link` | Dispatch a custom protocol deep link (e.g. `myapp://action`) into the application. |
 
-### 📄 Page State & Navigation (17)
+### 📄 Page State & Navigation (20)
 | Tool | Description |
 | --- | --- |
+| `fill_form` | **Composite:** Smart multi-field form solver (text, select, checkbox, radio, file) with `{{secret:VAR}}` resolution, auto-submit, and UI assertion. |
+| `responsive_theme_matrix` | **Composite:** Multi-theme (`light`, `dark`) and viewport sweep detecting text clipping & horizontal overflow scrollbars. |
+| `repro_bundle` | **Composite:** Self-contained bug repro bundle (screenshot, MHTML DOM, HAR replay, console errors, logs, health) zipped into an artifact. |
 | `page_info` | Basic page details: URL, title, dimensions, readyState, and user agent. |
 | `navigate` | Navigate the active page target to a URL with configurable load-state waiting. |
 | `reload` | Reload the active page target (supports cache busting). |
@@ -201,9 +204,10 @@ All tools accept an optional `processId`. When only one app is running, it autom
 | `save_storage_state` | Export cookies, `localStorage`, and `sessionStorage` into a Playwright-compatible JSON artifact (`electron://artifact/{id}`). |
 | `load_storage_state` | Restore cookies and origin storage state back into the live Electron session for instant auth bypass and state replay. |
 
-### 🌐 Network & Downloads (11)
+### 🌐 Network & Downloads (12)
 | Tool | Description |
 | --- | --- |
+| `offline_resilience_check` | **Composite:** Network chaos and fault recovery audit (simulating offline, high latency, or HTTP 500 faults) and Resilience Grade (`A`–`F`). |
 | `network_failure_report` | **Composite:** Gathers failed HTTP requests (status ≥ 400 or network failure), inlines response bodies, and registers an exported HAR artifact. |
 | `get_network_log` | Buffered HTTP requests and responses. Supports status, failure, and URL pattern filters. |
 | `get_response_body` | Fetch raw response body for a completed `requestId` (text or base64). |
@@ -232,9 +236,10 @@ All tools accept an optional `processId`. When only one app is running, it autom
 | `set_breakpoint` / `remove_breakpoint` | Set or clear JavaScript breakpoints by script URL and line number. |
 | `pause` / `resume` | Suspend or resume V8 JavaScript execution via Debugger domain. |
 
-### 🛡️ Main Process, Native Mocks, Menus & Security (22)
+### 🛡️ Main Process, Native Mocks, Menus & Security (23)
 | Tool | Description |
 | --- | --- |
+| `ipc_fuzz_and_verify` | **Composite:** IPC security and crash hardening fuzzer probing active handlers with boundary & attack payloads (`null`, `__proto__`, path traversal, oversized buffers). |
 | `mock_electron_api` | Intercept and mock any Electron native module (`dialog`, `shell`, `app`, `clipboard`, `autoUpdater`) with custom return values or async implementations. |
 | `get_mock_calls` | Inspect recorded call history, argument signatures, and timestamps for mocked Electron APIs. |
 | `restore_electron_mocks` | Restore original native Electron implementations and purge mock call records. |
@@ -509,12 +514,85 @@ Save full session state (cookies, localStorage, sessionStorage) into Playwright-
 }
 ```
 
+### 11. One-Shot Bug Repro Bundle & Issue Generator (`repro_bundle`)
+Package a complete, self-contained zip archive containing viewport screenshot, full MHTML DOM archive, HAR network replay, source-mapped console errors, stderr tail, health metrics, and a GitHub-ready Markdown issue report in one turn:
+```json
+{
+  "name": "repro_bundle",
+  "arguments": {
+    "notes": "Regression on checkout flow after OAuth upgrade"
+  }
+}
+```
+Returns `artifactUri: "electron://artifact/..."`, destination path, and the complete markdown summary ready to paste into GitHub issues or Jira.
+
+### 12. Smart Multi-Field Accessible & Secret Form Solver (`fill_form`)
+Fill complete multi-input forms in a single tool call from either a key-value dictionary or structured field specs:
+```json
+{
+  "name": "fill_form",
+  "arguments": {
+    "fields": {
+      "Username or Email": "developer@example.com",
+      "Password": "{{secret:APP_PASSWORD}}",
+      "Environment": "Staging",
+      "Remember Me": true
+    },
+    "submit": true,
+    "expect": {
+      "textIncludes": "Welcome back"
+    }
+  }
+}
+```
+Resolves fields via accessibility tree labels, ARIA attributes, placeholders, or refs (`e1`), resolves secrets securely, selects dropdown options, toggles checkboxes, clicks submit, and verifies post-submit UI assertions.
+
+### 13. Network Chaos & Resilience Scorecard (`offline_resilience_check`)
+Simulate real-world network failure conditions (offline, latency, or HTTP 500) during interaction, monitor app health and error bursts, restore network, and compute an executive Resilience Grade (A–F):
+```json
+{
+  "name": "offline_resilience_check",
+  "arguments": {
+    "faultType": "offline",
+    "durationMs": 1500,
+    "action": { "type": "click", "selector": "#save-btn" }
+  }
+}
+```
+
+### 14. Responsive Theme & Viewport Matrix Sweep (`responsive_theme_matrix`)
+Audit how layouts adapt across color schemes (`light`, `dark`) and viewport sizes, catching horizontal scrollbar leaks (`scrollWidth > innerWidth`):
+```json
+{
+  "name": "responsive_theme_matrix",
+  "arguments": {
+    "themes": ["light", "dark"],
+    "viewports": [
+      { "width": 800, "height": 600, "name": "compact" },
+      { "width": 1280, "height": 800, "name": "desktop" }
+    ]
+  }
+}
+```
+
+### 15. IPC Security & Crash Hardening Fuzzer (`ipc_fuzz_and_verify`)
+Harden renderer-to-main IPC communication against malicious or malformed payloads (`null`, prototype pollution, path traversal, oversized buffers) and verify process crash resistance:
+```json
+{
+  "name": "ipc_fuzz_and_verify",
+  "arguments": {
+    "iterations": 6
+  }
+}
+```
+
 ---
 
 ## 📋 Changelog & Releases
 
 | Version | Release Highlights | Test Suite |
 | :--- | :--- | :--- |
+| **v1.15.0** | **Composite Superpowers & Resilience Workflows**: One-Shot Bug Repro Bundle (`repro_bundle`), Smart Accessible & Secret Form Solver (`fill_form`), Network Chaos Resilience Scorecard (`offline_resilience_check`), Responsive Theme Sweep (`responsive_theme_matrix`), IPC Security Fuzzer (`ipc_fuzz_and_verify`). Pure Node zero-dependency PKZip generator. **111 tools**. | 140 unit · 111 smoke |
 | **v1.14.0** | **Ref Locators & Set-of-Marks** (`ref: "e1"`, `markElements: true`), **Native Electron API Mocking** (`mock_electron_api`, `get_mock_calls`, `restore_electron_mocks`), **Native Application Menu Driver** (`get_application_menu`, `click_menu_item`, `trigger_shortcut`), **Process Health Watchdog** (`get_process_health`), **Storage State Save & Load** (`save_storage_state`, `load_storage_state`). **106 tools**. | 135 unit · 106 smoke |
 | **v1.13.0** | **Server-Side Workflow Engine & Codegen** (`run_script` with context variables, conditional branching, expectation assertions, retries, failure diagnostics, and Playwright test codegen). **97 tools**. | 130 unit · 97 smoke |
 | **v1.12.0** | **Runtime Security Audit** (`electron_security_audit`), **Zero-Leak Secret Redaction** (`{{secret:VAR}}`), **IPC Schema Inference** (`ipc_schema_inference`), **Memory Leak Hunter** (`leak_check`), **Source Maps** (`resolve_stack`), **Composite Workflows** (`act_and_verify`, `triage`, `network_failure_report`, `perf_snapshot`). **96 tools**. | 125 unit · 96 smoke |
@@ -540,7 +618,7 @@ Save full session state (cookies, localStorage, sessionStorage) into Playwright-
 ## 📜 Development & Verification
 
 ```bash
-npm test            # Run build, 135 unit tests, and full 106-tool smoke suite
+npm test            # Run build, 140 unit tests, and full 111-tool smoke suite
 npm run doctor      # Verify environment health and port binding
 npm run sync:readme # Automatically synchronize badge counts with registered tools
 ```

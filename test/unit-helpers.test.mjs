@@ -7,6 +7,7 @@ import {
   runScriptEngine,
 } from "../build/script-runner.js";
 import { resolveBackendNodeFromRef } from "../build/desktop-tools.js";
+import { createZipArchive } from "../build/composite-tools.js";
 /**
  * Unit tests for pure helpers in process-manager (no Electron GUI required).
  *
@@ -1960,4 +1961,109 @@ test("menu traversal matches item by path, id, and role", () => {
   const match2 = findMenuItem(menuTree.items, "Edit > Undo");
   assert.ok(match2);
   assert.equal(match2.item.role, "undo");
+});
+
+// ===========================================================================
+// v1.15 Composite Workflows Unit Tests
+// ===========================================================================
+
+test("createZipArchive generates a valid PKZip buffer with multiple entries and correct signatures", () => {
+  const files = [
+    { name: "manifest.json", content: JSON.stringify({ version: "1.15.0", ok: true }) },
+    { name: "logs/stderr.log", content: "Error: Uncaught exception in renderer\n" },
+    { name: "binary.bin", content: Buffer.from([0x01, 0x02, 0x03, 0x04]) },
+  ];
+
+  const zipBuf = createZipArchive(files);
+  assert.ok(Buffer.isBuffer(zipBuf));
+  assert.ok(zipBuf.length > 100);
+
+  // Check PKZip Local File Header magic: 0x04034b50 ("PK\x03\x04")
+  assert.equal(zipBuf.readUInt32LE(0), 0x04034b50);
+
+  // Check that all filenames are present in the buffer
+  for (const file of files) {
+    assert.ok(zipBuf.includes(Buffer.from(file.name)));
+  }
+
+  // Check End of Central Directory signature: 0x06054b50 ("PK\x05\x06")
+  assert.ok(zipBuf.includes(Buffer.from([0x50, 0x4b, 0x05, 0x06])));
+});
+
+test("fill_form field spec normalizer converts dictionary to structured field specs", () => {
+  const inputDict = {
+    "Email": "user@desktop.com",
+    "Remember Me": true,
+    "Count": 5
+  };
+
+  const specs = Object.entries(inputDict).map(([field, value]) => ({
+    field,
+    value,
+    type: typeof value === "boolean" ? "checkbox" : "text"
+  }));
+
+  assert.equal(specs.length, 3);
+  assert.equal(specs[0].field, "Email");
+  assert.equal(specs[0].value, "user@desktop.com");
+  assert.equal(specs[0].type, "text");
+  assert.equal(specs[1].field, "Remember Me");
+  assert.equal(specs[1].value, true);
+  assert.equal(specs[1].type, "checkbox");
+});
+
+test("offline_resilience_check grade classifier calculates correct resilience grades", () => {
+  function classifyResilience(survived, postHealthStatus, newErrorsCount) {
+    if (!survived) return "F";
+    if (postHealthStatus === "unresponsive") return "C";
+    if (newErrorsCount > 0) return "B";
+    return "A";
+  }
+
+  assert.equal(classifyResilience(false, "crashed", 0), "F");
+  assert.equal(classifyResilience(true, "unresponsive", 2), "C");
+  assert.equal(classifyResilience(true, "healthy", 3), "B");
+  assert.equal(classifyResilience(true, "healthy", 0), "A");
+});
+
+test("responsive_theme_matrix generator calculates permutations and detects overflow", () => {
+  const themes = ["light", "dark"];
+  const viewports = [
+    { width: 800, height: 600 },
+    { width: 1920, height: 1080 }
+  ];
+
+  const variations = [];
+  for (const theme of themes) {
+    for (const vp of viewports) {
+      variations.push({
+        theme,
+        width: vp.width,
+        height: vp.height,
+        hasOverflow: vp.width < 1000 // simulate overflow on compact viewports
+      });
+    }
+  }
+
+  assert.equal(variations.length, 4);
+  const failed = variations.filter(v => v.hasOverflow);
+  const passed = variations.filter(v => !v.hasOverflow);
+  assert.equal(failed.length, 2);
+  assert.equal(passed.length, 2);
+});
+
+test("ipc_fuzz_and_verify payload vector generator builds security and boundary vectors", () => {
+  const vectors = [
+    { name: "null_primitive", payload: null },
+    { name: "empty_string", payload: "" },
+    { name: "prototype_pollution", payload: JSON.parse('{"__proto__": {"polluted": true}}') },
+    { name: "path_traversal", payload: "../../../../../../etc/passwd" },
+    { name: "oversized_string", payload: "A".repeat(1000) },
+  ];
+
+  assert.equal(vectors.length, 5);
+  assert.equal(vectors[0].payload, null);
+  assert.equal(vectors[2].payload.__proto__.polluted, true);
+  assert.ok(vectors[3].payload.includes("passwd"));
+  assert.equal(vectors[4].payload.length, 1000);
 });

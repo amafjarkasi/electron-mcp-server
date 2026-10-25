@@ -354,6 +354,12 @@ async function main() {
       "get_process_health",
       "save_storage_state",
       "load_storage_state",
+      // v1.15 composite tools
+      "repro_bundle",
+      "fill_form",
+      "offline_resilience_check",
+      "responsive_theme_matrix",
+      "ipc_fuzz_and_verify",
     ];
     const tools = await client.request("tools/list");
     const names = new Set((tools.tools ?? []).map((t) => t.name));
@@ -1939,6 +1945,81 @@ async function main() {
       const healthData = parseToolText(healthRes);
       assert(healthData.status === "healthy" || healthData.status === "unresponsive" || healthData.status === "crashed", "expected valid health status");
       pass("get_process_health");
+
+      // v1.15 composite tools
+      const fillFormRes = await client.request("tools/call", {
+        name: "fill_form",
+        arguments: {
+          processId,
+          fields: {
+            "#name": "AgentSmith",
+            "#color": "blue",
+          },
+          submit: "#go",
+          expect: {
+            textIncludes: "clicked:AgentSmith",
+          },
+        },
+      });
+      assert(!fillFormRes.isError, `fill_form error: ${fillFormRes.content?.[0]?.text}`);
+      const fillFormData = parseToolText(fillFormRes);
+      assert(fillFormData.success === true, "fill_form expected success=true");
+      assert(fillFormData.submitted === true, "fill_form expected submitted=true");
+      assert(fillFormData.assertion?.passed === true, "fill_form expected assertion.passed=true");
+      pass("fill_form");
+
+      const themeMatrixRes = await client.request("tools/call", {
+        name: "responsive_theme_matrix",
+        arguments: {
+          processId,
+          viewports: [{ width: 800, height: 600 }],
+          themes: ["light"],
+        },
+      });
+      assert(!themeMatrixRes.isError, `responsive_theme_matrix error: ${themeMatrixRes.content?.[0]?.text}`);
+      const matrixData = parseToolText(themeMatrixRes);
+      assert(Array.isArray(matrixData.results), "responsive_theme_matrix expected results array");
+      assert(matrixData.results.length === 1, "responsive_theme_matrix expected 1 result");
+      pass("responsive_theme_matrix");
+
+      const resilienceRes = await client.request("tools/call", {
+        name: "offline_resilience_check",
+        arguments: {
+          processId,
+          faultType: "offline",
+          durationMs: 300,
+        },
+      });
+      assert(!resilienceRes.isError, `offline_resilience_check error: ${resilienceRes.content?.[0]?.text}`);
+      const resilienceData = parseToolText(resilienceRes);
+      assert(resilienceData.resilienceGrade || resilienceData.grade, "offline_resilience_check expected grade");
+      pass("offline_resilience_check");
+
+      const ipcFuzzRes = await client.request("tools/call", {
+        name: "ipc_fuzz_and_verify",
+        arguments: {
+          processId,
+          iterations: 2,
+        },
+      });
+      assert(!ipcFuzzRes.isError, `ipc_fuzz_and_verify error: ${ipcFuzzRes.content?.[0]?.text}`);
+      const fuzzData = parseToolText(ipcFuzzRes);
+      assert(fuzzData.resilient != null, "ipc_fuzz_and_verify expected resilient flag");
+      pass("ipc_fuzz_and_verify");
+
+      const reproRes = await client.request("tools/call", {
+        name: "repro_bundle",
+        arguments: {
+          processId,
+          notes: "Smoke Repro Bundle",
+        },
+      });
+      assert(!reproRes.isError, `repro_bundle error: ${reproRes.content?.[0]?.text}`);
+      const reproData = parseToolText(reproRes);
+      assert(reproData.bundleZipPath, "repro_bundle expected bundleZipPath");
+      assert(reproData.artifactUri?.startsWith("electron://artifact/"), "repro_bundle expected artifactUri");
+      assert(reproData.reportMarkdown?.includes("Smoke Repro Bundle"), "repro_bundle expected markdown report");
+      pass("repro_bundle");
     }
 
     }

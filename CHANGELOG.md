@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.15.0
+
+### Composite Superpowers & Resilience Workflows
+- **`repro_bundle` (One-Shot Bug Repro Bundle & GitHub Issue Generator)**:
+  - Generates a self-contained `.zip` repro archive combining full viewport screenshot, complete MHTML DOM snapshot, HAR network replay, recent console errors and exceptions, stderr logs, process health metrics, and OS/Electron diagnostic info.
+  - Automatically writes a GitHub-ready Markdown issue report and registers the bundle as a persistent artifact (`electron://artifact/{id}`).
+  - Built with a pure Node.js zero-dependency PKZip generator (`zlib.deflateRawSync` + `zlib.crc32`) — zero external runtime dependencies.
+- **`fill_form` (Smart Multi-Field Accessible & Secret Form Solver)**:
+  - Fills complex forms in a single turn from either a key-value dictionary or structured array of field specs.
+  - Automatically resolves targets via accessibility tree labels, ARIA attributes, placeholders, names, element IDs, CSS selectors, or `ref` markers (`e1`).
+  - Seamlessly handles text inputs, `<select>` dropdowns, checkboxes, radio buttons, and file attachments.
+  - Built-in `{{secret:ENV_VAR}}` injection with automatic secret masking and redaction.
+  - Optional submit button triggering, network idle synchronization, and post-submission UI assertions.
+- **`offline_resilience_check` (Network Chaos & Fault Recovery Scorecard)**:
+  - Simulates real-world network disruptions (offline disconnection, high latency, or HTTP 500 server errors) during user interactions.
+  - Measures unhandled rejections, console error spikes, and process stability under network stress.
+  - Restores network conditions, verifies UI/process recovery, and issues an executive Resilience Grade (`A` through `F`).
+- **`responsive_theme_matrix` (Theme & Viewport Compatibility Sweep)**:
+  - Automated compatibility sweep across multiple color schemes (`light`, `dark`) and viewport dimensions.
+  - Evaluates DOM bounding-box overflow (`document.documentElement.scrollWidth > window.innerWidth`) to catch horizontal scrollbars and clipped layout elements.
+  - Optionally captures high-resolution visual screenshot artifacts for every permutation.
+- **`ipc_fuzz_and_verify` (IPC Security & Crash Hardening Fuzzer)**:
+  - Probes renderer-to-main IPC channels with security boundary payloads: `null` primitives, empty strings, prototype pollution vectors (`__proto__`), path traversal strings (`../../../../etc/passwd`), oversized buffers, and deeply nested objects.
+  - Continuously monitors main process health and responsiveness to ensure handlers do not trigger unhandled crashes or process termination.
+  - Emits vulnerability severity scores, hardening status (`hardened`, `vulnerable`, `crashed`), and concrete security recommendations.
+- Surface: **111 tools · 9 resources · 6 prompts** (140 passing unit tests and full end-to-end smoke test suite).
+
 ## 1.14.0
 
 ### Features & Desktop Automation Surface

@@ -12,6 +12,11 @@ import {
 	loadStorageState,
 } from "../desktop-tools.js";
 import {
+	createReproBundle,
+	fillForm,
+	runResponsiveThemeMatrix,
+} from "../composite-tools.js";
+import {
 	redactSecretsString,
 	redactSecretsDeep,
 	diagnoseProcess,
@@ -1755,5 +1760,124 @@ export function registerPageTools(server: McpServer) {
 				return textResult(err instanceof Error ? err.message : String(err), true);
 			}
 		},
+	);
+
+	registerTool(
+		server,
+		"fill_form",
+		{
+			description:
+				"Fill multiple input fields (text, password, checkboxes, radio buttons, dropdowns) and optionally submit in a single turn. Supports {{secret:VAR}} resolution and accessibility refs.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Target process ID. Omit if only one app is running."),
+				fields: z
+					.union([
+						z.record(z.union([z.string(), z.boolean(), z.number()])),
+						z.array(
+							z.object({
+								field: z.string().describe("Label, placeholder, name, id, CSS selector, or ref (e.g. 'e1')"),
+								value: z.union([z.string(), z.boolean(), z.number()]),
+								type: z.enum(["text", "select", "checkbox", "radio", "file"]).optional(),
+								selector: z.string().optional(),
+								ref: z.string().optional(),
+							}),
+						),
+					])
+					.describe("Form field specifications or mapping of field names to values"),
+				submit: z
+					.union([z.string(), z.boolean()])
+					.optional()
+					.describe("Submit selector/name/ref, or true to auto-detect submit button"),
+				waitIdle: z
+					.boolean()
+					.optional()
+					.describe("Whether to wait for network idle after filling/submitting (default true)"),
+				expect: z
+					.object({
+						textIncludes: z.string().optional(),
+						urlIncludes: z.string().optional(),
+						titleIncludes: z.string().optional(),
+						selector: z.string().optional(),
+						selectorHidden: z.string().optional(),
+						expression: z.string().optional(),
+					})
+					.optional()
+					.describe("Optional UI assertion to verify post-submit outcome"),
+				targetId: z.string().optional(),
+			},
+			annotations: { destructiveHint: false, openWorldHint: true },
+		},
+		withProcess(async (proc, { fields, submit, waitIdle, expect, targetId }) => {
+			return await fillForm(proc, { fields, submit, waitIdle, expect, targetId });
+		}),
+	);
+
+	registerTool(
+		server,
+		"repro_bundle",
+		{
+			description:
+				"Package a complete, self-contained repro investigation bundle (screenshot, MHTML DOM archive, HAR network replay, source-mapped stack traces, logs, and system/health info) into a zip artifact.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Target process ID. Omit if only one app is running."),
+				outputPath: z
+					.string()
+					.optional()
+					.describe("Optional destination zip file path"),
+				notes: z
+					.string()
+					.optional()
+					.describe("Optional bug reproduction steps or user notes to include in report"),
+				targetId: z.string().optional(),
+			},
+			annotations: { readOnlyHint: true },
+		},
+		withProcess(async (proc, { outputPath, notes, targetId }) => {
+			return await createReproBundle(proc, { outputPath, notes, targetId });
+		}),
+	);
+
+	registerTool(
+		server,
+		"responsive_theme_matrix",
+		{
+			description:
+				"Run a multi-theme (dark/light) and multi-viewport responsive sweep, verifying UI layout, detecting text clipping/horizontal overflow, and capturing screenshot artifacts.",
+			params: {
+				processId: z
+					.string()
+					.optional()
+					.describe("Target process ID. Omit if only one app is running."),
+				themes: z
+					.array(z.enum(["light", "dark"]))
+					.optional()
+					.describe("Themes to test (default ['light', 'dark'])"),
+				viewports: z
+					.array(
+						z.object({
+							width: z.number().int().positive(),
+							height: z.number().int().positive(),
+							name: z.string().optional(),
+						}),
+					)
+					.optional()
+					.describe("Viewport dimensions to test (default 800x600, 1280x800, 1920x1080)"),
+				checkOverflow: z
+					.boolean()
+					.optional()
+					.describe("Whether to detect elements overflowing viewport bounds (default true)"),
+				targetId: z.string().optional(),
+			},
+			annotations: { readOnlyHint: true },
+		},
+		withProcess(async (proc, { themes, viewports, checkOverflow, targetId }) => {
+			return await runResponsiveThemeMatrix(proc, { themes, viewports, checkOverflow, targetId });
+		}),
 	);
 }
