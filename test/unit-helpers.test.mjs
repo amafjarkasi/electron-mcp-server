@@ -1848,6 +1848,57 @@ test("runScriptEngine executes mock steps with assignment, conditionals and retr
   assert.ok(report.exportedCode.includes('test("automated electron workflow'));
 });
 
+test("runScriptEngine rejects exportPath in sensitive/blocked locations", async () => {
+  const mockServer = {
+    _registeredTools: new Map(),
+  };
+  const script = [{ tool: "dummy", args: {} }];
+  const blockedPath = isWin
+    ? "C:\\Windows\\System32\\test-script.ts"
+    : "/etc/cron.d/test-script.ts";
+
+  await assert.rejects(
+    async () => {
+      await runScriptEngine(mockServer, {
+        script,
+        exportAs: "playwright",
+        exportPath: blockedPath,
+      });
+    },
+    /sensitive location/i
+  );
+
+  await assert.rejects(
+    async () => {
+      await runScriptEngine(mockServer, {
+        script,
+        exportAs: "json",
+        exportPath: blockedPath,
+      });
+    },
+    /sensitive location/i
+  );
+});
+
+test("runScriptEngine allows exportPath in temporary/allowed locations", async () => {
+  const mockServer = {
+    _registeredTools: new Map(),
+  };
+  const script = [{ tool: "dummy", args: {} }];
+  const tmpOut = path.join(os.tmpdir(), `test-script-export-${Date.now()}.spec.ts`);
+  try {
+    const report = await runScriptEngine(mockServer, {
+      script,
+      exportAs: "playwright",
+      exportPath: tmpOut,
+    });
+    assert.equal(report.exportedPath, path.resolve(tmpOut));
+    assert.ok(fs.existsSync(tmpOut));
+  } finally {
+    if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut);
+  }
+});
+
 // ===========================================================================
 // v1.14.0 Desktop Tools & Advanced Ref / Mock / Health / Storage Tests
 // ===========================================================================

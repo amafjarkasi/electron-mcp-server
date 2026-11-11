@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.15.1
+
+### Bug Fixes & Security Hardening
+- **Security (Arbitrary File Write / CWE-22, #43)**: Enforce strict `validateOutputPath` checks on `exportPath` in `run_script` (`src/script-runner.ts`), `save_storage_state` (`src/desktop-tools.ts`), and `repro_bundle` / `responsive_theme_matrix` (`src/composite-tools.ts`). Blocks path traversal and attempts to write to sensitive or system directories (`OUTPUT_BLOCKED_ROOTS`) and adheres to `ELECTRON_MCP_OUTPUT_ROOTS`.
+- **Packaging & Client Installation (Exit Code 1 / Handshake Failure, #42)**: Removed broken `postinstall` script from `package.json`. The unpublished `scripts/ensure-electron.mjs` was causing `npx -y electron-debug-mcp` to fail with `MODULE_NOT_FOUND` during MCP initialize in GitHub Copilot, Cursor, and Claude Desktop. Local development and CI continue to automatically ensure the Electron binary via `pretest`.
+
 ## 1.15.0
 
 ### Composite Superpowers & Resilience Workflows

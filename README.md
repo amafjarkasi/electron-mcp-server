@@ -8,7 +8,7 @@
 *Give Cursor, Claude & autonomous agents eyes, hands, and deep runtime inspection inside Electron desktop applications.*
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.15.0-0F766E?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-1.15.1-0F766E?style=flat-square" />
   <img alt="111 tools" src="https://img.shields.io/badge/111_tools-0F766E?style=flat-square" />
   <img alt="9 resources" src="https://img.shields.io/badge/9_resources-115E59?style=flat-square" />
   <img alt="6 prompts" src="https://img.shields.io/badge/6_prompts-134E4A?style=flat-square" />
@@ -592,6 +592,7 @@ Harden renderer-to-main IPC communication against malicious or malformed payload
 
 | Version | Release Highlights | Test Suite |
 | :--- | :--- | :--- |
+| **v1.15.1** | **Security & Client Startup Fixes**: Path validation for `run_script` / `save_storage_state` (`validateOutputPath`, prevents CWE-22 arbitrary file write), and removal of broken `postinstall` script fixing `npx` / Copilot / Cursor handshake exit code 1. **111 tools**. | 142 unit · 111 smoke |
 | **v1.15.0** | **Composite Superpowers & Resilience Workflows**: One-Shot Bug Repro Bundle (`repro_bundle`), Smart Accessible & Secret Form Solver (`fill_form`), Network Chaos Resilience Scorecard (`offline_resilience_check`), Responsive Theme Sweep (`responsive_theme_matrix`), IPC Security Fuzzer (`ipc_fuzz_and_verify`). Pure Node zero-dependency PKZip generator. **111 tools**. | 140 unit · 111 smoke |
 | **v1.14.0** | **Ref Locators & Set-of-Marks** (`ref: "e1"`, `markElements: true`), **Native Electron API Mocking** (`mock_electron_api`, `get_mock_calls`, `restore_electron_mocks`), **Native Application Menu Driver** (`get_application_menu`, `click_menu_item`, `trigger_shortcut`), **Process Health Watchdog** (`get_process_health`), **Storage State Save & Load** (`save_storage_state`, `load_storage_state`). **106 tools**. | 135 unit · 106 smoke |
 | **v1.13.0** | **Server-Side Workflow Engine & Codegen** (`run_script` with context variables, conditional branching, expectation assertions, retries, failure diagnostics, and Playwright test codegen). **97 tools**. | 130 unit · 97 smoke |

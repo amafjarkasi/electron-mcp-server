@@ -9,6 +9,7 @@ import {
 	updateCDPTargets,
 	evaluateMain,
 	resolveOutputPath,
+	validateOutputPath,
 	elementCenter,
 	getCookies,
 } from "./process-manager.js";
@@ -816,7 +817,7 @@ export async function saveStorageState(
 	let artifactUri: string | undefined;
 
 	if (finalPath) {
-		finalPath = resolveOutputPath(finalPath);
+		finalPath = validateOutputPath(finalPath);
 		fs.mkdirSync(path.dirname(finalPath), { recursive: true });
 		fs.writeFileSync(finalPath, JSON.stringify(state, null, 2), "utf8");
 		const artifact = registerArtifact(

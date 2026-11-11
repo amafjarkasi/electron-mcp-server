@@ -7,6 +7,7 @@ import { resolveProcess } from "./tool-helpers.js";
 import {
 	type ElectronProcess,
 	saveScreenshot,
+	validateOutputPath,
 } from "./process-manager.js";
 
 export interface StepExpectation {
@@ -531,16 +532,18 @@ export async function runScriptEngine(
 	if (options.exportAs === "playwright") {
 		exportedCode = generatePlaywrightCode(steps, proc?.appPath || ".");
 		if (options.exportPath) {
-			fs.mkdirSync(path.dirname(options.exportPath), { recursive: true });
-			fs.writeFileSync(options.exportPath, exportedCode, "utf8");
-			exportedPath = path.resolve(options.exportPath);
+			const validatedPath = validateOutputPath(options.exportPath);
+			fs.mkdirSync(path.dirname(validatedPath), { recursive: true });
+			fs.writeFileSync(validatedPath, exportedCode, "utf8");
+			exportedPath = validatedPath;
 		}
 	} else if (options.exportAs === "json") {
 		const jsonRecipe = JSON.stringify({ steps, variables: context.vars }, null, 2);
 		if (options.exportPath) {
-			fs.mkdirSync(path.dirname(options.exportPath), { recursive: true });
-			fs.writeFileSync(options.exportPath, jsonRecipe, "utf8");
-			exportedPath = path.resolve(options.exportPath);
+			const validatedPath = validateOutputPath(options.exportPath);
+			fs.mkdirSync(path.dirname(validatedPath), { recursive: true });
+			fs.writeFileSync(validatedPath, jsonRecipe, "utf8");
+			exportedPath = validatedPath;
 		} else {
 			exportedCode = jsonRecipe;
 		}

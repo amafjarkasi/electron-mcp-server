@@ -14,6 +14,7 @@ import {
 	getPageInfo,
 	pickPageTarget,
 	resolveOutputPath,
+	validateOutputPath,
 	resolveSecretPlaceholders,
 	typeText,
 	updateCDPTargets,
@@ -320,7 +321,7 @@ ${
 
 	const zipBuffer = createZipArchive(zipFiles);
 	const defaultFilename = path.join(os.tmpdir(), `repro-bundle-${proc.id}-${Date.now()}.zip`);
-	const outputPath = resolveOutputPath(options.outputPath || defaultFilename);
+	const outputPath = validateOutputPath(options.outputPath || defaultFilename);
 
 	fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 	fs.writeFileSync(outputPath, zipBuffer);
@@ -925,7 +926,7 @@ export async function runResponsiveThemeMatrix(
 					const shot = await captureScreenshot(proc, target.id, "png");
 					if (shot && shot.data) {
 						const fname = path.join(os.tmpdir(), `matrix-${theme}-${vp.width}x${vp.height}-${Date.now()}.png`);
-						const outPath = resolveOutputPath(fname);
+						const outPath = validateOutputPath(fname);
 						fs.mkdirSync(path.dirname(outPath), { recursive: true });
 						fs.writeFileSync(outPath, Buffer.from(shot.data, "base64"));
 						const art = registerArtifact(proc.id, "screenshot", outPath, "image/png");

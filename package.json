@@ -1,6 +1,6 @@
 {
   "name": "electron-debug-mcp",
-  "version": "1.15.0",
+  "version": "1.15.1",
   "description": "MCP server for launching and debugging Electron apps via Chrome DevTools Protocol",
   "type": "module",
   "main": "./build/index.js",
@@ -18,7 +18,6 @@
   "scripts": {
     "ensure-electron": "node scripts/ensure-electron.mjs",
     "fix-electron": "node scripts/ensure-electron.mjs",
-    "postinstall": "node scripts/ensure-electron.mjs",
     "prepublishOnly": "npm run build",
     "build": "tsc && node --input-type=module -e \"import fs from 'fs'; fs.chmodSync('build/index.js', 0o755)\"",
     "start": "node build/index.js",
