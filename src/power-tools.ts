@@ -6,6 +6,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { fileURLToPath } from "url";
 import {
 	type ElectronProcess,
 	type IpcEntry,
@@ -40,6 +41,14 @@ const DEFAULT_AX_NODES = 400;
 const HEAP_TIMEOUT_MS = 60_000;
 const CDP_TIMEOUT_MS = 20_000;
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+function filePathFromUrl(fileUrl: string): string {
+	try {
+		return fileURLToPath(fileUrl);
+	} catch {
+		return decodeURIComponent(fileUrl.replace(/^file:\/\//, ""));
+	}
+}
 
 type CpuSession = {
 	targetId: string;
@@ -1140,7 +1149,7 @@ export async function setFileInput(
 		throw new Error("files must be a non-empty array of paths");
 	}
 	const resolvedFiles = options.files.map((f) => {
-		const abs = path.resolve(f);
+		const abs = validateOutputPath(f);
 		if (!fs.existsSync(abs)) {
 			throw new Error(`File not found: ${abs}`);
 		}
@@ -1592,9 +1601,7 @@ export async function resolveStack(
 			}
 			if (frame.url?.startsWith("file://")) {
 				try {
-					const filePath = decodeURIComponent(
-						frame.url.replace(/^file:\/\//, ""),
-					);
+					const filePath = filePathFromUrl(frame.url);
 					if (fs.existsSync(filePath)) {
 						const body = fs.readFileSync(filePath, "utf8");
 						sourceCache.set(key, body);
@@ -3567,7 +3574,7 @@ export function resolveSourceMapping(
 				const base64 = url.split("base64,")[1];
 				mapJson = JSON.parse(Buffer.from(base64, "base64").toString("utf8"));
 			} else if (frameUrl && frameUrl.startsWith("file://")) {
-				const scriptPath = decodeURIComponent(frameUrl.replace(/^file:\/\//, ""));
+				const scriptPath = filePathFromUrl(frameUrl);
 				const mapPath = path.resolve(path.dirname(scriptPath), url);
 				if (fs.existsSync(mapPath)) {
 					mapJson = JSON.parse(fs.readFileSync(mapPath, "utf8"));
@@ -3575,7 +3582,7 @@ export function resolveSourceMapping(
 			}
 		}
 		if (!mapJson && frameUrl && frameUrl.startsWith("file://")) {
-			const scriptPath = decodeURIComponent(frameUrl.replace(/^file:\/\//, ""));
+			const scriptPath = filePathFromUrl(frameUrl);
 			const mapPath = `${scriptPath}.map`;
 			if (fs.existsSync(mapPath)) {
 				mapJson = JSON.parse(fs.readFileSync(mapPath, "utf8"));
@@ -3622,7 +3629,7 @@ export function resolveSourceMapping(
 		let originalSource = mapJson.sourcesContent?.[bestMatch.sourceIdx];
 		if (!originalSource && frameUrl && frameUrl.startsWith("file://")) {
 			try {
-				const scriptDir = path.dirname(decodeURIComponent(frameUrl.replace(/^file:\/\//, "")));
+				const scriptDir = path.dirname(filePathFromUrl(frameUrl));
 				const resolvedSrc = path.resolve(scriptDir, sourceFile);
 				if (fs.existsSync(resolvedSrc)) {
 					originalSource = fs.readFileSync(resolvedSrc, "utf8");

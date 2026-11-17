@@ -13,7 +13,6 @@ import {
 	executeCDPCommand,
 	getPageInfo,
 	pickPageTarget,
-	resolveOutputPath,
 	validateOutputPath,
 	resolveSecretPlaceholders,
 	typeText,

@@ -8,7 +8,6 @@ import {
 	pickMainTarget,
 	updateCDPTargets,
 	evaluateMain,
-	resolveOutputPath,
 	validateOutputPath,
 	elementCenter,
 	getCookies,
@@ -868,7 +867,7 @@ export async function loadStorageState(
 }> {
 	let state = options.state;
 	if (!state && options.path) {
-		const resolved = resolveOutputPath(options.path);
+		const resolved = validateOutputPath(options.path);
 		if (!fs.existsSync(resolved)) {
 			throw new Error(`Storage state file not found: ${options.path}`);
 		}

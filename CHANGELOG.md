@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.15.2
+
+### Security Hardening & Robustness
+- **Security (`setFileInput` Sandboxing)**: Enforce strict `validateOutputPath` checks on every path provided to `set_file_input` (`src/power-tools.ts`). Prevents unintended staging or exfiltration of sensitive local files (`~/.ssh`, `.aws`, `.env`, system binaries) via file input dialogs.
+- **Security (`loadStorageState` Sandboxing)**: Validate file paths via `validateOutputPath` when restoring cookies and storage states in `load_storage_state` (`src/desktop-tools.ts`), preventing arbitrary file reads across blocked roots or outside `ELECTRON_MCP_OUTPUT_ROOTS`.
+- **Security (`run_script` Recipe Path Sandboxing)**: Enforce `validateOutputPath` before loading JSON script recipe files from disk in `run_script` (`src/script-runner.ts`).
+- **Security (`getByPath` Prototype Pollution Defense)**: Defend against prototype pollution attacks across workflow variables and step results in `getByPath` (`src/script-runner.ts`) by rejecting property paths referencing `__proto__`, `constructor`, or `prototype`.
+- **Compound Condition Evaluation**: Fixed compound template expressions in `evaluateCondition` (`src/script-runner.ts`). Conditions containing template variables (e.g. `{{vars.count}} > 2` or `{{steps[0].result.val}} == true`) now correctly interpolate variables into valid JavaScript expressions prior to evaluation instead of failing silently to `false`.
+- **Cross-Platform `file://` Resolution**: Replaced brittle URL prefix stripping with Node's native `fileURLToPath` in `resolveStack` and `resolveSourceMapping` (`src/power-tools.ts`), resolving Windows leading-slash discrepancies (`/C:/...`) and ensuring local stack traces and source maps resolve cleanly across all operating systems.
+- Quality: **147 passing unit tests**, 100% smoke test pass rate across all 111 tools, 9 resources, and 6 prompts.
+
 ## 1.15.1
 
 ### Bug Fixes & Security Hardening

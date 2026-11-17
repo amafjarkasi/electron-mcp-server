@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {
+  getByPath,
   interpolateVariables,
   evaluateCondition,
   evaluateExpectation,
@@ -1724,9 +1725,23 @@ test("evaluateCondition evaluates boolean strings, templates, and predicates", (
   assert.equal(evaluateCondition("false", ctx), false);
   assert.equal(evaluateCondition("{{vars.isReady}}", ctx), true);
   assert.equal(evaluateCondition("vars.count > 3", ctx), true);
+  assert.equal(evaluateCondition("{{vars.count}} > 3", ctx), true);
+  assert.equal(evaluateCondition("{{vars.count}} === 10", ctx), false);
+  assert.equal(evaluateCondition("'{{vars.status}}' === 'ok'", ctx), true);
   assert.equal(evaluateCondition("vars.count === 10", ctx), false);
   assert.equal(evaluateCondition("vars.status === 'ok'", ctx), true);
   assert.equal(evaluateCondition("invalid syntax !!@@##", ctx), false);
+});
+
+test("getByPath blocks prototype pollution keys (__proto__, constructor, prototype)", () => {
+  const obj = { user: { name: "alice", role: "admin" }, list: [10, 20] };
+  assert.equal(getByPath(obj, "user.name"), "alice");
+  assert.equal(getByPath(obj, "list[1]"), 20);
+  assert.equal(getByPath(obj, "__proto__"), undefined);
+  assert.equal(getByPath(obj, "constructor"), undefined);
+  assert.equal(getByPath(obj, "prototype"), undefined);
+  assert.equal(getByPath(obj, "user.constructor"), undefined);
+  assert.equal(getByPath(obj, "__proto__.polluted"), undefined);
 });
 
 test("evaluateExpectation validates status, contains, equals, and JS expressions", () => {
@@ -2117,4 +2132,42 @@ test("ipc_fuzz_and_verify payload vector generator builds security and boundary 
   assert.equal(vectors[2].payload.__proto__.polluted, true);
   assert.ok(vectors[3].payload.includes("passwd"));
   assert.equal(vectors[4].payload.length, 1000);
+});
+
+test("runScriptEngine rejects sensitive script paths via validateOutputPath", async () => {
+  const home = os.homedir();
+  await assert.rejects(
+    async () => {
+      await runScriptEngine(null, { script: path.join(home, ".ssh/id_rsa") });
+    },
+    /sensitive location/i
+  );
+});
+
+test("loadStorageState rejects sensitive storage state paths via validateOutputPath", async () => {
+  const home = os.homedir();
+  const { loadStorageState } = await import("../build/desktop-tools.js");
+  await assert.rejects(
+    async () => {
+      await loadStorageState(null, { path: path.join(home, ".aws/credentials") });
+    },
+    /sensitive location/i
+  );
+});
+
+test("setFileInput rejects sensitive file input paths via validateOutputPath", async () => {
+  const home = os.homedir();
+  const { setFileInput } = await import("../build/power-tools.js");
+  await assert.rejects(
+    async () => {
+      await setFileInput(null, { selector: "input[type=file]", files: [path.join(home, ".ssh/id_rsa")] });
+    },
+    /sensitive location/i
+  );
+});
+
+test("resolveSourceMapping handles file:// URLs cleanly without throwing", async () => {
+  const { resolveSourceMapping } = await import("../build/power-tools.js");
+  const res = resolveSourceMapping("console.log(1)", 0, 0, "file:///C:/project/app.js");
+  assert.equal(res, undefined);
 });

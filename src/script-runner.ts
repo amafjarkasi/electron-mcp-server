@@ -71,7 +71,7 @@ export function getByPath(obj: unknown, pathStr: string): unknown {
 	const parts = pathStr.replace(/\[(\w+)\]/g, ".$1").split(".").filter(Boolean);
 	let current: any = obj;
 	for (const part of parts) {
-		if (current == null) return undefined;
+		if (current == null || part === "__proto__" || part === "constructor" || part === "prototype") return undefined;
 		current = current[part];
 	}
 	return current;
@@ -131,15 +131,24 @@ export function evaluateCondition(
 ): boolean {
 	try {
 		// First check simple boolean or truthy string
-		const trimmed = condition.trim();
-		if (trimmed === "true") return true;
-		if (trimmed === "false") return false;
-		if (trimmed.startsWith("{{") && trimmed.endsWith("}}")) {
-			const interpolated = interpolateVariables(trimmed, { ...ctx, env: process.env });
-			return Boolean(interpolated);
+		let resolved = condition.trim();
+		if (resolved === "true") return true;
+		if (resolved === "false") return false;
+
+		if (resolved.includes("{{")) {
+			const interpolated = interpolateVariables(resolved, { ...ctx, env: process.env });
+			if (typeof interpolated === "boolean") return interpolated;
+			if (typeof interpolated === "string") {
+				resolved = interpolated.trim();
+				if (resolved === "true") return true;
+				if (resolved === "false") return false;
+			} else {
+				return Boolean(interpolated);
+			}
 		}
+
 		// Safe predicate evaluator with limited scope
-		const fn = new Function("vars", "steps", `return Boolean(${condition});`);
+		const fn = new Function("vars", "steps", `return Boolean(${resolved});`);
 		return Boolean(fn(ctx.vars, ctx.steps));
 	} catch {
 		return false;
@@ -316,12 +325,15 @@ export async function runScriptEngine(
 		if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
 			const parsed = JSON.parse(trimmed);
 			steps = Array.isArray(parsed) ? parsed : (parsed.steps || []);
-		} else if (fs.existsSync(trimmed)) {
-			const fileContent = fs.readFileSync(trimmed, "utf8");
-			const parsed = JSON.parse(fileContent);
-			steps = Array.isArray(parsed) ? parsed : (parsed.steps || []);
 		} else {
-			throw new Error(`Invalid script: expected JSON array or existing file path, got "${trimmed}"`);
+			const resolvedPath = validateOutputPath(trimmed);
+			if (fs.existsSync(resolvedPath)) {
+				const fileContent = fs.readFileSync(resolvedPath, "utf8");
+				const parsed = JSON.parse(fileContent);
+				steps = Array.isArray(parsed) ? parsed : (parsed.steps || []);
+			} else {
+				throw new Error(`Invalid script: expected JSON array or existing file path, got "${trimmed}"`);
+			}
 		}
 	} else if (Array.isArray(options.script)) {
 		steps = options.script;

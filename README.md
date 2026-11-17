@@ -8,7 +8,7 @@
 *Give Cursor, Claude & autonomous agents eyes, hands, and deep runtime inspection inside Electron desktop applications.*
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.15.1-0F766E?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-1.15.2-0F766E?style=flat-square" />
   <img alt="111 tools" src="https://img.shields.io/badge/111_tools-0F766E?style=flat-square" />
   <img alt="9 resources" src="https://img.shields.io/badge/9_resources-115E59?style=flat-square" />
   <img alt="6 prompts" src="https://img.shields.io/badge/6_prompts-134E4A?style=flat-square" />
