@@ -1907,7 +1907,7 @@ test("runScriptEngine allows exportPath in temporary/allowed locations", async (
       exportAs: "playwright",
       exportPath: tmpOut,
     });
-    assert.equal(report.exportedPath, path.resolve(tmpOut));
+    assert.equal(report.exportedPath, resolveOutputPath(tmpOut));
     assert.ok(fs.existsSync(tmpOut));
   } finally {
     if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut);
