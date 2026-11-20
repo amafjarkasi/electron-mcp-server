@@ -1,0 +1,26 @@
+{
+  "name": "repro-bundle-and-triage",
+  "steps": [
+    {
+      "name": "Check Recent Errors & Warnings",
+      "tool": "get_console_messages",
+      "args": {
+        "limit": 50
+      }
+    },
+    {
+      "name": "Capture Diagnostic Triage Summary",
+      "tool": "triage",
+      "args": {}
+    },
+    {
+      "name": "Assemble Repro Bundle Artifact",
+      "tool": "repro_bundle",
+      "args": {
+        "title": "Automated Repro Package",
+        "description": "Captured automatically by MCP workflow.",
+        "outputPath": "./artifacts/issue-repro.zip"
+      }
+    }
+  ]
+}

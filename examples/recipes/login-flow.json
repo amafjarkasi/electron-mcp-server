@@ -1,0 +1,39 @@
+{
+  "name": "login-and-hydrate-session",
+  "steps": [
+    {
+      "name": "Navigate to Login Page",
+      "tool": "navigate",
+      "args": {
+        "url": "https://app.local/login"
+      }
+    },
+    {
+      "name": "Fill Credentials",
+      "tool": "fill_form",
+      "args": {
+        "fields": {
+          "Email Address": "admin@desktop.local",
+          "Password": "{{secret:APP_TEST_PASSWORD}}"
+        },
+        "submitSelector": "button#login-submit",
+        "waitForNetworkIdle": true
+      }
+    },
+    {
+      "name": "Wait for Dashboard Navigation",
+      "tool": "wait_for",
+      "args": {
+        "selector": "div.dashboard-container",
+        "timeoutMs": 5000
+      }
+    },
+    {
+      "name": "Persist Session Storage State",
+      "tool": "save_storage_state",
+      "args": {
+        "path": "./artifacts/session-state.json"
+      }
+    }
+  ]
+}

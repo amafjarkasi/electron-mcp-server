@@ -1,0 +1,39 @@
+{
+  "name": "security-audit-and-ipc-fuzz",
+  "steps": [
+    {
+      "name": "Inspect Electron Main Process State",
+      "tool": "main_state",
+      "args": {}
+    },
+    {
+      "name": "Audit Security Posture & Binary Fuses",
+      "tool": "electron_security_audit",
+      "args": {}
+    },
+    {
+      "name": "Install IPC Monitoring Tap",
+      "tool": "ipc_tap",
+      "args": {}
+    },
+    {
+      "name": "Fuzz Core IPC Channels",
+      "tool": "ipc_fuzz_and_verify",
+      "args": {
+        "channels": ["app:save-config", "user:update"],
+        "delayMs": 50
+      }
+    },
+    {
+      "name": "Verify Process Health Post-Fuzzing",
+      "tool": "get_process_health",
+      "args": {},
+      "expect": {
+        "equals": {
+          "path": "status",
+          "value": "healthy"
+        }
+      }
+    }
+  ]
+}

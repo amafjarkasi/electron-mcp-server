@@ -604,6 +604,17 @@ Harden renderer-to-main IPC communication against malicious or malformed payload
 
 ---
 
+## 📚 Examples & Guides
+
+Explore production-ready examples and full tool references in the [`examples/`](./examples) directory:
+
+- 📖 [**20 High-Leverage Workflows & Examples**](./examples/20-interesting-examples.md) — Comprehensive scenarios with step sequences and JSON inputs (repro bundles, IPC fuzzing, responsive matrix sweeps, offline chaos, memory leak diffing, secret masking, and more).
+- 🗂️ [**Complete All-111-Tools Reference Catalog**](./examples/all-tools-reference.md) — Dedicated parameter documentation, schema tables, and ready-to-use JSON invocation examples for every single tool.
+- ⚙️ [**Runnable Workflow Recipes**](./examples/recipes) — Copy-paste JSON automation recipes directly executable via `run_script`.
+- 🔌 [**Client Configurations**](./examples) — Setup guides and configuration files for Claude Desktop, Cursor, and NPX.
+
+---
+
 ## 🧯 Troubleshooting
 
 | Symptom | Solution |
